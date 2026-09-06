@@ -18,6 +18,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
+	"github.com/legendary1205/rapido-go/internal/subscription"
 )
 
 // allowedUsernameChars mirrors the character class in app/models/user.py's
@@ -99,6 +100,7 @@ type userResponseDTO struct {
 	Inbounds               map[string][]string        `json:"inbounds"`
 	ExcludedInbounds       map[string][]string        `json:"excluded_inbounds"`
 	NextPlan               *nextPlanDTO               `json:"next_plan"`
+	SubscriptionURL        string                     `json:"subscription_url"`
 }
 
 // handleCreateUser implements POST /api/user.
@@ -717,8 +719,11 @@ func (h *Handler) buildUserResponse(ctx context.Context, u generated.User) (user
 	}
 
 	// lifetime_used_traffic (used_traffic + sum of user_usage_logs) and the
-	// subscription_url/links fields are deferred - see the Phase 2 report.
+	// per-format `links` array are deferred - see the Phase 2/4 reports.
 	lifetimeUsed := u.UsedTraffic
+
+	subToken := subscription.CreateToken(u.Username, h.jwtSecret)
+	subURL := h.subURLPrefix + "/sub/" + subToken
 
 	return userResponseDTO{
 		ID: u.ID, Username: u.Username, Status: u.Status, UsedTraffic: u.UsedTraffic, LifetimeUsedTraffic: lifetimeUsed,
@@ -727,6 +732,7 @@ func (h *Handler) buildUserResponse(ctx context.Context, u generated.User) (user
 		OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
 		AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
 		Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
+		SubscriptionURL: subURL,
 	}, nil
 }
 

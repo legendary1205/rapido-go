@@ -37,20 +37,34 @@ type Config struct {
 	// AllowedOrigins mirrors ALLOWED_ORIGINS in the current config.py
 	// (comma-separated, defaulting to "*").
 	AllowedOrigins []string
+
+	// PublicIP feeds the {SERVER_IP} placeholder in subscription remark
+	// templates - a plain config value here rather than the current
+	// system's auto-detect-via-external-service-at-import-time, since a
+	// panel's public IP is infrastructure configuration, not something to
+	// discover via a network call to a third party at every boot.
+	PublicIP string
+
+	// SubscriptionURLPrefix mirrors XRAY_SUBSCRIPTION_URL_PREFIX: prepended
+	// to "/sub/<token>" when building a user's subscription_url. Empty
+	// (the default) yields a relative path.
+	SubscriptionURLPrefix string
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Role:           Role(getEnv("ROLE", string(RoleAPI))),
-		HTTPHost:       getEnv("UVICORN_HOST", "0.0.0.0"),
-		DatabaseURL:    getEnv("DATABASE_URL", ""),
-		RedisAddr:      getEnv("REDIS_ADDR", "127.0.0.1:6379"),
-		RedisPass:      getEnv("REDIS_PASSWORD", ""),
-		SudoUsername:   getEnv("SUDO_USERNAME", ""),
-		SudoPassword:   getEnv("SUDO_PASSWORD", ""),
-		CertsDir:       getEnv("CERTS_DIR", "./certs"),
-		JWTAccessTTL:   24 * time.Hour,
-		AllowedOrigins: strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
+		Role:                  Role(getEnv("ROLE", string(RoleAPI))),
+		HTTPHost:              getEnv("UVICORN_HOST", "0.0.0.0"),
+		DatabaseURL:           getEnv("DATABASE_URL", ""),
+		RedisAddr:             getEnv("REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPass:             getEnv("REDIS_PASSWORD", ""),
+		SudoUsername:          getEnv("SUDO_USERNAME", ""),
+		SudoPassword:          getEnv("SUDO_PASSWORD", ""),
+		CertsDir:              getEnv("CERTS_DIR", "./certs"),
+		JWTAccessTTL:          24 * time.Hour,
+		AllowedOrigins:        strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
+		PublicIP:              getEnv("PUBLIC_IP", ""),
+		SubscriptionURLPrefix: getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
 	}
 
 	if cfg.Role != RoleAPI && cfg.Role != RoleBackend {

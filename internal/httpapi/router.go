@@ -15,10 +15,17 @@ type Handler struct {
 	issuer       *auth.TokenIssuer
 	sudoUsername string
 	sudoPassword string
+	jwtSecret    []byte
+	publicIP     string
+	subURLPrefix string
+	logger       *slog.Logger
 }
 
-func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string) *Handler {
-	return &Handler{store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword}
+func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte, publicIP, subURLPrefix string, logger *slog.Logger) *Handler {
+	return &Handler{
+		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
+		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix, logger: logger,
+	}
 }
 
 // NewRouter builds the Gin engine with logging/recovery middleware and every
@@ -78,6 +85,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/node/:id", requireSudo, h.handleGetNode)
 		api.DELETE("/node/:id", requireSudo, h.handleDeleteNode)
 	}
+
+	r.GET("/sub/:token", h.handleGetSubscription)
+	r.GET("/sub/:token/:format", h.handleGetSubscriptionFormat)
 
 	return r
 }

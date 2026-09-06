@@ -79,7 +79,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	store := httpapi.NewStore(pool)
-	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword)
+	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 
 	srv := &http.Server{

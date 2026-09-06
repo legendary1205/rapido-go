@@ -4,8 +4,19 @@
 -- `inserted` tells the caller whether this created a brand new inbound (in
 -- which case it should also create that inbound's default host, mirroring
 -- add_default_host in the current crud.get_or_create_inbound).
-INSERT INTO inbounds (tag, protocol) VALUES ($1, $2)
-ON CONFLICT (tag) DO UPDATE SET protocol = EXCLUDED.protocol
+INSERT INTO inbounds (
+    tag, protocol, network, header_type, security,
+    reality_private_key, reality_short_ids, reality_server_name, reality_server_port
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (tag) DO UPDATE SET
+    protocol = EXCLUDED.protocol,
+    network = EXCLUDED.network,
+    header_type = EXCLUDED.header_type,
+    security = EXCLUDED.security,
+    reality_private_key = EXCLUDED.reality_private_key,
+    reality_short_ids = EXCLUDED.reality_short_ids,
+    reality_server_name = EXCLUDED.reality_server_name,
+    reality_server_port = EXCLUDED.reality_server_port
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: GetInboundByTag :one

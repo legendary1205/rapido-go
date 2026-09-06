@@ -3,6 +3,13 @@
 -- by inbound_tag in Go rather than issuing one query per tag.
 SELECT * FROM hosts ORDER BY inbound_tag, id;
 
+-- name: ListHostsByInboundTag :many
+-- Excludes disabled hosts - matches the current system's global exclusion
+-- in app/xray/__init__.py's hosts DictStorage builder (a disabled host
+-- never appears in subscription output for any format, not a per-format
+-- decision).
+SELECT * FROM hosts WHERE inbound_tag = $1 AND (is_disabled IS NULL OR is_disabled = false) ORDER BY id;
+
 -- name: DeleteHostsByInboundTag :exec
 DELETE FROM hosts WHERE inbound_tag = $1;
 

@@ -35,9 +35,11 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 
 	store := NewStore(pool)
 	ensureTestCA(t, store)
-	issuer := auth.NewTokenIssuer([]byte("test-secret"), time.Hour)
-	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword)
-	router := NewRouter(handler, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), []string{"*"})
+	testSecret := []byte("test-secret")
+	issuer := auth.NewTokenIssuer(testSecret, time.Hour)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "", logger)
+	router := NewRouter(handler, logger, []string{"*"})
 
 	token, err := issuer.Issue(testSudoUsername, true)
 	if err != nil {

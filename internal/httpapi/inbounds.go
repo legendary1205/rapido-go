@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
@@ -28,8 +29,16 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 }
 
 type inboundSyncEntry struct {
-	Tag      string `json:"tag" binding:"required"`
-	Protocol string `json:"protocol" binding:"required"`
+	Tag        string `json:"tag" binding:"required"`
+	Protocol   string `json:"protocol" binding:"required"`
+	Network    string `json:"network"`     // tcp/ws/grpc/kcp/quic/splithttp/xhttp - defaults to "tcp"
+	HeaderType string `json:"header_type"` // e.g. "http" for tcp obfuscation
+
+	Security          string   `json:"security"` // none/tls/reality - defaults to "none"
+	RealityPrivateKey string   `json:"reality_private_key,omitempty"`
+	RealityShortIDs   []string `json:"reality_short_ids,omitempty"`
+	RealityServerName string   `json:"reality_server_name,omitempty"`
+	RealityServerPort int32    `json:"reality_server_port,omitempty"`
 }
 
 // handleSyncInbounds implements POST /api/inbounds/sync (sudo only) - an
@@ -51,7 +60,22 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 
 	created := 0
 	for _, e := range entries {
-		row, err := h.store.Queries.UpsertInbound(c.Request.Context(), generated.UpsertInboundParams{Tag: e.Tag, Protocol: e.Protocol})
+		network := e.Network
+		if network == "" {
+			network = "tcp"
+		}
+		security := e.Security
+		if security == "" {
+			security = "none"
+		}
+		row, err := h.store.Queries.UpsertInbound(c.Request.Context(), generated.UpsertInboundParams{
+			Tag: e.Tag, Protocol: e.Protocol, Network: network, HeaderType: textFromPtr(normalizeZeroString(&e.HeaderType)),
+			Security:          security,
+			RealityPrivateKey: textFromPtr(normalizeZeroString(&e.RealityPrivateKey)),
+			RealityShortIds:   e.RealityShortIDs,
+			RealityServerName: textFromPtr(normalizeZeroString(&e.RealityServerName)),
+			RealityServerPort: realityPortToPg(e.RealityServerPort),
+		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
 			return
@@ -80,6 +104,13 @@ func createDefaultHost(ctx context.Context, q *generated.Queries, tag string) er
 		InboundTag:  tag,
 	})
 	return err
+}
+
+func realityPortToPg(port int32) pgtype.Int4 {
+	if port == 0 {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: port, Valid: true}
 }
 
 func proxyTypeValid(protocol string) bool {

@@ -45,6 +45,11 @@ RETURNING *;
 UPDATE users SET used_traffic = 0, status = $2 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateUserSub :exec
+-- Mirrors crud.update_user_sub: recorded on every hit of the auto-detect
+-- subscription route (not the explicit-format or info/usage routes).
+UPDATE users SET sub_updated_at = now(), sub_last_user_agent = $2 WHERE id = $1;
+
 -- name: SetUserSubRevoked :one
 UPDATE users SET sub_revoked_at = now() WHERE id = $1
 RETURNING *;
