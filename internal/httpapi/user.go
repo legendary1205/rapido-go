@@ -102,6 +102,7 @@ type userResponseDTO struct {
 	ExcludedInbounds       map[string][]string        `json:"excluded_inbounds"`
 	NextPlan               *nextPlanDTO               `json:"next_plan"`
 	SubscriptionURL        string                     `json:"subscription_url"`
+	OnlineAt               *time.Time                 `json:"online_at"`
 }
 
 // handleCreateUser implements POST /api/user.
@@ -859,7 +860,7 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
 			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
 			Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
-			SubscriptionURL: subURL,
+			SubscriptionURL: subURL, OnlineAt: timestamptzToPtr(u.OnlineAt),
 		})
 	}
 	return out, nil

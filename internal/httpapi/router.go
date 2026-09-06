@@ -74,6 +74,12 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/inbounds", requireAdmin, h.handleListInbounds)
 		api.POST("/inbounds/sync", requireSudo, h.handleSyncInbounds)
 
+		// Read-only aggregate endpoints for the dashboard's Overview page -
+		// available to every admin (scoped to their own users when not sudo),
+		// not sudo-gated.
+		api.GET("/system", requireAdmin, h.handleGetSystemStats)
+		api.GET("/system/usage-history", requireAdmin, h.handleGetSystemUsageHistory)
+
 		api.GET("/hosts", requireSudo, h.handleGetHosts)
 		api.PUT("/hosts", requireSudo, h.handlePutHosts)
 

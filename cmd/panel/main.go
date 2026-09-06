@@ -115,6 +115,7 @@ func run(logger *slog.Logger) error {
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
 		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
+	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPHost + ":" + strconv.Itoa(cfg.HTTPPort),

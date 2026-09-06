@@ -50,6 +50,13 @@ type Config struct {
 	// (the default) yields a relative path.
 	SubscriptionURLPrefix string
 
+	// DashboardDir is where the built dashboard (web/dist, a Vite build
+	// output) lives on disk - mirrors the current Python system serving its
+	// own dashboard build as static files from the same process. Relative
+	// to the binary's working directory by default, same convention as
+	// CertsDir.
+	DashboardDir string
+
 	// --- Integration env defaults (overridable per-row via PUT
 	// /api/settings/integrations - see internal/integrationsettings) ---
 	KirbotSecret  string
@@ -97,6 +104,7 @@ func Load() (*Config, error) {
 		AllowedOrigins:        strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
 		PublicIP:              getEnv("PUBLIC_IP", ""),
 		SubscriptionURLPrefix: getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
+		DashboardDir:          getEnv("DASHBOARD_DIR", "./web/dist"),
 
 		KirbotSecret:  getEnv("KIRBOT_SECRET", ""),
 		KirbotURL:     getEnv("KIRBOT_URL", "http://127.0.0.1:8080"),
