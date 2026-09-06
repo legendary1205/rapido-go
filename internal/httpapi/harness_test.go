@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/legendary1205/rapido-go/internal/auth"
+	"github.com/legendary1205/rapido-go/internal/certs"
+	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
 
 const (
@@ -30,6 +34,7 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	truncateAll(t, pool)
 
 	store := NewStore(pool)
+	ensureTestCA(t, store)
 	issuer := auth.NewTokenIssuer([]byte("test-secret"), time.Hour)
 	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword)
 	router := NewRouter(handler, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), []string{"*"})
@@ -41,15 +46,41 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	return router, token
 }
 
-// truncateAll clears every table Phase 2 tests touch, so each test starts
+// truncateAll clears every table Phase 2-3 tests touch, so each test starts
 // from a clean slate regardless of what earlier tests (or the deployed
-// panel sharing this same database over the SSH tunnel) left behind.
+// panel sharing this same database over the SSH tunnel) left behind. `tls`
+// is deliberately not truncated - ensureTestCA below makes it idempotent
+// instead, since wiping the CA out from under a test that runs concurrently
+// with... (tests in this package run sequentially, but re-generating a
+// 4096-bit RSA CA per test is needlessly slow) is both unnecessary and slow.
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
-		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates RESTART IDENTITY CASCADE")
+		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates, nodes RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
+	}
+}
+
+// ensureTestCA mirrors cmd/panel/main.go's ensureTLS bootstrap (duplicated
+// here rather than shared, since cmd/panel already imports this package -
+// the reverse import would cycle): the tls table's one row doubles as the
+// Rapido CA node certificates are issued from, so node tests need it to
+// exist same as a real deployment does after its first boot.
+func ensureTestCA(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := store.Queries.GetTLS(ctx); err == nil {
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetTLS: %v", err)
+	}
+	pair, _, err := certs.GenerateCA()
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	if _, err := store.Queries.CreateTLS(ctx, generated.CreateTLSParams{Key: pair.KeyPEM, Certificate: pair.CertPEM}); err != nil {
+		t.Fatalf("CreateTLS: %v", err)
 	}
 }
 

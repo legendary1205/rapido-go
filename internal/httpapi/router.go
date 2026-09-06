@@ -72,6 +72,11 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/user_template/:id", requireAdmin, h.handleGetUserTemplate)
 		api.PUT("/user_template/:id", requireSudo, h.handleModifyUserTemplate)
 		api.DELETE("/user_template/:id", requireSudo, h.handleDeleteUserTemplate)
+
+		api.POST("/node", requireSudo, h.handleCreateNode)
+		api.GET("/nodes", requireSudo, h.handleListNodes)
+		api.GET("/node/:id", requireSudo, h.handleGetNode)
+		api.DELETE("/node/:id", requireSudo, h.handleDeleteNode)
 	}
 
 	return r

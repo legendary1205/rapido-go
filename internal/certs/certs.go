@@ -36,6 +36,22 @@ type PEMPair struct {
 	KeyPEM  string
 }
 
+// ParseRSAPrivateKeyPEM reads back a private key produced by GenerateCA (or
+// SignNodeCert) - needed wherever the CA's key must be loaded from storage
+// (the `tls` table) to sign another certificate later, rather than kept
+// only in the memory of the process that generated it.
+func ParseRSAPrivateKeyPEM(keyPEM string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(keyPEM))
+	if block == nil {
+		return nil, fmt.Errorf("certs: invalid private key PEM")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("certs: parse private key: %w", err)
+	}
+	return key, nil
+}
+
 // GenerateCA creates a new self-signed Rapido CA/panel identity, matching
 // the current generate_certificate() contract (RSA-4096, self-signed,
 // CN="Rapido", 100-year validity) but usable as a CA to sign node leaf
