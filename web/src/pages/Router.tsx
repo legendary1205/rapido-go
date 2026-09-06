@@ -27,6 +27,7 @@ const fetchAdminLoader = async () => {
 // unrelated routes.
 const RapidoHome = lazy(() => import("./RapidoHome"));
 const UsersPage = lazy(() => import("./UsersPage"));
+const TicketsPage = lazy(() => import("./TicketsPage"));
 const HostsPage = lazy(() => import("./HostsPage"));
 const AdminsPage = lazy(() => import("./AdminsPage"));
 const IntegrationsPage = lazy(() => import("./IntegrationsPage"));
@@ -62,6 +63,20 @@ export const router = createHashRouter([
     element: (
       <Suspense fallback={null}>
         <UserTemplatesPage />
+      </Suspense>
+    ),
+    errorElement: <Login />,
+    loader: fetchAdminLoader,
+  },
+  {
+    // Not sudo-gated: GET /api/tickets is requireAdmin, not requireSudo -
+    // every admin can read/answer their own customers' tickets, scoped
+    // server-side (internal/httpapi/tickets.go's scopedAdminID); only the
+    // `owner` column is sudo-conditional, and TicketsAdmin itself hides it.
+    path: "/tickets/",
+    element: (
+      <Suspense fallback={null}>
+        <TicketsPage />
       </Suspense>
     ),
     errorElement: <Login />,
@@ -109,8 +124,8 @@ export const router = createHashRouter([
   },
   {
     // Catches any other hash path - old bookmarks to retired routes
-    // (Tickets/Nodes/Monitoring/Settings from the previous dashboard, or a
-    // typo'd URL) land here instead of react-router's default error UI.
+    // (Nodes/Monitoring/Settings from the previous dashboard, or a typo'd
+    // URL) land here instead of react-router's default error UI.
     path: "*",
     element: <Navigate to="/" replace />,
   },

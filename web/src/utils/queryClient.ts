@@ -18,6 +18,8 @@ export const queryKeys = {
   inbounds: ["inbounds"] as const,
   hosts: ["hosts"] as const,
   admins: ["admins"] as const,
+  tickets: (filters: Record<string, unknown>) => ["tickets", filters] as const,
+  ticket: (id: number | null) => ["ticket", id] as const,
   userTemplates: ["user-templates"] as const,
   systemStats: ["system-stats"] as const,
   systemUsageHistory: (days: number) =>

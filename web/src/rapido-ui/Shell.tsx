@@ -9,6 +9,7 @@ import {
   ShieldCheckIcon,
   PuzzlePieceIcon,
   DocumentDuplicateIcon,
+  TicketIcon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -37,14 +38,16 @@ const NavLink: FC<{ href: string; active?: boolean; icon: FC<{ className?: strin
   </Link>
 );
 
-// This phase's whole page list: Tickets/Nodes/Monitoring/Settings from the
-// old dashboard aren't deferred, they simply don't exist yet - the Go
-// backend has no schema/API for tickets at all, node-side live monitoring
-// needs a reporting phase that hasn't landed, and Core Config doesn't map
-// onto this architecture the same way (see the plan's own context on why).
+// This phase's whole page list: Nodes/Monitoring/Settings from the old
+// dashboard aren't deferred, they simply don't exist yet - node-side live
+// monitoring needs a reporting phase that hasn't landed, and Core Config
+// doesn't map onto this architecture the same way (see the plan's own
+// context on why). Tickets is no longer in that boat: GET/POST/PUT
+// /api/tickets* are now implemented (internal/httpapi/tickets.go).
 export type RapidoNavKey =
   | "overview"
   | "users"
+  | "tickets"
   | "hosts"
   | "admins"
   | "templates"
@@ -59,6 +62,10 @@ const NAV_ITEMS: {
 }[] = [
   { key: "overview", href: "/", labelKey: "rapido.overview", icon: HomeIcon },
   { key: "users", href: "/users/", labelKey: "users", icon: UsersIcon },
+  // Deliberately not sudoOnly: GET /api/tickets is requireAdmin, not
+  // requireSudo - a reseller answers their own customers' tickets, and the
+  // backend already scopes the list to the users they own.
+  { key: "tickets", href: "/tickets/", labelKey: "rapido.tickets.nav", icon: TicketIcon },
   { key: "hosts", href: "/hosts/", labelKey: "rapido.hosts.nav", icon: GlobeAltIcon, sudoOnly: true },
   { key: "admins", href: "/admins/", labelKey: "rapido.admins.nav", icon: ShieldCheckIcon, sudoOnly: true },
   // Not sudoOnly: every admin can use their own reusable presets, not just
