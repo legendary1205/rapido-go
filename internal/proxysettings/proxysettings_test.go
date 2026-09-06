@@ -1,0 +1,130 @@
+package proxysettings
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestFromWireGeneratesVMessID(t *testing.T) {
+	s, err := FromWire(VMess, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.VMess.ID == "" {
+		t.Error("VMess.ID is empty, want an auto-generated UUID")
+	}
+}
+
+func TestFromWirePreservesGivenVMessID(t *testing.T) {
+	s, err := FromWire(VMess, json.RawMessage(`{"id":"35e4e39c-7d5c-4f4b-8b71-558e4f37ff53"}`))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.VMess.ID != "35e4e39c-7d5c-4f4b-8b71-558e4f37ff53" {
+		t.Errorf("VMess.ID = %q, want the given id preserved", s.VMess.ID)
+	}
+}
+
+func TestFromWireVLESSDefaultsFlowToVision(t *testing.T) {
+	// Mirrors VLESSSettings.default_to_vision: a missing, empty, or
+	// explicit "none" flow all coerce to Vision - every VLESS config on
+	// this panel runs XTLS Vision.
+	cases := []json.RawMessage{
+		nil,
+		json.RawMessage(`{}`),
+		json.RawMessage(`{"flow":""}`),
+	}
+	for _, raw := range cases {
+		s, err := FromWire(VLESS, raw)
+		if err != nil {
+			t.Fatalf("FromWire(%s): %v", raw, err)
+		}
+		if s.VLESS.Flow != FlowVision {
+			t.Errorf("FromWire(%s).Flow = %q, want %q", raw, s.VLESS.Flow, FlowVision)
+		}
+	}
+}
+
+func TestFromWireVLESSGeneratesID(t *testing.T) {
+	s, err := FromWire(VLESS, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.VLESS.ID == "" {
+		t.Error("VLESS.ID is empty, want an auto-generated UUID")
+	}
+}
+
+func TestFromWireTrojanGeneratesPassword(t *testing.T) {
+	s, err := FromWire(Trojan, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Trojan.Password == "" {
+		t.Error("Trojan.Password is empty, want an auto-generated password")
+	}
+}
+
+func TestFromWireShadowsocksDefaults(t *testing.T) {
+	s, err := FromWire(Shadowsocks, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Shadowsocks.Password == "" {
+		t.Error("Shadowsocks.Password is empty, want an auto-generated password")
+	}
+	if s.Shadowsocks.Method != Chacha20Poly1305 {
+		t.Errorf("Shadowsocks.Method = %q, want default %q", s.Shadowsocks.Method, Chacha20Poly1305)
+	}
+}
+
+func TestFromWireRejectsUnknownType(t *testing.T) {
+	if _, err := FromWire("wireguard", nil); err == nil {
+		t.Error("FromWire with an unknown proxy type succeeded, want an error")
+	}
+}
+
+func TestRevokeRotatesSecret(t *testing.T) {
+	s, err := FromWire(VMess, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	before := s.VMess.ID
+	s.Revoke()
+	if s.VMess.ID == before {
+		t.Error("Revoke() did not change the VMess id")
+	}
+
+	ts, err := FromWire(Trojan, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	beforePw := ts.Trojan.Password
+	ts.Revoke()
+	if ts.Trojan.Password == beforePw {
+		t.Error("Revoke() did not change the Trojan password")
+	}
+}
+
+func TestMarshalJSONEmitsBareStruct(t *testing.T) {
+	// Matches Python's settings.dict(no_obj=True): just the typed fields,
+	// no wrapper object and no "type" discriminator field.
+	s, err := FromWire(VMess, json.RawMessage(`{"id":"35e4e39c-7d5c-4f4b-8b71-558e4f37ff53"}`))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, hasType := decoded["type"]; hasType {
+		t.Error("marshaled settings unexpectedly include a \"type\" field")
+	}
+	if decoded["id"] != "35e4e39c-7d5c-4f4b-8b71-558e4f37ff53" {
+		t.Errorf("marshaled id = %v, want the original uuid", decoded["id"])
+	}
+}

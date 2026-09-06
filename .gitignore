@@ -1,0 +1,10 @@
+# sqlc-generated code - regenerate with `sqlc generate`
+/internal/db/generated/
+
+# build artifacts
+/panel
+/panel-linux-amd64
+*.exe
+
+# local tunnel/dev logs
+.tunnel.log
