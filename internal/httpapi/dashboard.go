@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,6 +15,15 @@ import (
 // index.html for a bare directory request, and no other path under
 // /dashboard/ needs special handling since the router never sees anything
 // past the "#".
+//
+// Also mounts the same build's statics/ directory (self-hosted fonts, Vite
+// copies web/public/ verbatim into the build root) at the site root,
+// /statics/ - the customer-facing subscription page's @font-face rules
+// reference exactly that path (same origin, no CDN, satisfying its strict
+// CSP's font-src 'self'), and that page lives outside /dashboard/'s own
+// route tree entirely (it's served from /sub/:token), so it needs this
+// second, root-level mount to actually find the font files.
 func MountDashboardStatic(r *gin.Engine, dir string) {
 	r.StaticFS("/dashboard", http.Dir(dir))
+	r.StaticFS("/statics", http.Dir(filepath.Join(dir, "statics")))
 }

@@ -27,6 +27,16 @@ func (h *Handler) handleGetSubscription(c *gin.Context) {
 		return
 	}
 
+	// Content negotiation is purely on Accept, not User-Agent - matches
+	// app/routers/subscription.py exactly. A browser requests text/html and
+	// gets the customer-facing Overview/Apps/Servers/Support page; every
+	// VPN client app asks for something else (usually */* or a specific
+	// config mime type) and falls through to the raw-config branches below.
+	if strings.Contains(c.GetHeader("Accept"), "text/html") {
+		h.handleSubscriptionPage(c, user)
+		return
+	}
+
 	format := "v2ray"
 	if isSingBoxUserAgent(c.GetHeader("User-Agent")) {
 		format = "sing-box"
@@ -88,16 +98,48 @@ func (h *Handler) loadSubscriptionUser(c *gin.Context) (generated.User, bool) {
 // response headers real client apps read for usage/expiry display.
 func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format string, recordUserAgent bool) {
 	ctx := c.Request.Context()
-	proxies, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(user.ID)))
+
+	var links []string
+	var singboxOutbounds []map[string]any
+	var err error
+	if format == "sing-box" {
+		singboxOutbounds, err = h.buildUserSingBoxOutbounds(ctx, user)
+	} else {
+		links, err = h.buildUserLinks(ctx, user)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read proxies"})
 		return
 	}
 
-	vars := subscription.BuildVariables(toSubUserInfo(user), h.publicIP)
+	h.setSubscriptionHeaders(c, user)
+	if recordUserAgent {
+		h.recordSubUserAgent(ctx, user.ID, c.GetHeader("User-Agent"))
+	}
 
-	var links []string
-	var singboxOutbounds []map[string]any
+	switch format {
+	case "sing-box":
+		raw, err := subscription.SingBoxConfig(singboxOutbounds)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build sing-box config"})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", raw)
+	default:
+		c.String(http.StatusOK, base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n"))))
+	}
+}
+
+// forEachUserHost walks proxy -> included inbound tag -> host, exactly the
+// traversal writeSubscription always needed - factored out so
+// buildUserLinks/buildUserSingBoxOutbounds (and the HTML page's Servers
+// tab, via buildUserLinks) don't each re-implement it.
+func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound)) error {
+	proxies, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(user.ID)))
+	if err != nil {
+		return err
+	}
+	vars := subscription.BuildVariables(toSubUserInfo(user), h.publicIP)
 
 	for _, p := range proxies {
 		settings, err := proxysettings.FromStored(proxysettings.ProxyType(p.Type), p.Settings)
@@ -130,39 +172,37 @@ func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format 
 				remarkVars["TRANSPORT"] = eff.Network
 				remark := remarkVars.Format(host.Remark)
 				address := remarkVars.Format(host.Address)
-
-				switch format {
-				case "sing-box":
-					out, err := subscription.SingBoxOutbound(remark, address, eff, settings)
-					if err == nil && out != nil {
-						singboxOutbounds = append(singboxOutbounds, out)
-					}
-				default:
-					link, err := subscription.BuildLink(remark, address, eff, settings)
-					if err == nil {
-						links = append(links, link)
-					}
-				}
+				fn(p.Type, settings, remark, address, eff)
 			}
 		}
 	}
+	return nil
+}
 
-	h.setSubscriptionHeaders(c, user)
-	if recordUserAgent {
-		h.recordSubUserAgent(ctx, user.ID, c.GetHeader("User-Agent"))
-	}
-
-	switch format {
-	case "sing-box":
-		raw, err := subscription.SingBoxConfig(singboxOutbounds)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build sing-box config"})
-			return
+// buildUserLinks is the v2ray-share-link list for a user - both the raw
+// v2ray-format subscription endpoint and the HTML page's Servers tab
+// (embedded once at page load, matching Python's user.links field) use
+// this exact same list, never two separately-generated ones.
+func (h *Handler) buildUserLinks(ctx context.Context, user generated.User) ([]string, error) {
+	var links []string
+	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
+		link, err := subscription.BuildLink(remark, address, eff, settings)
+		if err == nil {
+			links = append(links, link)
 		}
-		c.Data(http.StatusOK, "application/json", raw)
-	default:
-		c.String(http.StatusOK, base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n"))))
-	}
+	})
+	return links, err
+}
+
+func (h *Handler) buildUserSingBoxOutbounds(ctx context.Context, user generated.User) ([]map[string]any, error) {
+	var outbounds []map[string]any
+	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
+		out, err := subscription.SingBoxOutbound(remark, address, eff, settings)
+		if err == nil && out != nil {
+			outbounds = append(outbounds, out)
+		}
+	})
+	return outbounds, err
 }
 
 func (h *Handler) setSubscriptionHeaders(c *gin.Context, user generated.User) {

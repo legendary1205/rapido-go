@@ -104,10 +104,20 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 		api.GET("/settings/integrations", requireSudo, h.handleGetIntegrationSettings)
 		api.PUT("/settings/integrations", requireSudo, h.handleUpdateIntegrationSettings)
+
+		api.GET("/tickets", requireAdmin, h.handleListTickets)
+		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)
+		api.POST("/tickets/:id/messages", requireAdmin, h.handleAdminReplyTicket)
+		api.PUT("/tickets/:id", requireAdmin, h.handleUpdateTicketStatus)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)
 	r.GET("/sub/:token/:format", h.handleGetSubscriptionFormat)
+	r.GET("/sub/:token/info", h.handleSubscriptionInfo)
+	r.POST("/sub/:token/emergency", h.handleEmergencyRecharge)
+	r.GET("/sub/:token/tickets", h.handleListMyTickets)
+	r.POST("/sub/:token/tickets", h.handleCreateMyTicket)
+	r.POST("/sub/:token/tickets/:id/messages", h.handleReplyMyTicket)
 
 	return r
 }
