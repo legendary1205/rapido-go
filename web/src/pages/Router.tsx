@@ -32,6 +32,8 @@ const HostsPage = lazy(() => import("./HostsPage"));
 const AdminsPage = lazy(() => import("./AdminsPage"));
 const IntegrationsPage = lazy(() => import("./IntegrationsPage"));
 const UserTemplatesPage = lazy(() => import("./UserTemplatesPage"));
+const NodesPage = lazy(() => import("./NodesPage"));
+const MonitoringPage = lazy(() => import("./MonitoringPage"));
 
 export const router = createHashRouter([
   {
@@ -119,13 +121,38 @@ export const router = createHashRouter([
     loader: fetchAdminLoader,
   },
   {
+    path: "/nodes/",
+    element: (
+      <SudoOnly>
+        <Suspense fallback={null}>
+          <NodesPage />
+        </Suspense>
+      </SudoOnly>
+    ),
+    errorElement: <Login />,
+    loader: fetchAdminLoader,
+  },
+  {
+    path: "/monitoring/",
+    element: (
+      <SudoOnly>
+        <Suspense fallback={null}>
+          <MonitoringPage />
+        </Suspense>
+      </SudoOnly>
+    ),
+    errorElement: <Login />,
+    loader: fetchAdminLoader,
+  },
+  {
     path: "/login/",
     element: <Login />,
   },
   {
     // Catches any other hash path - old bookmarks to retired routes
-    // (Nodes/Monitoring/Settings from the previous dashboard, or a typo'd
-    // URL) land here instead of react-router's default error UI.
+    // (Settings, from the previous dashboard, or a typo'd URL) land here
+    // instead of react-router's default error UI. Nodes/Monitoring used to
+    // be in that boat too; both now have real Go-backed pages above.
     path: "*",
     element: <Navigate to="/" replace />,
   },

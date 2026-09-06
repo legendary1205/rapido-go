@@ -12,21 +12,34 @@ import {
   YAxis,
 } from "recharts";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { useSystemStatsQuery } from "hooks/useSystemStatsQuery";
 import { useSystemUsageHistoryQuery } from "hooks/useSystemUsageHistoryQuery";
+import { useMonitoringQuery } from "hooks/useMonitoringQuery";
+import { MonitoringHost } from "types/Monitoring";
 import { formatBytes, numberWithCommas } from "utils/formatByte";
+import { hostDisplayState, hostTone } from "utils/monitoringHost";
 import { Card, CardSubtitle, CardTitle } from "rapido-ui/Card";
-import { PulseDot } from "rapido-ui/Badge";
+import { PulseDot, BadgeTone } from "rapido-ui/Badge";
+import { Meter } from "rapido-ui/Monitoring";
 import "rapido-ui/tailwind.css";
 
-// `FleetStatus`/`FleetHealth` (the two node-monitoring sections) and this
-// page's own private QueryClientProvider are the only things removed versus
-// the old OverviewNew.tsx - both needed GET /monitoring, which needs a
-// node-reporting phase that hasn't landed yet (see the plan's context). The
-// private QueryClientProvider going away is also a real fix, not just a
-// simplification: it was its own cache that a write from the Users page
-// could never invalidate, so Overview's numbers only ever updated on its own
-// 10s poll instead of immediately after a create/delete.
+// `FleetStatus`/`FleetHealth` (the two node-monitoring sections below) were
+// the only things this page ever dropped versus the old (Python-backed)
+// dashboard's own OverviewNew.tsx - both needed GET /monitoring, which
+// needed a node-reporting phase that hadn't landed yet at the time. That
+// phase is done now (internal/httpapi/monitoring.go), so both are
+// reinstated here, reading from the exact same useMonitoringQuery() cache
+// entry MonitoringPage's own cards read (hooks/useMonitoringQuery.ts) - one
+// shared 30s poller for both pages, not two independent ones asking the
+// backend for the same snapshot.
+//
+// This page's own private QueryClientProvider is NOT coming back, though:
+// it used to be its own cache that nothing else could invalidate, so a write
+// from the Users page (create/delete user) could never update Overview's
+// stats - they only ever refreshed on this page's own poll. The single
+// app-wide queryClient (utils/queryClient.ts) fixes that outright, and stays
+// fixed with the fleet sections restored.
 const STATUS_COLORS: Record<string, string> = {
   active: "#34d399",
   on_hold: "#facc15",
@@ -76,6 +89,107 @@ const StatCard: FC<{ label: string; value: string }> = ({ label, value }) => (
   </Card>
 );
 
+const FleetChip: FC<{ host: MonitoringHost }> = ({ host }) => {
+  const { t } = useTranslation();
+  const tone: BadgeTone = hostTone(host);
+  const state = hostDisplayState(host);
+
+  return (
+    <div className="flex shrink-0 items-center gap-2.5 rounded-lg border border-rapido-border bg-rapido-raised px-3 py-2">
+      <PulseDot tone={tone} live={state === "healthy"} />
+      <div className="min-w-0">
+        <div className="truncate text-xs font-medium text-rapido-text">{host.name}</div>
+        <div className="text-[11px] tabular-nums text-rapido-muted" dir="ltr">
+          {state === "no-data"
+            ? t("rapido.monitoring.unreachable")
+            : `${host.connections ?? "—"} ${t("rapido.monitoring.connections")}`}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FleetStatus: FC = () => {
+  const { t } = useTranslation();
+  const { data: snap } = useMonitoringQuery();
+  const hosts = snap?.hosts ?? [];
+
+  return (
+    <Card className="flex min-w-0 flex-col">
+      <CardSubtitle>{t("rapido.fleetStatus")}</CardSubtitle>
+      {hosts.length === 0 ? (
+        <div className="mt-3 text-sm text-rapido-muted">
+          {t("rapido.tickets.loading")}
+        </div>
+      ) : (
+        <div className="mt-3 flex gap-2.5 overflow-x-auto pb-1">
+          {hosts.map((h) => (
+            <FleetChip key={h.node_id ?? "panel"} host={h} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+};
+
+const NodeResourceCard: FC<{ host: MonitoringHost }> = ({ host }) => {
+  const { t } = useTranslation();
+  const tone: BadgeTone = hostTone(host);
+  const state = hostDisplayState(host);
+
+  return (
+    <Card className="min-w-0">
+      <div className="flex items-center gap-2">
+        <PulseDot tone={tone} live={state === "healthy"} />
+        <span className="truncate text-sm font-medium text-rapido-text">{host.name}</span>
+      </div>
+      {state === "no-data" ? (
+        <div className="mt-3 text-xs text-rapido-muted">{t("rapido.monitoring.noAgent")}</div>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2">
+          <Meter label={t("rapido.monitoring.cpu")} value={host.cpu_percent} />
+          <Meter label={t("rapido.monitoring.memory")} value={host.mem_percent} />
+          <Meter label={t("rapido.monitoring.disk")} value={host.disk_percent} />
+        </div>
+      )}
+    </Card>
+  );
+};
+
+// Reads from the exact same GET /monitoring snapshot as FleetStatus above -
+// same query key (useMonitoringQuery), so react-query serves this from cache
+// instead of a second request. FleetStatus is the at-a-glance strip (is
+// everything up); this is the layer under it (how loaded is each one),
+// which is why it skips the sparkline history and tunnel badges
+// rapido-ui/Monitoring.tsx's own cards show - that level of detail is a
+// click away, not a second copy of it here.
+const FleetHealth: FC = () => {
+  const { t } = useTranslation();
+  const { data: snap } = useMonitoringQuery();
+  const hosts = snap?.hosts ?? [];
+
+  if (hosts.length === 0) return null;
+
+  return (
+    <Card className="mt-6 min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <CardTitle>{t("rapido.resourceStatus")}</CardTitle>
+          <CardSubtitle>{t("rapido.resourceStatusDesc")}</CardSubtitle>
+        </div>
+        <Link to="/monitoring/" className="text-xs text-rapido-accent hover:underline">
+          {t("rapido.monitoring.nav")}
+        </Link>
+      </div>
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {hosts.map((h) => (
+          <NodeResourceCard key={h.node_id ?? "panel"} host={h} />
+        ))}
+      </div>
+    </Card>
+  );
+};
+
 const OverviewContent: FC = () => {
   const { t } = useTranslation();
 
@@ -111,12 +225,18 @@ const OverviewContent: FC = () => {
       <h1 className="mb-1 text-2xl font-bold">{t("rapido.overview")}</h1>
       <p className="mb-6 text-sm text-rapido-muted">{t("rapido.overviewSubtitle")}</p>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <HeroStat
           label={t("rapido.onlineNow")}
           value={statsLoading ? "…" : numberWithCommas(stats?.online_users ?? 0) ?? "0"}
           sub={t("rapido.activeLast24h")}
         />
+        <div className="lg:col-span-2">
+          <FleetStatus />
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label={t("rapido.totalUsers")}
           value={statsLoading ? "…" : numberWithCommas(stats?.total_user ?? 0) ?? "0"}
@@ -125,9 +245,6 @@ const OverviewContent: FC = () => {
           label={t("status.active")}
           value={statsLoading ? "…" : numberWithCommas(stats?.users_active ?? 0) ?? "0"}
         />
-      </div>
-
-      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label={t("dataUsage")}
           value={statsLoading ? "…" : String(formatBytes(totalDataUsage))}
@@ -224,6 +341,8 @@ const OverviewContent: FC = () => {
           </div>
         </Card>
       </div>
+
+      <FleetHealth />
     </div>
   );
 };

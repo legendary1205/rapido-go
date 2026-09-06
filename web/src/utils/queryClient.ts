@@ -25,4 +25,15 @@ export const queryKeys = {
   systemUsageHistory: (days: number) =>
     ["system-usage-history", days] as const,
   integrationSettings: ["integration-settings"] as const,
+  nodes: ["nodes"] as const,
+  nodesUsage: (start?: string, end?: string) =>
+    ["nodes-usage", start ?? null, end ?? null] as const,
+  // Shared verbatim between MonitoringPage's own cards and OverviewNew.tsx's
+  // reinstated fleet sections - same key, so react-query serves both from
+  // one cache entry/poller instead of two independent ones (the exact bug
+  // OverviewNew.tsx's own private QueryClientProvider used to cause, see
+  // that file's history).
+  monitoring: ["monitoring"] as const,
+  monitoringHistory: (nodeId: number | null) =>
+    ["monitoring-history", nodeId] as const,
 };

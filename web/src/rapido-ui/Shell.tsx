@@ -10,6 +10,8 @@ import {
   PuzzlePieceIcon,
   DocumentDuplicateIcon,
   TicketIcon,
+  ServerStackIcon,
+  ChartBarIcon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -38,17 +40,19 @@ const NavLink: FC<{ href: string; active?: boolean; icon: FC<{ className?: strin
   </Link>
 );
 
-// This phase's whole page list: Nodes/Monitoring/Settings from the old
-// dashboard aren't deferred, they simply don't exist yet - node-side live
-// monitoring needs a reporting phase that hasn't landed, and Core Config
-// doesn't map onto this architecture the same way (see the plan's own
-// context on why). Tickets is no longer in that boat: GET/POST/PUT
-// /api/tickets* are now implemented (internal/httpapi/tickets.go).
+// This phase's whole page list. Settings (Core Config) is the one page from
+// the old dashboard still missing - it doesn't map onto this architecture
+// the same way (see the plan's own context on why). Nodes and Monitoring
+// used to be in that boat too (node-side reporting hadn't landed yet); both
+// now have real Go-backed pages (internal/httpapi/node.go,
+// internal/httpapi/monitoring.go).
 export type RapidoNavKey =
   | "overview"
   | "users"
   | "tickets"
   | "hosts"
+  | "nodes"
+  | "monitoring"
   | "admins"
   | "templates"
   | "integrations";
@@ -67,6 +71,14 @@ const NAV_ITEMS: {
   // backend already scopes the list to the users they own.
   { key: "tickets", href: "/tickets/", labelKey: "rapido.tickets.nav", icon: TicketIcon },
   { key: "hosts", href: "/hosts/", labelKey: "rapido.hosts.nav", icon: GlobeAltIcon, sudoOnly: true },
+  { key: "nodes", href: "/nodes/", labelKey: "rapido.nodes.nav", icon: ServerStackIcon, sudoOnly: true },
+  {
+    key: "monitoring",
+    href: "/monitoring/",
+    labelKey: "rapido.monitoring.nav",
+    icon: ChartBarIcon,
+    sudoOnly: true,
+  },
   { key: "admins", href: "/admins/", labelKey: "rapido.admins.nav", icon: ShieldCheckIcon, sudoOnly: true },
   // Not sudoOnly: every admin can use their own reusable presets, not just
   // sudo - the backend's own GET /api/user_template is requireAdmin, not
