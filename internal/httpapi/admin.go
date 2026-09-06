@@ -65,18 +65,22 @@ func validateDiscordWebhook(v *string) error {
 func (h *Handler) handleLogin(c *gin.Context) {
 	username := c.PostForm("username")
 	password := c.PostForm("password")
+	ip := clientIP(c)
+	ctx := c.Request.Context()
 
 	var isSudo bool
 	switch {
 	case h.sudoUsername != "" && username == h.sudoUsername && password == h.sudoPassword:
 		isSudo = true
 	default:
-		admin, err := h.store.Queries.GetAdminByUsername(c.Request.Context(), username)
+		admin, err := h.store.Queries.GetAdminByUsername(ctx, username)
 		if err != nil {
+			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
 		if !auth.VerifyPassword(password, admin.HashedPassword) {
+			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
@@ -88,7 +92,27 @@ func (h *Handler) handleLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not issue token"})
 		return
 	}
+	if !contains(h.loginNotifyWhitelist, ip) {
+		h.reports.Login(ctx, username, ip, loginStatusSuccess)
+	}
 	c.JSON(http.StatusOK, gin.H{"access_token": token, "token_type": "bearer"})
+}
+
+// loginStatusSuccess/Failed mirror app/utils/report.py's login() wrapper:
+// "✅ Success"/"❌ Failed" text, not a bare boolean, since that's what
+// ends up rendered in the notification.
+const (
+	loginStatusSuccess = "✅ Success"
+	loginStatusFailed  = "❌ Failed"
+)
+
+func contains(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // handleGetCurrentAdmin implements GET /api/admin.

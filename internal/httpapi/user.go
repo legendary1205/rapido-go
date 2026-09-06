@@ -16,7 +16,9 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/kirbot"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
+	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/subscription"
 )
 
@@ -125,6 +127,16 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 		return
 	}
 
+	// KirBot per-admin active-user cap (app/kirbot/manager.py's get_users_limit,
+	// enforced the same way as app/routers/user.py's add_user): only checked
+	// for non-sudo admins, and only if the bot actually returns a limit - a
+	// disabled/unreachable bot or an uncapped reseller never blocks creation.
+	if !identity.IsSudo {
+		if ok := h.enforceKirbotUserLimit(c, identity.Username, identity.AdminID); !ok {
+			return
+		}
+	}
+
 	status := statusActive
 	if req.Status != nil && *req.Status != "" {
 		if !validCreateStatus[*req.Status] {
@@ -228,6 +240,10 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "user created but could not be read back"})
 		return
 	}
+	// A user always belongs to the admin who created it (crud.create_user
+	// sets admin_id to the caller's own id) - the bootstrap sudo account has
+	// no admins row at all, so its created users have no owning admin.
+	h.reports.UserCreated(ctx, toUserSummary(resp), identity.Username, h.resolveAdminRef(ctx, dbuser.AdminID))
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -312,6 +328,7 @@ func (h *Handler) loadAuthorizedUser(c *gin.Context) (generated.User, bool) {
 // status-recompute branches on data_limit/expire changes (see
 // D:\MARZBANUPTIMEZE\app\db\crud.py:642-799).
 func (h *Handler) handleModifyUser(c *gin.Context) {
+	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
 		return
@@ -346,6 +363,16 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// KirBot per-admin active-user cap, enforced only when this edit would
+	// reactivate a disabled user (app/routers/user.py's modify_user's exact
+	// 4-condition guard) - unlike Python, the HTTP call to KirBot itself is
+	// only made when this guard could possibly matter, not on every edit.
+	if !identity.IsSudo && dbuser.Status == statusDisabled && req.Status != nil && (*req.Status == statusActive || *req.Status == statusOnHold) {
+		if ok := h.enforceKirbotUserLimit(c, identity.Username, identity.AdminID); !ok {
+			return
+		}
+	}
 
 	settingsByType, err := resolveProxySettings(req.Proxies)
 	if err != nil {
@@ -462,6 +489,11 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "user updated but could not be read back"})
 		return
 	}
+	userAdmin := h.resolveAdminRef(ctx, updated.AdminID)
+	h.reports.UserUpdated(ctx, toUserSummary(resp), identity.Username, userAdmin)
+	if updated.Status != dbuser.Status {
+		h.reports.StatusChange(ctx, updated.Username, updated.Status, userAdmin)
+	}
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -554,11 +586,16 @@ func (h *Handler) reconcileExcludedInbounds(ctx context.Context, userID int32, w
 
 // handleDeleteUser implements DELETE /api/user/:username.
 func (h *Handler) handleDeleteUser(c *gin.Context) {
+	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
 		return
 	}
-	if err := h.store.Queries.DeleteUser(c.Request.Context(), dbuser.ID); err != nil {
+	ctx := c.Request.Context()
+	// Resolved before the delete, not after - the row (and its admin_id)
+	// won't exist to look up once DeleteUser succeeds.
+	userAdmin := h.resolveAdminRef(ctx, dbuser.AdminID)
+	if err := h.store.Queries.DeleteUser(ctx, dbuser.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete user"})
 		return
 	}
@@ -566,6 +603,7 @@ func (h *Handler) handleDeleteUser(c *gin.Context) {
 	// proxies/exclude_inbounds_association rows, but their proxy IDs are a
 	// serial PK that's never reused, so any leftover cache entry keyed on
 	// one just expires unread via its TTL - never served to anyone.
+	h.reports.UserDeleted(ctx, dbuser.Username, identity.Username, userAdmin)
 	c.JSON(http.StatusOK, gin.H{"detail": "User removed successfully"})
 }
 
@@ -574,6 +612,7 @@ func (h *Handler) handleDeleteUser(c *gin.Context) {
 // used_traffic, reactivate unless expired/disabled, and cancel any pending
 // next_plan.
 func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
+	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
 		return
@@ -610,6 +649,7 @@ func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
 		return
 	}
+	h.reports.UserDataUsageReset(ctx, updated.Username, identity.Username, h.resolveAdminRef(ctx, updated.AdminID))
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -619,6 +659,7 @@ func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
 // here yet. No cache invalidation needed: proxies.settings is never cached
 // (see reconcileProxies), so the rotated secret is visible immediately.
 func (h *Handler) handleRevokeUserSub(c *gin.Context) {
+	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
 		return
@@ -652,6 +693,7 @@ func (h *Handler) handleRevokeUserSub(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
 		return
 	}
+	h.reports.UserSubscriptionRevoked(ctx, updated.Username, identity.Username, h.resolveAdminRef(ctx, updated.AdminID))
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -885,4 +927,77 @@ func timestamptzFromPtrTime(v *time.Time) pgtype.Timestamptz {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// toUserSummary narrows a userResponseDTO down to what internal/report's
+// message builders need - deliberately DB/DTO-free on the report package's
+// side, matching internal/subscription/vars.go's UserInfo convention.
+func toUserSummary(u userResponseDTO) report.UserSummary {
+	proxies := make([]string, 0, len(u.Proxies))
+	for protocol := range u.Proxies {
+		proxies = append(proxies, protocol)
+	}
+	return report.UserSummary{
+		Username: u.Username, DataLimit: u.DataLimit, Expire: u.Expire,
+		Proxies: proxies, HasNextPlan: u.NextPlan != nil, DataLimitResetStrategy: u.DataLimitResetStrategy,
+	}
+}
+
+func toAdminRef(a generated.Admin) report.AdminRef {
+	ref := report.AdminRef{Username: a.Username}
+	if a.TelegramID.Valid {
+		ref.TelegramID = &a.TelegramID.Int64
+	}
+	if a.DiscordWebhook.Valid {
+		ref.DiscordWebhook = &a.DiscordWebhook.String
+	}
+	return ref
+}
+
+// resolveAdminRef looks up the owning admin for a report call, using the
+// same cached admin read every other hot path in this package already
+// relies on. Returns nil for a NULL admin_id (the bootstrap sudo account
+// owns no admins row, so users it creates have no owning admin) or if the
+// lookup fails - a missing admin ref just means the notification skips the
+// per-admin DM/webhook, never that the notification itself is dropped.
+func (h *Handler) resolveAdminRef(ctx context.Context, adminID pgtype.Int4) *report.AdminRef {
+	if !adminID.Valid {
+		return nil
+	}
+	admin, err := h.store.CachedGetAdminByID(ctx, adminID.Int32)
+	if err != nil {
+		return nil
+	}
+	ref := toAdminRef(admin)
+	return &ref
+}
+
+// enforceKirbotUserLimit mirrors the shared guard in
+// app/routers/user.py's add_user/modify_user: ask KirBot for this admin's
+// active-user cap, and if it returns one, reject when the admin is already
+// at or over it. Returns false (response already written) when the request
+// should stop here.
+func (h *Handler) enforceKirbotUserLimit(c *gin.Context, adminUsername string, adminID int32) bool {
+	ctx := c.Request.Context()
+	settings, _, err := h.resolveIntegrationSettings(c)
+	if err != nil {
+		// A settings-read failure here must not block user creation/editing -
+		// KirBot is advisory, not a hard dependency.
+		return true
+	}
+	limit := h.kirbot.GetUsersLimit(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, adminUsername)
+	if limit == nil {
+		return true
+	}
+	count, err := h.store.Queries.CountUsers(ctx, generated.CountUsersParams{
+		AdminID: pgInt4FromInt(int(adminID)), Statuses: []string{statusActive, statusOnHold},
+	})
+	if err != nil {
+		return true
+	}
+	if count >= int64(*limit) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "User limit reached. Please contact your administrator."})
+		return false
+	}
+	return true
 }

@@ -2,8 +2,13 @@ package reviewjob
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +16,43 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/discord"
+	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/report"
+	"github.com/legendary1205/rapido-go/internal/telegram"
 )
+
+// captureServer is a real local HTTP server standing in for a Discord
+// webhook endpoint - matching internal/report/report_test.go's and
+// internal/httpapi/notifications_test.go's identical helper (not shared
+// across packages, since each is a small, self-contained test fixture).
+type captureServer struct {
+	*httptest.Server
+	mu       sync.Mutex
+	requests []string
+}
+
+func newCaptureServer(t *testing.T) *captureServer {
+	t.Helper()
+	s := &captureServer{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		s.requests = append(s.requests, string(body))
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *captureServer) bodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.requests))
+	copy(out, s.requests)
+	return out
+}
 
 // testHarness bundles the generated query wrapper with the raw pool - a
 // couple of test fixtures below need to poke columns (used_traffic,
@@ -83,11 +124,32 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+// testDispatcher builds a real report.Dispatcher (no mocks, matching this
+// project's testing convention) against the test DB's real (freshly
+// migrated, all-NULL) integration_settings row. With no env vars or DB
+// overrides set, every Telegram/Discord call inside it is a documented
+// no-op - see internal/report/report_test.go for tests that actually
+// exercise notification delivery against local httptest.Server stand-ins.
+func testDispatcher(q *generated.Queries) *report.Dispatcher {
+	settingsFn := func(ctx context.Context) (integrationsettings.Values, error) {
+		row, err := q.GetIntegrationSettings(ctx)
+		if err != nil {
+			return integrationsettings.Values{}, err
+		}
+		return integrationsettings.Resolve(row, integrationsettings.Values{}), nil
+	}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	return report.New(report.NotifyFlags{
+		StatusChange: true, UserCreated: true, UserUpdated: true, UserDeleted: true,
+		UserDataUsedReset: true, UserSubRevoked: true, Login: true,
+	}, settingsFn, telegram.NewSender(httpClient, ""), discord.NewSender(httpClient), testLogger())
+}
+
 func TestReviewFlipsLimitedUser(t *testing.T) {
 	h := newTestHarness(t)
 	u := h.createTestUser(t, "limited_user", "active", 1000, 1000, 0)
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, err := h.q.GetUserByID(context.Background(), u.ID)
@@ -107,7 +169,7 @@ func TestReviewFlipsExpiredUser(t *testing.T) {
 	past := time.Now().Add(-time.Hour).Unix()
 	u := h.createTestUser(t, "expired_user", "active", 0, 0, past)
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
@@ -123,7 +185,7 @@ func TestReviewIgnoresZeroDataLimitAndExpire(t *testing.T) {
 	h := newTestHarness(t)
 	u := h.createTestUser(t, "unlimited_user", "active", 0, 999999999, 0)
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
@@ -142,7 +204,7 @@ func TestReviewFiresNextPlanOnFireOnEither(t *testing.T) {
 		t.Fatalf("UpsertNextPlan: %v", err)
 	}
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
@@ -171,7 +233,7 @@ func TestReviewDoesNotFireNextPlanWhenOnlyOneConditionAndFireOnEitherFalse(t *te
 		t.Fatalf("UpsertNextPlan: %v", err)
 	}
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
@@ -188,7 +250,7 @@ func TestReviewActivatesOnHoldUserWhoConnected(t *testing.T) {
 	u := h.createTestUser(t, "onhold_connected", "on_hold", 0, 0, 0)
 	h.execRaw(t, "UPDATE users SET on_hold_expire_duration = 86400, online_at = now() WHERE id = $1", u.ID)
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
@@ -208,11 +270,69 @@ func TestReviewLeavesOnHoldUserWithNoActivityAlone(t *testing.T) {
 	u := h.createTestUser(t, "onhold_waiting", "on_hold", 0, 0, 0)
 	h.execRaw(t, "UPDATE users SET on_hold_expire_duration = 86400, on_hold_timeout = now() + interval '1 day' WHERE id = $1", u.ID)
 
-	if err := review(context.Background(), h.q, testLogger()); err != nil {
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
 		t.Fatalf("review: %v", err)
 	}
 	got, _ := h.q.GetUserByID(context.Background(), u.ID)
 	if got.Status != "on_hold" {
 		t.Errorf("status = %q, want still on_hold", got.Status)
+	}
+}
+
+// setDiscordWebhook points the shared integration_settings row's global
+// webhook at a local capture server - the DB-level equivalent of
+// PUT /api/settings/integrations, since this package has no HTTP layer of
+// its own to drive that endpoint through.
+func (h *testHarness) setDiscordWebhook(t *testing.T, url string) {
+	t.Helper()
+	h.execRaw(t, "UPDATE integration_settings SET discord_webhook_url = $1 WHERE id = (SELECT id FROM integration_settings ORDER BY id LIMIT 1)", url)
+	t.Cleanup(func() {
+		h.execRaw(t, "UPDATE integration_settings SET discord_webhook_url = NULL WHERE id = (SELECT id FROM integration_settings ORDER BY id LIMIT 1)")
+	})
+}
+
+func TestStatusChangeFiresReportOnLimitedTransition(t *testing.T) {
+	h := newTestHarness(t)
+	webhook := newCaptureServer(t)
+	h.setDiscordWebhook(t, webhook.URL)
+	h.createTestUser(t, "reported_limited_user", "active", 1000, 1000, 0)
+
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	bodies := webhook.bodies()
+	if len(bodies) != 1 {
+		t.Fatalf("discord webhook received %d requests, want 1 (the limited status_change)", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "reported_limited_user") {
+		t.Errorf("discord payload missing username: %s", bodies[0])
+	}
+}
+
+func TestStatusChangeFiresReportOnNextPlanFire(t *testing.T) {
+	h := newTestHarness(t)
+	webhook := newCaptureServer(t)
+	h.setDiscordWebhook(t, webhook.URL)
+	u := h.createTestUser(t, "reported_plan_user", "active", 1000, 1000, 0)
+	if _, err := h.q.UpsertNextPlan(context.Background(), generated.UpsertNextPlanParams{
+		UserID: u.ID, DataLimit: 5000, Expire: pgInt4(2592000), AddRemainingTraffic: false, FireOnEither: true,
+	}); err != nil {
+		t.Fatalf("UpsertNextPlan: %v", err)
+	}
+
+	if err := review(context.Background(), h.q, testDispatcher(h.q), testLogger()); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	bodies := webhook.bodies()
+	if len(bodies) != 1 {
+		t.Fatalf("discord webhook received %d requests, want 1 (the AutoReset report)", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "reported_plan_user") {
+		t.Errorf("discord payload missing username: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[0], "AutoReset") {
+		t.Errorf("discord payload missing AutoReset marker: %s", bodies[0])
 	}
 }

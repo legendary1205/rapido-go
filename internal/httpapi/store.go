@@ -20,6 +20,11 @@ const (
 	adminCacheTTL            = 15 * time.Minute
 	inboundCacheTTL          = 6 * time.Hour
 	excludedInboundsCacheTTL = 24 * time.Hour
+	// integrationSettingsCacheTTL is a safety net only - the settings row is
+	// a singleton that handleUpdateIntegrationSettings explicitly
+	// invalidates on every write, same as every other Cached*/Invalidate*
+	// pair here.
+	integrationSettingsCacheTTL = 1 * time.Hour
 )
 
 type Store struct {
@@ -115,4 +120,18 @@ func (s *Store) CachedListExcludedInboundTags(ctx context.Context, proxyID int32
 
 func (s *Store) InvalidateExcludedInbounds(ctx context.Context, proxyID int32) error {
 	return s.Cache.Del(ctx, cache.ExcludedInboundTagsKey(proxyID))
+}
+
+// CachedGetIntegrationSettings and InvalidateIntegrationSettings cache the
+// single integration_settings row (see internal/integrationsettings for the
+// env-fallback merge applied on top of it) under the shared "settings" key
+// namespace declared in internal/cache/cache.go, previously unused.
+func (s *Store) CachedGetIntegrationSettings(ctx context.Context) (generated.IntegrationSetting, error) {
+	return cache.GetOrSet(ctx, s.Cache, cache.SettingsKey(), integrationSettingsCacheTTL, func(ctx context.Context) (generated.IntegrationSetting, error) {
+		return s.Queries.GetIntegrationSettings(ctx)
+	})
+}
+
+func (s *Store) InvalidateIntegrationSettings(ctx context.Context) error {
+	return s.Cache.Del(ctx, cache.SettingsKey())
 }

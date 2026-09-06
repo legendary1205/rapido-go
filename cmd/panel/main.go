@@ -27,8 +27,13 @@ import (
 	"github.com/legendary1205/rapido-go/internal/certs"
 	"github.com/legendary1205/rapido-go/internal/config"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/discord"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
+	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/reviewjob"
+	"github.com/legendary1205/rapido-go/internal/telegram"
 )
 
 func main() {
@@ -79,12 +84,36 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	store := httpapi.NewStore(pool, redisClient)
+
+	envDefaults := integrationsettings.Values{
+		KirbotSecret: cfg.KirbotSecret, KirbotURL: cfg.KirbotURL, KirbotLicense: cfg.KirbotLicense,
+		TelegramAPIToken: cfg.TelegramAPIToken, TelegramAdminIDs: cfg.TelegramAdminIDs, TelegramProxyURL: cfg.TelegramProxyURL,
+		TelegramLoggerChannelID: cfg.TelegramLoggerChannelID, TelegramLoggerTopicID: cfg.TelegramLoggerTopicID,
+		TelegramDefaultVlessFlow: cfg.TelegramDefaultVlessFlow,
+		WebhookAddresses:         cfg.WebhookAddresses, WebhookSecret: cfg.WebhookSecret, DiscordWebhookURL: cfg.DiscordWebhookURL,
+	}
+	settingsFn := func(ctx context.Context) (integrationsettings.Values, error) {
+		row, err := store.CachedGetIntegrationSettings(ctx)
+		if err != nil {
+			return integrationsettings.Values{}, err
+		}
+		return integrationsettings.Resolve(row, envDefaults), nil
+	}
+	notifyHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	dispatcher := report.New(report.NotifyFlags{
+		StatusChange: cfg.NotifyStatusChange, UserCreated: cfg.NotifyUserCreated, UserUpdated: cfg.NotifyUserUpdated,
+		UserDeleted: cfg.NotifyUserDeleted, UserDataUsedReset: cfg.NotifyUserDataUsedReset,
+		UserSubRevoked: cfg.NotifyUserSubRevoked, Login: cfg.NotifyLogin,
+	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
+	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 3 * time.Second})
+
 	if cfg.Role == config.RoleBackend {
-		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, logger)
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, logger)
 	}
 
-	store := httpapi.NewStore(pool, redisClient)
-	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix, logger)
+	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
+		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 
 	srv := &http.Server{
@@ -125,7 +154,7 @@ func run(logger *slog.Logger) error {
 // as long as its holding connection does, and a pool connection can be
 // silently recycled or closed at any time, which would release the lock
 // out from under this process without it noticing.
-func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, logger *slog.Logger) {
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, logger *slog.Logger) {
 	const retryInterval = 10 * time.Second
 	for {
 		select {
@@ -156,7 +185,7 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		}
 
 		logger.Info("backend singleton: acquired advisory lock, running background jobs")
-		reviewjob.Run(ctx, queries, logger, 10*time.Second)
+		reviewjob.Run(ctx, queries, dispatcher, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -
 		// release the lock and let the deferred loop exit via ctx.Done() above.

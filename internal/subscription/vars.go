@@ -50,16 +50,16 @@ func BuildVariables(u UserInfo, serverIP string) Variables {
 	v := Variables{
 		"SERVER_IP":  serverIP,
 		"USERNAME":   u.Username,
-		"DATA_USAGE": readableSize(u.UsedTraffic),
+		"DATA_USAGE": ReadableSize(u.UsedTraffic),
 	}
 
 	if u.DataLimit != nil && *u.DataLimit > 0 {
-		v["DATA_LIMIT"] = readableSize(*u.DataLimit)
+		v["DATA_LIMIT"] = ReadableSize(*u.DataLimit)
 		left := *u.DataLimit - u.UsedTraffic
 		if left < 0 {
 			left = 0
 		}
-		v["DATA_LEFT"] = readableSize(left)
+		v["DATA_LEFT"] = ReadableSize(left)
 		v["USAGE_PERCENTAGE"] = fmt.Sprintf("%.2f", math.Min(100, float64(u.UsedTraffic)*100/float64(*u.DataLimit)))
 	} else {
 		v["DATA_LIMIT"] = "∞"
@@ -139,9 +139,9 @@ func formatTimeLeft(d time.Duration) string {
 	return out
 }
 
-// readableSize mirrors app/utils/system.py's readable_size: binary units,
+// ReadableSize mirrors app/utils/system.py's readable_size: binary units,
 // two decimals.
-func readableSize(bytes int64) string {
+func ReadableSize(bytes int64) string {
 	units := []string{"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"}
 	size := float64(bytes)
 	for _, unit := range units {

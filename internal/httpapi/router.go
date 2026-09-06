@@ -8,23 +8,34 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/legendary1205/rapido-go/internal/auth"
+	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/report"
 )
 
 type Handler struct {
-	store        *Store
-	issuer       *auth.TokenIssuer
-	sudoUsername string
-	sudoPassword string
-	jwtSecret    []byte
-	publicIP     string
-	subURLPrefix string
-	logger       *slog.Logger
+	store                *Store
+	issuer               *auth.TokenIssuer
+	sudoUsername         string
+	sudoPassword         string
+	jwtSecret            []byte
+	publicIP             string
+	subURLPrefix         string
+	envDefaults          integrationsettings.Values
+	reports              *report.Dispatcher
+	kirbot               *kirbot.Client
+	loginNotifyWhitelist []string
+	logger               *slog.Logger
 }
 
-func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte, publicIP, subURLPrefix string, logger *slog.Logger) *Handler {
+func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
+	publicIP, subURLPrefix string, envDefaults integrationsettings.Values, reports *report.Dispatcher,
+	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, logger *slog.Logger) *Handler {
 	return &Handler{
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
-		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix, logger: logger,
+		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
+		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
+		loginNotifyWhitelist: loginNotifyWhitelist, logger: logger,
 	}
 }
 
@@ -84,6 +95,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/nodes", requireSudo, h.handleListNodes)
 		api.GET("/node/:id", requireSudo, h.handleGetNode)
 		api.DELETE("/node/:id", requireSudo, h.handleDeleteNode)
+
+		api.GET("/settings/integrations", requireSudo, h.handleGetIntegrationSettings)
+		api.PUT("/settings/integrations", requireSudo, h.handleUpdateIntegrationSettings)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)

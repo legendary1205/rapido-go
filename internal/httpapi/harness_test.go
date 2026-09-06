@@ -20,6 +20,11 @@ import (
 	"github.com/legendary1205/rapido-go/internal/cache"
 	"github.com/legendary1205/rapido-go/internal/certs"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/discord"
+	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/report"
+	"github.com/legendary1205/rapido-go/internal/telegram"
 )
 
 const (
@@ -38,10 +43,35 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 
 	store := NewStore(pool, cacheClient)
 	ensureTestCA(t, store)
+	resetIntegrationSettings(t, pool)
 	testSecret := []byte("test-secret")
 	issuer := auth.NewTokenIssuer(testSecret, time.Hour)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "", logger)
+
+	// Real Dispatcher/kirbot.Client, same as production - with no test env
+	// vars and a freshly-reset (all-NULL) settings row, every method on
+	// both is a documented no-op (see internal/report/report_test.go), so
+	// existing tests get zero new outbound HTTP calls by default. A test
+	// that wants to exercise notifications sets TELEGRAM_*/DISCORD_*/
+	// KIRBOT_* via PUT /api/settings/integrations, typically pointing at a
+	// local httptest.Server.
+	envDefaults := integrationsettings.Values{}
+	settingsFn := func(ctx context.Context) (integrationsettings.Values, error) {
+		row, err := store.CachedGetIntegrationSettings(ctx)
+		if err != nil {
+			return integrationsettings.Values{}, err
+		}
+		return integrationsettings.Resolve(row, envDefaults), nil
+	}
+	notifyHTTPClient := &http.Client{Timeout: 5 * time.Second}
+	dispatcher := report.New(report.NotifyFlags{
+		StatusChange: true, UserCreated: true, UserUpdated: true, UserDeleted: true,
+		UserDataUsedReset: true, UserSubRevoked: true, Login: true,
+	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
+	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 5 * time.Second})
+
+	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "",
+		envDefaults, dispatcher, kirbotClient, nil, logger)
 	router := NewRouter(handler, logger, []string{"*"})
 
 	token, err := issuer.Issue(testSudoUsername, true)
@@ -89,6 +119,23 @@ func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates, nodes RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
+	}
+}
+
+// resetIntegrationSettings clears the integration_settings singleton row
+// back to every column NULL ("use env defaults") before each test - same
+// idempotent-reset treatment as ensureTestCA gives the tls row, since this
+// is also a seeded singleton a TRUNCATE would need to re-seed rather than
+// just clear.
+func resetIntegrationSettings(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `UPDATE integration_settings SET
+		kirbot_secret = NULL, kirbot_url = NULL, kirbot_license = NULL,
+		telegram_api_token = NULL, telegram_admin_ids = NULL, telegram_proxy_url = NULL,
+		telegram_logger_channel_id = NULL, telegram_logger_topic_id = NULL, telegram_default_vless_flow = NULL,
+		webhook_addresses = NULL, webhook_secret = NULL, discord_webhook_url = NULL, updated_at = NULL`)
+	if err != nil {
+		t.Fatalf("reset integration_settings: %v", err)
 	}
 }
 

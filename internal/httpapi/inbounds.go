@@ -9,7 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/kirbot"
 )
 
 // handleListInbounds implements GET /api/inbounds, grouped by protocol like
@@ -18,7 +20,8 @@ import (
 // node-agent phase syncs it from a live proxy core config for real - see
 // 00002_inbound_protocol.sql).
 func (h *Handler) handleListInbounds(c *gin.Context) {
-	rows, err := h.store.Queries.ListInbounds(c.Request.Context())
+	ctx := c.Request.Context()
+	rows, err := h.store.Queries.ListInbounds(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list inbounds"})
 		return
@@ -27,6 +30,21 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 	for _, r := range rows {
 		out[r.Protocol] = append(out[r.Protocol], r.Tag)
 	}
+
+	// KirBot inbound filtering (app/kirbot/manager.py's get_configs, called
+	// from app/routers/system.py's get_inbounds): a reseller only sees the
+	// inbounds their external bot allows. Sudo always sees everything -
+	// KirBot is never even called for a sudo admin.
+	identity := auth.CurrentIdentity(c)
+	if !identity.IsSudo {
+		settings, _, err := h.resolveIntegrationSettings(c)
+		if err == nil {
+			if filtered := h.kirbot.GetConfigs(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, identity.Username, out); len(filtered) > 0 {
+				out = filtered
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, out)
 }
 
