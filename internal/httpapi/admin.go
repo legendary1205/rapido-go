@@ -98,7 +98,7 @@ func (h *Handler) handleGetCurrentAdmin(c *gin.Context) {
 		c.JSON(http.StatusOK, adminDTO{Username: identity.Username, IsSudo: true})
 		return
 	}
-	admin, err := h.store.Queries.GetAdminByUsername(c.Request.Context(), identity.Username)
+	admin, err := h.store.CachedGetAdminByUsername(c.Request.Context(), identity.Username)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"detail": "Could not validate credentials"})
 		return
@@ -232,6 +232,10 @@ func (h *Handler) handleUpdateAdmin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not update admin"})
 		return
 	}
+	if err := h.store.InvalidateAdmin(c.Request.Context(), updated.ID, updated.Username); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate admin cache"})
+		return
+	}
 	c.JSON(http.StatusOK, toAdminDTO(updated))
 }
 
@@ -249,6 +253,10 @@ func (h *Handler) handleDeleteAdmin(c *gin.Context) {
 	}
 	if err := h.store.Queries.DeleteAdmin(c.Request.Context(), admin.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete admin"})
+		return
+	}
+	if err := h.store.InvalidateAdmin(c.Request.Context(), admin.ID, admin.Username); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate admin cache"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"detail": "Admin removed successfully"})
@@ -315,6 +323,10 @@ func (h *Handler) handleDeleteInactiveAdmins(c *gin.Context) {
 		}
 		if err := h.store.Queries.DeleteAdmin(c.Request.Context(), r.ID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not remove inactive admin"})
+			return
+		}
+		if err := h.store.InvalidateAdmin(c.Request.Context(), r.ID, r.Username); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate admin cache"})
 			return
 		}
 		usersRemoved += len(users)

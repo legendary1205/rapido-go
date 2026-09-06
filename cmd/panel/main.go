@@ -60,7 +60,7 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("connected to postgres")
 
-	redisClient := cache.New(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB)
+	redisClient := cache.New(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, logger)
 	defer redisClient.Close()
 	if err := redisClient.Ping(ctx); err != nil {
 		return err
@@ -83,7 +83,7 @@ func run(logger *slog.Logger) error {
 		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, logger)
 	}
 
-	store := httpapi.NewStore(pool)
+	store := httpapi.NewStore(pool, redisClient)
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 

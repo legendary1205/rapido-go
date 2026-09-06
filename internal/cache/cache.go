@@ -8,22 +8,25 @@ package cache
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 type Client struct {
-	rdb *redis.Client
+	rdb    *redis.Client
+	logger *slog.Logger
 }
 
-func New(addr, password string, db int) *Client {
+func New(addr, password string, db int, logger *slog.Logger) *Client {
 	return &Client{
 		rdb: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
 			DB:       db,
 		}),
+		logger: logger,
 	}
 }
 
@@ -59,7 +62,34 @@ const (
 	// backend-role process holds for as long as it's the active singleton -
 	// the Postgres equivalent of the current MySQL GET_LOCK() usage.
 	AdvisoryLockBackendSingleton int64 = 0x52415049444f01 // "RAPIDO" + role tag, arbitrary but stable
+
+	// Cache-aside namespaces for the Postgres reads on this project's
+	// hottest paths (admin resolution on nearly every request, the
+	// subscription-generation N+1) - see internal/httpapi/store.go for the
+	// Cached*/Invalidate* methods built on these. Deliberately separate
+	// names from nsHost/HostKey above: that one is the *node* metrics
+	// cache (a different table entirely), and colliding the naming with
+	// the VPN "hosts" table here would be a real bug waiting to happen.
+	nsAdminByUsername    = "rapido:admin:by_username"
+	nsAdminByID          = "rapido:admin:by_id"
+	nsInbound            = "rapido:inbound"
+	nsInboundTagsByProto = "rapido:inbound_tags"
+	nsInboundHosts       = "rapido:inbound_hosts"
+	nsExcludedInbounds   = "rapido:excluded_inbounds"
 )
+
+func AdminByUsernameKey(username string) string {
+	return fmt.Sprintf("%s:%s", nsAdminByUsername, username)
+}
+func AdminByIDKey(id int32) string      { return fmt.Sprintf("%s:%d", nsAdminByID, id) }
+func InboundByTagKey(tag string) string { return fmt.Sprintf("%s:%s", nsInbound, tag) }
+func InboundTagsByProtocolKey(protocol string) string {
+	return fmt.Sprintf("%s:%s", nsInboundTagsByProto, protocol)
+}
+func InboundHostsKey(tag string) string { return fmt.Sprintf("%s:%s", nsInboundHosts, tag) }
+func ExcludedInboundTagsKey(proxyID int32) string {
+	return fmt.Sprintf("%s:%d", nsExcludedInbounds, proxyID)
+}
 
 func HostKey(nodeID string) string { return fmt.Sprintf("%s:%s", nsHost, nodeID) }
 

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -165,14 +164,14 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 		tags := req.Inbounds[protocol]
 		if len(tags) > 0 {
 			for _, tag := range tags {
-				if _, err := h.store.Queries.GetInboundByTag(ctx, tag); err != nil {
+				if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
 					c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": fmt.Sprintf("Inbound %s doesn't exist", tag)})
 					return
 				}
 			}
 			resolvedInbounds[protocol] = tags
 		} else {
-			known, err := h.store.Queries.ListInboundTagsByProtocol(ctx, protocol)
+			known, err := h.store.CachedListInboundTagsByProtocol(ctx, protocol)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not resolve inbounds"})
 				return
@@ -245,7 +244,7 @@ func (h *Handler) createProxyForUser(ctx context.Context, userID int32, protocol
 	if err != nil {
 		return fmt.Errorf("could not create %s proxy", protocol)
 	}
-	known, err := h.store.Queries.ListInboundTagsByProtocol(ctx, protocol)
+	known, err := h.store.CachedListInboundTagsByProtocol(ctx, protocol)
 	if err != nil {
 		return err
 	}
@@ -255,6 +254,8 @@ func (h *Handler) createProxyForUser(ctx context.Context, userID int32, protocol
 			return fmt.Errorf("could not set excluded inbounds for %s", protocol)
 		}
 	}
+	// No InvalidateExcludedInbounds call needed: proxy.ID was just minted
+	// above by CreateProxy, so no cache entry keyed on it can exist yet.
 	return nil
 }
 
@@ -353,7 +354,7 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 	}
 	for _, tags := range req.Inbounds {
 		for _, tag := range tags {
-			if _, err := h.store.Queries.GetInboundByTag(ctx, tag); err != nil {
+			if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": fmt.Sprintf("Inbound %s doesn't exist", tag)})
 				return
 			}
@@ -469,6 +470,9 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 // replaced (existing); a type absent from `wanted` gets deleted by its own
 // id - never a blanket "delete all proxies for this user", so proxies
 // added earlier in the same call are never caught by the removal step.
+// No cache invalidation needed here: proxies.settings (secrets/UUIDs) is
+// deliberately never cached - subscription/response generation always reads
+// it fresh from Postgres, since it must reflect a revoke/update immediately.
 func (h *Handler) reconcileProxies(ctx context.Context, userID int32, wanted map[string]proxysettings.Settings) error {
 	existing, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(userID)))
 	if err != nil {
@@ -525,7 +529,7 @@ func (h *Handler) reconcileExcludedInbounds(ctx context.Context, userID int32, w
 		if !ok {
 			continue
 		}
-		known, err := h.store.Queries.ListInboundTagsByProtocol(ctx, protocol)
+		known, err := h.store.CachedListInboundTagsByProtocol(ctx, protocol)
 		if err != nil {
 			return errors.New("could not resolve inbounds")
 		}
@@ -537,6 +541,12 @@ func (h *Handler) reconcileExcludedInbounds(ctx context.Context, userID int32, w
 			if err := h.store.Queries.ReplaceExcludedInbounds(ctx, generated.ReplaceExcludedInboundsParams{ProxyID: proxyID, Column2: excluded}); err != nil {
 				return errors.New("could not update excluded inbounds")
 			}
+		}
+		// The write above changed this proxy's excluded-tag set - bust the
+		// cache subscription generation and buildUserResponses both read
+		// from, or they'd keep serving the pre-change inbound list.
+		if err := h.store.InvalidateExcludedInbounds(ctx, proxyID); err != nil {
+			return errors.New("could not invalidate excluded inbounds cache")
 		}
 	}
 	return nil
@@ -552,6 +562,10 @@ func (h *Handler) handleDeleteUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete user"})
 		return
 	}
+	// No InvalidateExcludedInbounds call needed: this cascades to the user's
+	// proxies/exclude_inbounds_association rows, but their proxy IDs are a
+	// serial PK that's never reused, so any leftover cache entry keyed on
+	// one just expires unread via its TTL - never served to anyone.
 	c.JSON(http.StatusOK, gin.H{"detail": "User removed successfully"})
 }
 
@@ -602,7 +616,8 @@ func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
 // handleRevokeUserSub implements POST /api/user/:username/revoke_sub:
 // rotate every proxy's secret and bump sub_revoked_at. Link/subscription
 // URL regeneration is Phase 4 (subscription generation) - not implemented
-// here yet.
+// here yet. No cache invalidation needed: proxies.settings is never cached
+// (see reconcileProxies), so the rotated secret is visible immediately.
 func (h *Handler) handleRevokeUserSub(c *gin.Context) {
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
@@ -670,77 +685,142 @@ func (h *Handler) handleListUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list users"})
 		return
 	}
-	out := make([]userResponseDTO, 0, len(rows))
-	for _, u := range rows {
-		resp, err := h.buildUserResponse(c.Request.Context(), u)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
-			return
-		}
-		out = append(out, resp)
+	out, err := h.buildUserResponses(c.Request.Context(), rows)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read users"})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"users": out, "total": len(out)})
 }
 
-// buildUserResponse assembles the full response, including proxies
-// (decoded to the wire shape), inbounds (the inverse of the stored
-// exclusions - matches User.inbounds's computed property), and next_plan.
+// buildUserResponse assembles the full response for one user - a thin
+// wrapper around buildUserResponses, so every single-user call site
+// (handleCreateUser, handleGetUser, handleModifyUser, ...) gets the same
+// batching/caching benefit as handleListUsers with no duplicated logic.
 func (h *Handler) buildUserResponse(ctx context.Context, u generated.User) (userResponseDTO, error) {
-	proxies, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(u.ID)))
+	out, err := h.buildUserResponses(ctx, []generated.User{u})
 	if err != nil {
 		return userResponseDTO{}, err
 	}
-	proxiesOut := map[string]json.RawMessage{}
-	inboundsOut := map[string][]string{}
-	excludedOut := map[string][]string{}
-	for _, p := range proxies {
-		proxiesOut[p.Type] = p.Settings
-		known, err := h.store.Queries.ListInboundTagsByProtocol(ctx, p.Type)
+	return out[0], nil
+}
+
+// buildUserResponses assembles responses for a whole page of users in a
+// fixed number of round trips instead of one buildUserResponse call per
+// row - GET /api/users used to cost `3 + 2P` Postgres queries PER USER
+// (proxies, next_plan, admin, and per-proxy inbound/excluded lookups); a
+// 50-user page at P=2 was ~350 round trips. Batched here to ~5 Postgres
+// queries plus a handful of cache lookups (CachedListInboundTagsByProtocol
+// per distinct protocol, CachedGetAdminByID per distinct admin - both
+// already Redis-backed, low cardinality, so a dedicated batched query for
+// them isn't worth building unless profiling says otherwise).
+func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User) ([]userResponseDTO, error) {
+	if len(users) == 0 {
+		return []userResponseDTO{}, nil
+	}
+	userIDs := make([]int32, len(users))
+	for i, u := range users {
+		userIDs[i] = u.ID
+	}
+
+	allProxies, err := h.store.Queries.ListProxiesByUserIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	proxiesByUser := map[int32][]generated.Proxy{}
+	proxyIDs := make([]int32, 0, len(allProxies))
+	distinctProtocols := map[string]bool{}
+	for _, p := range allProxies {
+		proxiesByUser[p.UserID.Int32] = append(proxiesByUser[p.UserID.Int32], p)
+		proxyIDs = append(proxyIDs, p.ID)
+		distinctProtocols[p.Type] = true
+	}
+
+	excludedByProxy := map[int32][]string{}
+	if len(proxyIDs) > 0 {
+		excludedRows, err := h.store.Queries.ListExcludedInboundTagsByProxyIDs(ctx, proxyIDs)
 		if err != nil {
-			return userResponseDTO{}, err
+			return nil, err
 		}
-		excluded, err := h.store.Queries.ListExcludedInboundTags(ctx, p.ID)
+		for _, r := range excludedRows {
+			excludedByProxy[r.ProxyID] = append(excludedByProxy[r.ProxyID], r.InboundTag)
+		}
+	}
+
+	knownByProtocol := map[string][]string{}
+	for protocol := range distinctProtocols {
+		known, err := h.store.CachedListInboundTagsByProtocol(ctx, protocol)
 		if err != nil {
-			return userResponseDTO{}, err
+			return nil, err
 		}
-		excludedOut[p.Type] = excluded
-		inboundsOut[p.Type] = subtractTags(known, excluded)
+		knownByProtocol[protocol] = known
 	}
 
-	var adminUsername *string
-	if u.AdminID.Valid {
-		admin, err := h.store.Queries.GetAdminByID(ctx, u.AdminID.Int32)
-		if err == nil {
-			adminUsername = &admin.Username
+	nextPlanRows, err := h.store.Queries.GetNextPlansByUserIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	nextPlanByUser := map[int32]generated.NextPlan{}
+	for _, np := range nextPlanRows {
+		nextPlanByUser[np.UserID] = np
+	}
+
+	distinctAdminIDs := map[int32]bool{}
+	for _, u := range users {
+		if u.AdminID.Valid {
+			distinctAdminIDs[u.AdminID.Int32] = true
+		}
+	}
+	adminUsernameByID := map[int32]string{}
+	for id := range distinctAdminIDs {
+		if admin, err := h.store.CachedGetAdminByID(ctx, id); err == nil {
+			adminUsernameByID[id] = admin.Username
 		}
 	}
 
-	var nextPlan *nextPlanDTO
-	if np, err := h.store.Queries.GetNextPlanByUserID(ctx, u.ID); err == nil {
-		nextPlan = &nextPlanDTO{
-			DataLimit: np.DataLimit, Expire: int64(np.Expire.Int32),
-			AddRemainingTraffic: np.AddRemainingTraffic, FireOnEither: np.FireOnEither,
+	out := make([]userResponseDTO, 0, len(users))
+	for _, u := range users {
+		proxiesOut := map[string]json.RawMessage{}
+		inboundsOut := map[string][]string{}
+		excludedOut := map[string][]string{}
+		for _, p := range proxiesByUser[u.ID] {
+			proxiesOut[p.Type] = p.Settings
+			excluded := excludedByProxy[p.ID]
+			excludedOut[p.Type] = excluded
+			inboundsOut[p.Type] = subtractTags(knownByProtocol[p.Type], excluded)
 		}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return userResponseDTO{}, err
+
+		var adminUsername *string
+		if u.AdminID.Valid {
+			if name, ok := adminUsernameByID[u.AdminID.Int32]; ok {
+				adminUsername = &name
+			}
+		}
+
+		var nextPlan *nextPlanDTO
+		if np, ok := nextPlanByUser[u.ID]; ok {
+			nextPlan = &nextPlanDTO{
+				DataLimit: np.DataLimit, Expire: int64(np.Expire.Int32),
+				AddRemainingTraffic: np.AddRemainingTraffic, FireOnEither: np.FireOnEither,
+			}
+		}
+
+		// lifetime_used_traffic (used_traffic + sum of user_usage_logs) and
+		// the per-format `links` array are deferred - see the Phase 2/4 reports.
+		subToken := subscription.CreateToken(u.Username, h.jwtSecret)
+		subURL := h.subURLPrefix + "/sub/" + subToken
+
+		out = append(out, userResponseDTO{
+			ID: u.ID, Username: u.Username, Status: u.Status, UsedTraffic: u.UsedTraffic, LifetimeUsedTraffic: u.UsedTraffic,
+			DataLimit: int8ToPtr(u.DataLimit), DataLimitResetStrategy: u.DataLimitResetStrategy,
+			Expire: pgInt4ToPtrInt64(u.Expire), Note: textToPtr(u.Note), CreatedAt: u.CreatedAt.Time,
+			OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
+			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
+			Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
+			SubscriptionURL: subURL,
+		})
 	}
-
-	// lifetime_used_traffic (used_traffic + sum of user_usage_logs) and the
-	// per-format `links` array are deferred - see the Phase 2/4 reports.
-	lifetimeUsed := u.UsedTraffic
-
-	subToken := subscription.CreateToken(u.Username, h.jwtSecret)
-	subURL := h.subURLPrefix + "/sub/" + subToken
-
-	return userResponseDTO{
-		ID: u.ID, Username: u.Username, Status: u.Status, UsedTraffic: u.UsedTraffic, LifetimeUsedTraffic: lifetimeUsed,
-		DataLimit: int8ToPtr(u.DataLimit), DataLimitResetStrategy: u.DataLimitResetStrategy,
-		Expire: pgInt4ToPtrInt64(u.Expire), Note: textToPtr(u.Note), CreatedAt: u.CreatedAt.Time,
-		OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
-		AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
-		Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
-		SubscriptionURL: subURL,
-	}, nil
+	return out, nil
 }
 
 func subtractTags(all, exclude []string) []string {

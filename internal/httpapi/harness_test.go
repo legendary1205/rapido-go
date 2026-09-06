@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/legendary1205/rapido-go/internal/auth"
+	"github.com/legendary1205/rapido-go/internal/cache"
 	"github.com/legendary1205/rapido-go/internal/certs"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
@@ -32,8 +34,9 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	t.Helper()
 	pool := testPool(t)
 	truncateAll(t, pool)
+	cacheClient := testCache(t)
 
-	store := NewStore(pool)
+	store := NewStore(pool, cacheClient)
 	ensureTestCA(t, store)
 	testSecret := []byte("test-secret")
 	issuer := auth.NewTokenIssuer(testSecret, time.Hour)
@@ -46,6 +49,31 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 		t.Fatalf("Issue: %v", err)
 	}
 	return router, token
+}
+
+// testCache connects to a real Redis instance and flushes its DB - point
+// TEST_REDIS_ADDR at the same docker-compose redis service the Postgres
+// tests already rely on (docker-compose.yml starts them together). Skips
+// instead of failing when unset, matching testPool's convention - every
+// test built on newTestRouter now needs Redis too, since Store always
+// holds a Cache field; this is an accepted, deliberate consequence of the
+// caching work, not an oversight.
+func testCache(t *testing.T) *cache.Client {
+	t.Helper()
+	addr := os.Getenv("TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("TEST_REDIS_ADDR not set, skipping test against a real Redis instance")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := cache.New(addr, "", 0, logger)
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := c.Raw().FlushDB(context.Background()).Err(); err != nil {
+		t.Fatalf("FlushDB: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
 }
 
 // truncateAll clears every table Phase 2-3 tests touch, so each test starts

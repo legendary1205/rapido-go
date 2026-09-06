@@ -104,22 +104,22 @@ func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format 
 		if err != nil {
 			continue
 		}
-		known, err := h.store.Queries.ListInboundTagsByProtocol(ctx, p.Type)
+		known, err := h.store.CachedListInboundTagsByProtocol(ctx, p.Type)
 		if err != nil {
 			continue
 		}
-		excluded, err := h.store.Queries.ListExcludedInboundTags(ctx, p.ID)
+		excluded, err := h.store.CachedListExcludedInboundTags(ctx, p.ID)
 		if err != nil {
 			continue
 		}
 		includedTags := subtractTags(known, excluded)
 
 		for _, tag := range includedTags {
-			inbound, err := h.store.Queries.GetInboundByTag(ctx, tag)
+			inbound, err := h.store.CachedGetInboundByTag(ctx, tag)
 			if err != nil {
 				continue
 			}
-			hosts, err := h.store.Queries.ListHostsByInboundTag(ctx, tag)
+			hosts, err := h.store.CachedListHostsByInboundTag(ctx, tag)
 			if err != nil {
 				continue
 			}

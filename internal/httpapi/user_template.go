@@ -35,7 +35,7 @@ func (h *Handler) toUserTemplateDTO(ctx context.Context, t generated.UserTemplat
 	}
 	inbounds := map[string][]string{}
 	for _, tag := range tags {
-		row, err := h.store.Queries.GetInboundByTag(ctx, tag)
+		row, err := h.store.CachedGetInboundByTag(ctx, tag)
 		if err != nil {
 			continue // a tag whose inbound has since disappeared - skip rather than fail the whole read
 		}
@@ -58,7 +58,7 @@ func (h *Handler) handleCreateUserTemplate(c *gin.Context) {
 
 	for _, tags := range req.Inbounds {
 		for _, tag := range tags {
-			if _, err := h.store.Queries.GetInboundByTag(ctx, tag); err != nil {
+			if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Inbound " + tag + " doesn't exist"})
 				return
 			}
@@ -164,7 +164,7 @@ func (h *Handler) handleModifyUserTemplate(c *gin.Context) {
 	ctx := c.Request.Context()
 	for _, tags := range req.Inbounds {
 		for _, tag := range tags {
-			if _, err := h.store.Queries.GetInboundByTag(ctx, tag); err != nil {
+			if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Inbound " + tag + " doesn't exist"})
 				return
 			}

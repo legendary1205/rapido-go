@@ -19,8 +19,20 @@ import (
 // lightweight signed token with no expiry (validity is instead bounded by
 // comparing its embedded timestamp against the user's created_at/
 // sub_revoked_at at verification time - see ValidateToken's caller).
+//
+// The embedded timestamp is rounded UP to the next whole second (matching
+// Python's ceil(time.time()), not a plain truncating Unix()) - a token
+// minted milliseconds after a user's Postgres created_at (sub-second
+// precision) would otherwise floor to the same or an earlier whole second,
+// making created_at.After(tokenTime) true and permanently 404 a
+// subscription URL that was valid the instant it was issued.
 func CreateToken(username string, secret []byte) string {
-	data := fmt.Sprintf("%s,%d", username, time.Now().UTC().Unix())
+	now := time.Now().UTC()
+	ts := now.Unix()
+	if now.Nanosecond() > 0 {
+		ts++
+	}
+	data := fmt.Sprintf("%s,%d", username, ts)
 	dataB64 := base64.RawURLEncoding.EncodeToString([]byte(data))
 	return dataB64 + sign(dataB64, secret)
 }

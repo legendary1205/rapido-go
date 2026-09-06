@@ -77,7 +77,7 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 	}
 
 	for tag, hosts := range body {
-		if _, err := h.store.Queries.GetInboundByTag(c.Request.Context(), tag); err != nil {
+		if _, err := h.store.CachedGetInboundByTag(c.Request.Context(), tag); err != nil {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Inbound " + tag + " doesn't exist"})
 			return
 		}
@@ -125,6 +125,10 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 				return
 			}
 			out[tag] = append(out[tag], toHostDTO(created))
+		}
+		if err := h.store.InvalidateHosts(ctx, tag); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate host cache for " + tag})
+			return
 		}
 	}
 	c.JSON(http.StatusOK, out)

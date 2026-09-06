@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/legendary1205/rapido-go/internal/db/generated"
@@ -68,6 +70,15 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 		if security == "" {
 			security = "none"
 		}
+
+		var oldProtocol *string
+		if existing, err := h.store.Queries.GetInboundByTag(c.Request.Context(), e.Tag); err == nil {
+			oldProtocol = &existing.Protocol
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
+			return
+		}
+
 		row, err := h.store.Queries.UpsertInbound(c.Request.Context(), generated.UpsertInboundParams{
 			Tag: e.Tag, Protocol: e.Protocol, Network: network, HeaderType: textFromPtr(normalizeZeroString(&e.HeaderType)),
 			Security:          security,
@@ -78,6 +89,10 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
+			return
+		}
+		if err := h.store.InvalidateInbound(c.Request.Context(), e.Tag, e.Protocol, oldProtocol); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate inbound cache for " + e.Tag})
 			return
 		}
 		if row.Inserted {
@@ -93,7 +108,9 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 
 // createDefaultHost mirrors add_default_host in the current
 // crud.get_or_create_inbound: every inbound gets one default ProxyHost the
-// first time it's registered.
+// first time it's registered. No InvalidateHosts call needed: this only
+// ever runs for a tag that handleSyncInbounds just inserted for the first
+// time, so no CachedListHostsByInboundTag entry for it can exist yet.
 func createDefaultHost(ctx context.Context, q *generated.Queries, tag string) error {
 	_, err := q.CreateHost(ctx, generated.CreateHostParams{
 		Remark:      "Rapido ({USERNAME}) [{PROTOCOL} - {TRANSPORT}]",

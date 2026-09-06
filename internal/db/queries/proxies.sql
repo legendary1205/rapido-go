@@ -5,6 +5,11 @@ RETURNING *;
 -- name: ListProxiesByUserID :many
 SELECT * FROM proxies WHERE user_id = $1 ORDER BY id;
 
+-- name: ListProxiesByUserIDs :many
+-- Batched form of ListProxiesByUserID for GET /api/users - the caller
+-- groups rows by user_id in Go, avoiding one query per row on a page.
+SELECT * FROM proxies WHERE user_id = ANY($1::int[]) ORDER BY user_id, id;
+
 -- name: DeleteProxyByID :exec
 DELETE FROM proxies WHERE id = $1;
 
@@ -24,6 +29,12 @@ DELETE FROM exclude_inbounds_association WHERE proxy_id = $1;
 
 -- name: ListExcludedInboundTags :many
 SELECT inbound_tag FROM exclude_inbounds_association WHERE proxy_id = $1 ORDER BY inbound_tag;
+
+-- name: ListExcludedInboundTagsByProxyIDs :many
+-- Batched form of ListExcludedInboundTags - unlike that one, this returns
+-- proxy_id alongside each tag so the caller can group rows in Go.
+SELECT proxy_id, inbound_tag FROM exclude_inbounds_association
+WHERE proxy_id = ANY($1::int[]) ORDER BY proxy_id, inbound_tag;
 
 -- name: UpdateProxySettings :one
 UPDATE proxies SET settings = $2 WHERE id = $1

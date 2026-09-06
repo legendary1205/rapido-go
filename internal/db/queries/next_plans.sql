@@ -13,3 +13,7 @@ DELETE FROM next_plans WHERE user_id = $1;
 
 -- name: GetNextPlanByUserID :one
 SELECT * FROM next_plans WHERE user_id = $1;
+
+-- name: GetNextPlansByUserIDs :many
+-- Batched form of GetNextPlanByUserID for GET /api/users.
+SELECT * FROM next_plans WHERE user_id = ANY($1::int[]);
