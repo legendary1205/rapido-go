@@ -28,6 +28,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/config"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
+	"github.com/legendary1205/rapido-go/internal/reviewjob"
 )
 
 func main() {
@@ -78,6 +79,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	if cfg.Role == config.RoleBackend {
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, logger)
+	}
+
 	store := httpapi.NewStore(pool)
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
@@ -103,6 +108,62 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// runAsBackendSingleton holds a session-scoped Postgres advisory lock for
+// as long as this process is the active backend singleton - the direct
+// Postgres equivalent of the current system's MySQL GET_LOCK() usage,
+// which exists because a duplicate BACKEND role process double-driving the
+// same background jobs (and, in later phases, the same node connections)
+// caused a real production outage once. Retries on an interval if another
+// backend process already holds the lock, so a second instance started by
+// mistake (or during a rolling restart) waits rather than running
+// alongside the first one.
+//
+// Uses a single dedicated connection opened directly with pgx, not one
+// borrowed from the pgxpool: a session-level advisory lock lives exactly
+// as long as its holding connection does, and a pool connection can be
+// silently recycled or closed at any time, which would release the lock
+// out from under this process without it noticing.
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, logger *slog.Logger) {
+	const retryInterval = 10 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, err := pgx.Connect(ctx, databaseURL)
+		if err != nil {
+			logger.Error("backend singleton: connect for advisory lock", "error", err)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		var acquired bool
+		if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", cache.AdvisoryLockBackendSingleton).Scan(&acquired); err != nil {
+			logger.Error("backend singleton: pg_try_advisory_lock", "error", err)
+			conn.Close(ctx)
+			time.Sleep(retryInterval)
+			continue
+		}
+		if !acquired {
+			logger.Info("backend singleton: lock held elsewhere, waiting", "retry_in", retryInterval)
+			conn.Close(ctx)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		logger.Info("backend singleton: acquired advisory lock, running background jobs")
+		reviewjob.Run(ctx, queries, logger, 10*time.Second)
+
+		// reviewjob.Run only returns once ctx is canceled (process shutdown) -
+		// release the lock and let the deferred loop exit via ctx.Done() above.
+		conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", cache.AdvisoryLockBackendSingleton)
+		conn.Close(context.Background())
+		return
+	}
 }
 
 // ensureJWTSecret returns the singleton jwt_secrets row's key, generating

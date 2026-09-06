@@ -580,6 +580,13 @@ func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not reset user data usage"})
 		return
 	}
+	// Matches crud.reset_user_data_usage's _clear_node_usages call - a gap
+	// in the original Phase 2 port, fixed here since Phase 5 needed the
+	// same query anyway for NextPlan firing.
+	if err := h.store.Queries.ClearNodeUserUsages(ctx, pgInt4FromInt(int(updated.ID))); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not clear node usage history"})
+		return
+	}
 	if err := h.store.Queries.DeleteNextPlanByUserID(ctx, updated.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not clear next_plan"})
 		return
