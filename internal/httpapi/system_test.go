@@ -35,11 +35,15 @@ func TestSystemStatsCountsRealUsersByStatus(t *testing.T) {
 		t.Errorf("users_on_hold = %v, want 1", got)
 	}
 	if got := resp.Body["online_users"].(float64); got != 0 {
-		t.Errorf("online_users = %v, want 0 (nothing writes online_at yet)", got)
+		t.Errorf("online_users = %v, want 0 (none of this test's own users ever got a node report)", got)
 	}
-	if got := resp.Body["incoming_bandwidth"].(float64); got != 0 {
-		t.Errorf("incoming_bandwidth = %v, want 0 (no usage-reporting pipeline yet)", got)
-	}
+	// incoming_bandwidth/outgoing_bandwidth deliberately not asserted here:
+	// they come from the `system` singleton row, which is fleet-wide and
+	// shared across every test in this package (see
+	// internal/httpapi/nodereport_test.go, which increments it for real) -
+	// this test is about per-admin user-status counting, not bandwidth, so
+	// it has no business asserting a value only some *other* test's writes
+	// would determine.
 }
 
 func TestSystemStatsScopedToNonSudoAdmin(t *testing.T) {
@@ -77,7 +81,15 @@ func TestSystemStatsScopedToNonSudoAdmin(t *testing.T) {
 	}
 }
 
-func TestSystemUsageHistoryReturnsRealDatesWithZeroUsage(t *testing.T) {
+// TestSystemUsageHistoryReturnsRealDatesWithEveryDayPresent checks the
+// zero-filling/date-range shape, not specific usage values: node_usages is
+// a fleet-wide table (see GetDailyUsageHistory), shared across every test
+// in this package - internal/httpapi/nodereport_test.go's own tests write
+// real rows into it, so today's bucket can legitimately be nonzero
+// depending on test execution order. Real value correctness is covered
+// there; this test only proves every requested day gets a point (a day
+// with no node_usages row must still appear, as usage:0, not be omitted).
+func TestSystemUsageHistoryReturnsRealDatesWithEveryDayPresent(t *testing.T) {
 	router, token := newTestRouter(t)
 
 	resp := doRequest(t, router, "GET", "/api/system/usage-history?days=14", token, nil)
@@ -95,10 +107,11 @@ func TestSystemUsageHistoryReturnsRealDatesWithZeroUsage(t *testing.T) {
 	if points[13]["date"] != today {
 		t.Errorf("last point's date = %v, want today (%s)", points[13]["date"], today)
 	}
-	for i, p := range points {
-		if usage, ok := p["usage"].(float64); !ok || usage != 0 {
-			t.Errorf("point[%d].usage = %v, want 0 (no usage-tracking pipeline yet)", i, p["usage"])
-		}
+	// A day further back than anything any test could plausibly have
+	// written must be exactly 0 - this is what actually proves zero-fill
+	// works, without depending on execution order for "today".
+	if usage, ok := points[0]["usage"].(float64); !ok || usage != 0 {
+		t.Errorf("earliest point's usage = %v, want 0 (no test writes usage 13 days in the past)", points[0]["usage"])
 	}
 }
 

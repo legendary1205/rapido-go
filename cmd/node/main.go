@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -22,7 +24,9 @@ import (
 	sbox "github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
 
+	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/nodecore"
+	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
 )
 
 type config struct {
@@ -30,14 +34,33 @@ type config struct {
 	CertFile   string
 	KeyFile    string
 	CAFile     string // the Rapido CA cert - only clients presenting a cert signed by this CA are accepted
+
+	// PanelURL/ReportSecret are the push half of Phase 7.3's usage/health
+	// reporting (see internal/httpapi/nodereport.go) - PanelURL must point
+	// at the backend-singleton instance specifically, not a load-balanced
+	// API pool (see that handler's own doc comment for why). ReportSecret
+	// is the bearer token returned once by POST /api/node at node-creation
+	// time, alongside the mTLS cert this same config already carries.
+	PanelURL       string
+	ReportSecret   string
+	ReportInterval time.Duration
 }
 
 func loadConfig() config {
+	intervalSeconds := 10
+	if v, ok := os.LookupEnv("NODE_REPORT_INTERVAL_SECONDS"); ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			intervalSeconds = n
+		}
+	}
 	return config{
-		ListenAddr: getEnv("NODE_LISTEN_ADDR", "0.0.0.0:62051"),
-		CertFile:   getEnv("NODE_CERT_FILE", "/etc/rapido-node/cert.pem"),
-		KeyFile:    getEnv("NODE_KEY_FILE", "/etc/rapido-node/key.pem"),
-		CAFile:     getEnv("NODE_CA_FILE", "/etc/rapido-node/ca.pem"),
+		ListenAddr:     getEnv("NODE_LISTEN_ADDR", "0.0.0.0:62051"),
+		CertFile:       getEnv("NODE_CERT_FILE", "/etc/rapido-node/cert.pem"),
+		KeyFile:        getEnv("NODE_KEY_FILE", "/etc/rapido-node/key.pem"),
+		CAFile:         getEnv("NODE_CA_FILE", "/etc/rapido-node/ca.pem"),
+		PanelURL:       getEnv("PANEL_URL", ""),
+		ReportSecret:   getEnv("NODE_REPORT_SECRET", ""),
+		ReportInterval: time.Duration(intervalSeconds) * time.Second,
 	}
 }
 
@@ -68,6 +91,11 @@ type server struct {
 	// original /start request, as every future outbound dial silently
 	// failing with "operation was canceled").
 	ctx context.Context
+
+	// traffic persists across a stop/start cycle (unlike node itself,
+	// which is nil'd on POST /stop) so a core restart never loses
+	// in-flight byte counts the push loop hasn't drained yet.
+	traffic *traffic.Manager
 }
 
 func main() {
@@ -93,12 +121,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := &server{logger: logger, ctx: ctx}
+	srv := &server{logger: logger, ctx: ctx, traffic: traffic.NewManager()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", srv.handleHealth)
 	mux.HandleFunc("POST /start", srv.handleStart)
 	mux.HandleFunc("POST /stop", srv.handleStop)
 	mux.HandleFunc("PUT /inbounds/{tag}/users", srv.handleUpdateUsers)
+
+	if cfg.PanelURL != "" && cfg.ReportSecret != "" {
+		go srv.pushLoop(ctx, cfg)
+	} else {
+		logger.Warn("PANEL_URL/NODE_REPORT_SECRET not set - usage/health reporting to the panel is disabled")
+	}
 
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -206,7 +240,7 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := nodecore.New(s.ctx, opts)
+	node, err := nodecore.New(s.ctx, opts, s.traffic)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
 		return
@@ -354,4 +388,79 @@ func buildOptions(req startRequest) (sbox.Options, error) {
 		Outbounds: []sbox.Outbound{{Type: "direct", Tag: "direct-out", Options: &sbox.DirectOutboundOptions{}}},
 		Route:     &sbox.RouteOptions{Final: "direct-out"},
 	}, nil
+}
+
+// singBoxVersion is the pinned version from go.mod, reported as-is rather
+// than plumbed through build-time ldflags - cosmetic display data on the
+// Monitoring page, not worth the extra build-script complexity yet.
+const singBoxVersion = "sing-box v1.14.0"
+
+type reportUserUsage struct {
+	Username string `json:"username"`
+	Uplink   int64  `json:"uplink"`
+	Downlink int64  `json:"downlink"`
+}
+
+type reportRequest struct {
+	Users []reportUserUsage  `json:"users"`
+	Host  hostmetrics.Sample `json:"host"`
+}
+
+// pushLoop is the sending half of Phase 7.3's usage/health reporting - see
+// internal/httpapi/nodereport.go for the receiving side and its own doc
+// comment on why PanelURL must point at the backend-singleton instance
+// specifically. Runs for the node process's whole lifetime, independent of
+// whether a sing-box core is currently started - an idle node still
+// reports its own host health (zero user usage, xray_running: false), the
+// same way the current Python system's health-check job keeps polling a
+// stopped-but-connected node.
+func (s *server) pushLoop(ctx context.Context, cfg config) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	ticker := time.NewTicker(cfg.ReportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.pushOnce(ctx, client, cfg)
+		}
+	}
+}
+
+func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) {
+	usage := s.traffic.Drain()
+	users := make([]reportUserUsage, 0, len(usage))
+	for username, u := range usage {
+		users = append(users, reportUserUsage{Username: username, Uplink: u.Up, Downlink: u.Down})
+	}
+
+	s.mu.Lock()
+	running := s.node != nil
+	s.mu.Unlock()
+
+	sample := hostmetrics.Collect(running, singBoxVersion)
+	body, err := json.Marshal(reportRequest{Users: users, Host: sample})
+	if err != nil {
+		s.logger.Error("push report: marshal", "error", err)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.PanelURL+"/api/internal/node-report", bytes.NewReader(body))
+	if err != nil {
+		s.logger.Error("push report: build request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.ReportSecret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Warn("push report: request failed, will retry next tick", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("push report: panel rejected report", "status", resp.StatusCode)
+	}
 }

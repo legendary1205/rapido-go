@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/legendary1205/rapido-go/internal/auth"
+	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
 	"github.com/legendary1205/rapido-go/internal/kirbot"
 	"github.com/legendary1205/rapido-go/internal/report"
@@ -25,17 +26,19 @@ type Handler struct {
 	reports              *report.Dispatcher
 	kirbot               *kirbot.Client
 	loginNotifyWhitelist []string
+	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
 }
 
 func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
 	publicIP, subURLPrefix string, envDefaults integrationsettings.Values, reports *report.Dispatcher,
-	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, logger *slog.Logger) *Handler {
+	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
+	logger *slog.Logger) *Handler {
 	return &Handler{
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
 		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
-		loginNotifyWhitelist: loginNotifyWhitelist, logger: logger,
+		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker, logger: logger,
 	}
 }
 
@@ -99,8 +102,13 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 		api.POST("/node", requireSudo, h.handleCreateNode)
 		api.GET("/nodes", requireSudo, h.handleListNodes)
+		api.GET("/nodes/usage", requireSudo, h.handleGetNodesUsage)
 		api.GET("/node/:id", requireSudo, h.handleGetNode)
+		api.PUT("/node/:id", requireSudo, h.handleUpdateNode)
 		api.DELETE("/node/:id", requireSudo, h.handleDeleteNode)
+
+		api.GET("/monitoring", requireSudo, h.handleGetMonitoring)
+		api.GET("/monitoring/history", requireSudo, h.handleGetMonitoringHistory)
 
 		api.GET("/settings/integrations", requireSudo, h.handleGetIntegrationSettings)
 		api.PUT("/settings/integrations", requireSudo, h.handleUpdateIntegrationSettings)
@@ -109,6 +117,12 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)
 		api.POST("/tickets/:id/messages", requireAdmin, h.handleAdminReplyTicket)
 		api.PUT("/tickets/:id", requireAdmin, h.handleUpdateTicketStatus)
+
+		// Node -> panel, not admin -> panel: authenticated by a per-node
+		// bearer secret (requireNodeSecret), never an admin JWT. Must be
+		// pointed at the backend-singleton's own address in deployment, not
+		// a load-balanced API pool - see handleNodeReport's doc comment.
+		api.POST("/internal/node-report", h.requireNodeSecret, h.handleNodeReport)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)

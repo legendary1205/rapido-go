@@ -21,6 +21,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/certs"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/discord"
+	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
 	"github.com/legendary1205/rapido-go/internal/kirbot"
 	"github.com/legendary1205/rapido-go/internal/report"
@@ -71,7 +72,7 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 5 * time.Second})
 
 	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "",
-		envDefaults, dispatcher, kirbotClient, nil, logger)
+		envDefaults, dispatcher, kirbotClient, nil, hostmetrics.NewPreviousTracker(), logger)
 	router := NewRouter(handler, logger, []string{"*"})
 
 	token, err := issuer.Issue(testSudoUsername, true)

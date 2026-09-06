@@ -14,6 +14,8 @@ import (
 	"github.com/sagernet/sing/common/json/badoption"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+
+	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
 )
 
 func badoptionAddr(s string) badoption.Addr {
@@ -134,7 +136,7 @@ func TestVLESSHotAddUserWithoutRestart(t *testing.T) {
 	nodePort := freePort(t)
 	opts := buildTestOptions(nodePort, []option.VLESSUser{{Name: "userA", UUID: uuidA}})
 
-	node, err := New(context.Background(), opts)
+	node, err := New(context.Background(), opts, traffic.NewManager())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -190,5 +192,61 @@ func TestVLESSHotAddUserWithoutRestart(t *testing.T) {
 	t.Cleanup(func() { connB.Close() })
 	if err := echoRoundTrip(t, connB, "hello-from-b-after-update"); err != nil {
 		t.Fatalf("newly hot-added userB round trip: %v", err)
+	}
+}
+
+// TestVLESSTrafficCounting proves traffic.Manager is actually wired into
+// the real inbound path, not just unit-tested in isolation: a real VLESS
+// client's echo round trip through a real running node must show up in
+// Drain() with the exact byte counts a server-side observer would expect -
+// Read (uplink) = what the client sent, Write (downlink) = what the
+// server echoed back.
+func TestVLESSTrafficCounting(t *testing.T) {
+	uuidA := "8f8a4c1e-1e2a-4b8a-9b1a-000000000003"
+	echoAddr := startEchoServer(t)
+	echoHost, echoPortStr, err := net.SplitHostPort(echoAddr)
+	if err != nil {
+		t.Fatalf("split echo addr: %v", err)
+	}
+	echoPort, err := strconv.Atoi(echoPortStr)
+	if err != nil {
+		t.Fatalf("parse echo port: %v", err)
+	}
+
+	nodePort := freePort(t)
+	opts := buildTestOptions(nodePort, []option.VLESSUser{{Name: "userA", UUID: uuidA}})
+
+	mgr := traffic.NewManager()
+	node, err := New(context.Background(), opts, mgr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := node.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { node.Close() })
+
+	nodeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodePort))
+	conn := dialVLESS(t, nodeAddr, uuidA, echoHost, echoPort)
+	t.Cleanup(func() { conn.Close() })
+
+	payload := "count-these-bytes-please"
+	if err := echoRoundTrip(t, conn, payload); err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+
+	// The counter increments inside Read/Write themselves, not on close -
+	// give the connection a moment to settle rather than racing Drain
+	// against the last Read completing.
+	time.Sleep(100 * time.Millisecond)
+
+	usage := mgr.Drain()
+	got, ok := usage["userA"]
+	if !ok {
+		t.Fatalf("no usage recorded for userA at all: %+v", usage)
+	}
+	want := traffic.Usage{Up: int64(len(payload)), Down: int64(len(payload))}
+	if got != want {
+		t.Errorf("userA usage = %+v, want %+v", got, want)
 	}
 }

@@ -77,6 +77,13 @@ func textToPtr(v pgtype.Text) *string {
 	return &v.String
 }
 
+func float8FromPtr(v *float64) pgtype.Float8 {
+	if v == nil {
+		return pgtype.Float8{}
+	}
+	return pgtype.Float8{Float64: *v, Valid: true}
+}
+
 func timestamptzFromTime(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }

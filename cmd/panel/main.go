@@ -28,6 +28,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/config"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/discord"
+	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
 	"github.com/legendary1205/rapido-go/internal/kirbot"
@@ -107,13 +108,14 @@ func run(logger *slog.Logger) error {
 		UserSubRevoked: cfg.NotifyUserSubRevoked, Login: cfg.NotifyLogin,
 	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
 	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 3 * time.Second})
+	hostMetricsTracker := hostmetrics.NewPreviousTracker()
 
 	if cfg.Role == config.RoleBackend {
-		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, logger)
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, logger)
 	}
 
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
-		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, logger)
+		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
 
@@ -155,7 +157,7 @@ func run(logger *slog.Logger) error {
 // as long as its holding connection does, and a pool connection can be
 // silently recycled or closed at any time, which would release the lock
 // out from under this process without it noticing.
-func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, logger *slog.Logger) {
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, logger *slog.Logger) {
 	const retryInterval = 10 * time.Second
 	for {
 		select {
@@ -186,6 +188,14 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		}
 
 		logger.Info("backend singleton: acquired advisory lock, running background jobs")
+		// Both run only here, not on every stateless API replica - a node's
+		// push report and the panel's own self-sample must each be observed
+		// by exactly one PreviousTracker for their rate/percent math to be
+		// correct (see hostmetrics.PreviousTracker's doc comment), and
+		// pruning old rows from every replica at once would just be
+		// redundant DELETEs racing each other.
+		go hostmetrics.PruneLoop(ctx, queries, logger, time.Hour)
+		go hostmetrics.PanelSelfSampleLoop(ctx, queries, hostMetricsTracker, logger, 30*time.Second)
 		reviewjob.Run(ctx, queries, dispatcher, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -

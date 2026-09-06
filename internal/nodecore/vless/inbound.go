@@ -45,6 +45,8 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
 )
 
 func RegisterInbound(registry *inbound.Registry) {
@@ -64,15 +66,17 @@ type Inbound struct {
 	tlsConfig  tls.ServerConfig
 	transport  adapter.V2RayServerTransport
 	references []string
+	trafficMgr *traffic.Manager
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSInboundOptions) (adapter.Inbound, error) {
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeVLESS, tag),
-		ctx:     ctx,
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
-		users:   options.Users,
+		Adapter:    inbound.NewAdapter(C.TypeVLESS, tag),
+		ctx:        ctx,
+		router:     uot.NewRouter(router, logger),
+		logger:     logger,
+		users:      options.Users,
+		trafficMgr: traffic.FromContext(ctx),
 	}
 	var err error
 	inbound.router, err = mux.NewRouterWithOptions(inbound.router, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -217,6 +221,9 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
 		metadata.User = user
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
+	if h.trafficMgr != nil {
+		conn = traffic.WrapConn(conn, user, h.trafficMgr)
+	}
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -240,6 +247,9 @@ func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 		h.logger.InfoContext(ctx, "[", user, "] inbound packet addr connection")
 	} else {
 		h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
+	}
+	if h.trafficMgr != nil {
+		conn = traffic.WrapPacketConn(conn, user, h.trafficMgr)
 	}
 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }

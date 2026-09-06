@@ -31,10 +31,10 @@ type systemStatsDTO struct {
 
 // handleGetSystemStats implements GET /api/system, scoped like
 // handleListUsers: sudo sees the whole fleet, a regular admin only their
-// own users. IncomingBandwidth/OutgoingBandwidth are always 0 - there is no
-// usage-reporting pipeline from nodes yet (a real, already-known gap, not
-// an oversight here), so this returns honest zeros rather than fabricated
-// numbers until that pipeline exists in a later phase.
+// own users. IncomingBandwidth/OutgoingBandwidth come from the `system`
+// singleton row, fleet-wide cumulative totals fed by every node's push
+// report (see internal/httpapi/nodereport.go) - not scoped per-admin, same
+// as the current Python system's own system.uplink/downlink.
 func (h *Handler) handleGetSystemStats(c *gin.Context) {
 	identity := auth.CurrentIdentity(c)
 	ctx := c.Request.Context()
@@ -63,6 +63,10 @@ func (h *Handler) handleGetSystemStats(c *gin.Context) {
 	}
 
 	stats := systemStatsDTO{TotalUser: total, OnlineUsers: online}
+	if sys, err := h.store.Queries.GetSystem(ctx); err == nil {
+		stats.IncomingBandwidth = pgInt8ToInt64(sys.Uplink)
+		stats.OutgoingBandwidth = pgInt8ToInt64(sys.Downlink)
+	}
 	for _, row := range byStatus {
 		switch row.Status {
 		case statusActive:
@@ -85,11 +89,11 @@ type usagePointDTO struct {
 	Usage int64  `json:"usage"`
 }
 
-// handleGetSystemUsageHistory implements GET /api/system/usage-history.
-// Makes no DB query at all: there is no historical usage-tracking pipeline
-// yet (nothing increments users.used_traffic over time), so this returns
-// real calendar dates with an honest usage:0 for each, rather than querying
-// a table that can't yet answer the question.
+// handleGetSystemUsageHistory implements GET /api/system/usage-history,
+// backed by node_usages (fed by every node's push report - see
+// internal/httpapi/nodereport.go) via GetDailyUsageHistory, zero-filled
+// for any day that query didn't return a row (a fleet day with zero
+// traffic looks identical to a day with no node_usages rows at all).
 func (h *Handler) handleGetSystemUsageHistory(c *gin.Context) {
 	days := 14
 	if v := c.Query("days"); v != "" {
@@ -97,14 +101,21 @@ func (h *Handler) handleGetSystemUsageHistory(c *gin.Context) {
 			days = n
 		}
 	}
-	c.JSON(http.StatusOK, buildEmptyUsageHistory(days, time.Now().UTC()))
-}
-
-func buildEmptyUsageHistory(days int, now time.Time) []usagePointDTO {
-	out := make([]usagePointDTO, 0, days)
+	now := time.Now().UTC()
 	start := now.AddDate(0, 0, -(days - 1))
-	for i := 0; i < days; i++ {
-		out = append(out, usagePointDTO{Date: start.AddDate(0, 0, i).Format("2006-01-02"), Usage: 0})
+
+	byDay := make(map[string]int64, days)
+	rows, err := h.store.Queries.GetDailyUsageHistory(c.Request.Context(), timestamptzFromTime(start.Truncate(24*time.Hour)))
+	if err == nil {
+		for _, r := range rows {
+			byDay[r.Day.Time.Format("2006-01-02")] = r.Usage
+		}
 	}
-	return out
+
+	out := make([]usagePointDTO, 0, days)
+	for i := 0; i < days; i++ {
+		date := start.AddDate(0, 0, i).Format("2006-01-02")
+		out = append(out, usagePointDTO{Date: date, Usage: byDay[date]})
+	}
+	c.JSON(http.StatusOK, out)
 }
