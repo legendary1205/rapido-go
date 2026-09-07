@@ -2,6 +2,7 @@ import { FC, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import { useCoreConfigQuery, useSaveCoreConfigMutation } from "hooks/useCoreConfigQuery";
+import { useInboundsDetailQuery } from "hooks/useInboundsQuery";
 import {
   CONGESTION_CONTROL_TYPES,
   CoreConfig,
@@ -89,6 +90,7 @@ const OutboundFormModal: FC<{
   const [tlsEnabled, setTlsEnabled] = useState(initial?.tls_enabled ?? false);
   const [tlsServerName, setTlsServerName] = useState(initial?.tls_server_name ?? "");
   const [tlsInsecure, setTlsInsecure] = useState(initial?.tls_insecure ?? false);
+  const [bindInterface, setBindInterface] = useState(initial?.bind_interface ?? "");
   const [error, setError] = useState("");
 
   // Excludes this outbound's own tag - a selector/urltest cannot list itself
@@ -133,6 +135,11 @@ const OutboundFormModal: FC<{
       tls_enabled: showTLSSection ? tlsMandatory || tlsEnabled : undefined,
       tls_server_name: showTLSSection && (tlsMandatory || tlsEnabled) ? tlsServerName.trim() || undefined : undefined,
       tls_insecure: showTLSSection && (tlsMandatory || tlsEnabled) ? tlsInsecure : undefined,
+      // Unlike every field above, not gated by type at all - every leaf
+      // outbound (everything except selector/urltest) can dial through a
+      // specific interface, and sending it on a group type is harmless
+      // (sing-box simply never reads it there).
+      bind_interface: bindInterface.trim() || undefined,
     };
     const err = validateOutboundDraft(draft);
     if (err) {
@@ -317,6 +324,23 @@ const OutboundFormModal: FC<{
           </div>
         )}
 
+        {!isGroup && (
+          <div className="rounded-lg border border-rapido-border p-3">
+            <div className="mb-2 text-xs font-medium text-rapido-muted">
+              {t("rapido.coreConfig.networkAdvanced")}
+            </div>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.bindInterface")}</span>
+              <Input
+                dir="ltr"
+                value={bindInterface}
+                onChange={(e) => setBindInterface(e.target.value)}
+                placeholder="wg-germany"
+              />
+            </label>
+          </div>
+        )}
+
         {(type === "selector" || type === "urltest") && (
           <div>
             <div className="mb-2 text-xs font-medium text-rapido-muted">
@@ -373,6 +397,11 @@ const OutboundRow: FC<{ outbound: Outbound; onEdit: () => void; onRemove: () => 
         {outboundTLSIsMandatory(outbound.type) || outbound.tls_enabled ? (
           <Badge tone="green">TLS</Badge>
         ) : null}
+        {outbound.bind_interface && (
+          <Badge tone="brand" dir="ltr">
+            {outbound.bind_interface}
+          </Badge>
+        )}
         {(outbound.type === "selector" || outbound.type === "urltest") &&
           (outbound.outbounds?.length ?? 0) > 0 && (
             <span className="text-xs text-rapido-muted" dir="ltr">
@@ -414,6 +443,8 @@ const RoutingRuleFormModal: FC<{
 }> = ({ initial, outboundOptions, onSave, onClose }) => {
   const { t } = useTranslation();
   const isEdit = !!initial;
+  const { data: inbounds } = useInboundsDetailQuery();
+  const [inboundTags, setInboundTags] = useState<Set<string>>(new Set(initial?.inbound ?? []));
   const [domain, setDomain] = useState(formatList(initial?.domain));
   const [domainSuffix, setDomainSuffix] = useState(formatList(initial?.domain_suffix));
   const [domainKeyword, setDomainKeyword] = useState(formatList(initial?.domain_keyword));
@@ -427,6 +458,14 @@ const RoutingRuleFormModal: FC<{
     initial?.outbound_tag ?? outboundOptions[0]?.value ?? "direct"
   );
   const [error, setError] = useState("");
+
+  const toggleInboundTag = (tag: string) =>
+    setInboundTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
 
   const toggleNetwork = (n: NetworkType) =>
     setNetwork((prev) => {
@@ -446,6 +485,7 @@ const RoutingRuleFormModal: FC<{
 
   const submit = () => {
     const draft: RoutingRule = {
+      inbound: Array.from(inboundTags),
       domain: parseCommaList(domain),
       domain_suffix: parseCommaList(domainSuffix),
       domain_keyword: parseCommaList(domainKeyword),
@@ -472,6 +512,24 @@ const RoutingRuleFormModal: FC<{
         {isEdit ? t("rapido.coreConfig.ruleEditTitle") : t("rapido.coreConfig.ruleAddTitle")}
       </h2>
       <div className="flex flex-col gap-3">
+        {(inbounds?.length ?? 0) > 0 && (
+          <div>
+            <div className="mb-2 text-xs font-medium text-rapido-muted">
+              {t("rapido.coreConfig.inboundLabel")}
+            </div>
+            <div className="flex flex-wrap gap-3 rounded-lg border border-rapido-border p-3">
+              {inbounds!.map((in_) => (
+                <Checkbox
+                  key={in_.tag}
+                  checked={inboundTags.has(in_.tag)}
+                  onChange={() => toggleInboundTag(in_.tag)}
+                  label={in_.tag}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.domain")}</span>

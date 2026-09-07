@@ -16,7 +16,12 @@ export type InboundSecurity = "none" | "tls" | "reality";
 // Mirrors internal/httpapi/inbounds.go's inboundDetailDTO - the full-fidelity
 // shape GET /api/inbounds/detail returns, as opposed to the plain tag list
 // above. reality_* fields are only meaningful (and only ever set) when
-// security is "reality".
+// security is "reality"; tls_* only when security is "tls" - a real
+// customer-facing certificate/key pair, NOT the panel's own node-mTLS CA.
+// An inbound with security "tls" and no tls_certificate/tls_key yet is
+// valid but stays out of automatic node sync (see
+// ListAutoSyncInbounds's own doc comment) - InboundsAdmin.tsx surfaces
+// this with a warning rather than letting it look silently broken.
 export type Inbound = {
   tag: string;
   protocol: string;
@@ -27,6 +32,9 @@ export type Inbound = {
   reality_short_ids?: string[];
   reality_server_name?: string;
   reality_server_port?: number;
+  tls_certificate?: string;
+  tls_key?: string;
+  tls_server_name?: string;
 };
 
 // POST /api/inbounds/sync's per-entry shape (internal/httpapi/inbounds.go's
@@ -42,4 +50,7 @@ export type InboundSyncEntry = {
   reality_short_ids?: string[];
   reality_server_name?: string;
   reality_server_port?: number;
+  tls_certificate?: string;
+  tls_key?: string;
+  tls_server_name?: string;
 };

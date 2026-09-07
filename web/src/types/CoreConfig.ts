@@ -94,6 +94,12 @@ export type Outbound = {
   tls_enabled?: boolean;
   tls_server_name?: string;
   tls_insecure?: boolean;
+
+  /** Binds this outbound's dialer to a specific network interface (e.g. a
+   * WireGuard tunnel device name) - the sing-box equivalent of Xray's
+   * streamSettings.sockopt.interface, which real per-location exit
+   * selection depends on. Meaningless for selector/urltest. */
+  bind_interface?: string;
 };
 
 export const NETWORK_TYPES = ["tcp", "udp", "icmp"] as const;
@@ -114,6 +120,12 @@ export const PROTOCOL_TYPES = [
 export type ProtocolType = (typeof PROTOCOL_TYPES)[number];
 
 export type RoutingRule = {
+  /** Matches by which inbound tag a connection arrived through - entries
+   * must be real inbound tags (validated server-side against the live
+   * inbounds table, not against this config's own data like outbound_tag
+   * is). This is what lets one rule route e.g. only "node1"'s traffic to
+   * a specific outbound. */
+  inbound?: string[];
   domain?: string[];
   domain_suffix?: string[];
   domain_keyword?: string[];

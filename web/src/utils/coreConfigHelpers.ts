@@ -187,6 +187,7 @@ export const parseFullConfigJSON = (text: string): CoreConfig => {
 // outbound), otherwise every non-empty field joined with " · ".
 export const summarizeRoutingRule = (rule: RoutingRule): string => {
   const parts: string[] = [];
+  if (rule.inbound?.length) parts.push(`inbound: ${rule.inbound.join(", ")}`);
   if (rule.domain?.length) parts.push(`domain: ${rule.domain.join(", ")}`);
   if (rule.domain_suffix?.length) parts.push(`domain_suffix: ${rule.domain_suffix.join(", ")}`);
   if (rule.domain_keyword?.length) parts.push(`domain_keyword: ${rule.domain_keyword.join(", ")}`);

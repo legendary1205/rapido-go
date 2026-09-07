@@ -34,6 +34,9 @@ const InboundForm: FC<{ onClose: () => void }> = ({ onClose }) => {
   const [realityShortIDs, setRealityShortIDs] = useState("");
   const [realityServerName, setRealityServerName] = useState("");
   const [realityServerPort, setRealityServerPort] = useState("");
+  const [tlsCertificate, setTlsCertificate] = useState("");
+  const [tlsKey, setTlsKey] = useState("");
+  const [tlsServerName, setTlsServerName] = useState("");
   const [error, setError] = useState("");
 
   const syncInbound = useSyncInboundMutation();
@@ -57,6 +60,19 @@ const InboundForm: FC<{ onClose: () => void }> = ({ onClose }) => {
                 : undefined,
               reality_server_name: realityServerName || undefined,
               reality_server_port: realityServerPort ? Number(realityServerPort) : undefined,
+            }
+          : {}),
+        // Only meaningful when security is tls - same "omit rather than
+        // send a stray leftover value" reasoning as the reality fields
+        // above. A tls inbound with no certificate/key yet is still a
+        // valid save (see rapido.inbounds.tlsNoCertWarning on the card
+        // below) - it just stays out of automatic node sync until filled
+        // in, matching ListAutoSyncInbounds's own behavior.
+        ...(security === "tls"
+          ? {
+              tls_certificate: tlsCertificate || undefined,
+              tls_key: tlsKey || undefined,
+              tls_server_name: tlsServerName || undefined,
             }
           : {}),
       })
@@ -154,6 +170,45 @@ const InboundForm: FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         )}
 
+        {security === "tls" && (
+          <div className="flex flex-col gap-3 rounded-lg border border-rapido-border p-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.inbounds.tlsServerName")}</span>
+              <Input
+                dir="ltr"
+                value={tlsServerName}
+                onChange={(e) => setTlsServerName(e.target.value)}
+                placeholder="example.com"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.inbounds.tlsCertificate")}</span>
+              <textarea
+                dir="ltr"
+                rows={6}
+                value={tlsCertificate}
+                onChange={(e) => setTlsCertificate(e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----"
+                className="w-full resize-y rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.inbounds.tlsKey")}</span>
+              <textarea
+                dir="ltr"
+                rows={6}
+                value={tlsKey}
+                onChange={(e) => setTlsKey(e.target.value)}
+                placeholder="-----BEGIN PRIVATE KEY-----"
+                className="w-full resize-y rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
+              />
+            </label>
+            {(!tlsCertificate || !tlsKey) && (
+              <p className="text-xs text-amber-400">{t("rapido.inbounds.tlsNoCertWarning")}</p>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {error}
@@ -229,6 +284,17 @@ const InboundCard: FC<{ row: Inbound }> = ({ row }) => {
             )}
           </div>
         )}
+
+        {row.security === "tls" &&
+          (!row.tls_certificate || !row.tls_key ? (
+            <p className="text-xs text-amber-400">{t("rapido.inbounds.tlsNoCertWarning")}</p>
+          ) : (
+            row.tls_server_name && (
+              <span className="text-xs text-rapido-muted" dir="ltr">
+                SNI: <span className="text-rapido-text">{row.tls_server_name}</span>
+              </span>
+            )
+          ))}
 
         {msg && (
           <div

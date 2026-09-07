@@ -229,6 +229,15 @@ describe("summarizeRoutingRule", () => {
     });
     expect(summary).toBe("domain_suffix: a.com");
   });
+
+  it("puts inbound first, ahead of domain/ip/port criteria", () => {
+    const summary = summarizeRoutingRule({
+      inbound: ["node1", "node2"],
+      domain_suffix: ["example.com"],
+      outbound_tag: "germany",
+    });
+    expect(summary).toBe("inbound: node1, node2 · domain_suffix: example.com");
+  });
 });
 
 describe("moveItem", () => {
