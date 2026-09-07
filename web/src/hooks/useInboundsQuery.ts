@@ -47,6 +47,21 @@ export const useSyncInboundMutation = () => {
   });
 };
 
+// Same endpoint as useSyncInboundMutation, but for the "Full inbounds
+// (JSON)" card on InboundsAdmin.tsx - sends every entry the admin edited
+// in one request instead of always wrapping a single one.
+export const useSyncInboundsBulkMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entries: InboundSyncEntry[]) =>
+      fetch<{ synced: number; created: number }>("/inbounds/sync", {
+        method: "POST",
+        body: entries,
+      }),
+    onSuccess: () => invalidateInboundQueries(queryClient),
+  });
+};
+
 // DELETE /api/inbounds/:tag cascades to that inbound's hosts server-side
 // (see internal/db/queries/inbounds.sql's DeleteInboundByTag) - the hosts
 // query is invalidated too so a still-open Hosts page tab doesn't keep
