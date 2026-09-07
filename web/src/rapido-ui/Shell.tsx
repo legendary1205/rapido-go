@@ -15,6 +15,7 @@ import {
   Cog6ToothIcon,
   CircleStackIcon,
   Squares2X2Icon,
+  ArrowsRightLeftIcon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -64,7 +65,8 @@ export type RapidoNavKey =
   | "admins"
   | "templates"
   | "integrations"
-  | "backups";
+  | "backups"
+  | "gateway";
 
 const NAV_ITEMS: {
   key: RapidoNavKey;
@@ -119,6 +121,13 @@ const NAV_ITEMS: {
     href: "/backups/",
     labelKey: "rapido.backups.nav",
     icon: CircleStackIcon,
+    sudoOnly: true,
+  },
+  {
+    key: "gateway",
+    href: "/gateway/",
+    labelKey: "rapido.gateway.nav",
+    icon: ArrowsRightLeftIcon,
     sudoOnly: true,
   },
 ];

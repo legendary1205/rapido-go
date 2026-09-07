@@ -140,6 +140,14 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/settings/backup/:filename/restore", requireSudo, h.handleRestoreBackup)
 		api.POST("/settings/backup/restore-upload", requireSudo, h.handleRestoreUpload)
 
+		api.GET("/settings/gateway", requireSudo, h.handleGetGatewaySettings)
+		api.PUT("/settings/gateway", requireSudo, h.handleUpdateGatewaySettings)
+		api.GET("/settings/gateway/peers", requireSudo, h.handleListGatewayPeers)
+		api.POST("/settings/gateway/peers", requireSudo, h.handleCreateGatewayPeer)
+		api.PUT("/settings/gateway/peers/:id", requireSudo, h.handleUpdateGatewayPeer)
+		api.DELETE("/settings/gateway/peers/:id", requireSudo, h.handleDeleteGatewayPeer)
+		api.POST("/settings/gateway/peers/:id/test", requireSudo, h.handleTestGatewayPeer)
+
 		api.GET("/tickets", requireAdmin, h.handleListTickets)
 		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)
 		api.POST("/tickets/:id/messages", requireAdmin, h.handleAdminReplyTicket)
@@ -153,6 +161,13 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// Panel -> node config pull (see handleGetNodeConfig's doc comment) -
 		// every node polls this on the same interval as node-report above.
 		api.GET("/internal/node-config", h.requireNodeSecret, h.handleGetNodeConfig)
+
+		// Panel -> panel (Gateway / multi-panel load balancer), never an
+		// admin JWT - authenticated by this panel's own gateway secret
+		// (h.requireGatewaySecret), the same shape as requireNodeSecret
+		// above but checked against gateway_settings instead of a specific
+		// node's report_secret. See internal/httpapi/gateway.go.
+		api.GET("/internal/gateway/ping", h.requireGatewaySecret, h.handleGatewayPing)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)
