@@ -408,7 +408,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel) or a legacy Marzban/Rapido mysqldump are supported today"})
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel) or a Marzban mysqldump are supported today"})
 	}
 }
 
