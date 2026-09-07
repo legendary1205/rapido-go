@@ -18,9 +18,12 @@ import (
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/group"
 	boxhttp "github.com/sagernet/sing-box/protocol/http"
+	"github.com/sagernet/sing-box/protocol/hysteria2"
 	"github.com/sagernet/sing-box/protocol/shadowsocks"
 	"github.com/sagernet/sing-box/protocol/socks"
 	"github.com/sagernet/sing-box/protocol/trojan"
+	"github.com/sagernet/sing-box/protocol/tuic"
+	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
 
 	forkedvless "github.com/legendary1205/rapido-go/internal/nodecore/vless"
@@ -40,19 +43,30 @@ func InboundRegistry() *inbound.Registry {
 }
 
 // OutboundRegistry registers exactly the outbound types Phase 7.4's Core
-// Config can produce (see cmd/node/main.go's buildCoreOptions) - direct
-// and block are always present (a node's two implicit fallback targets
-// even with zero custom Core Config outbounds); socks/http/selector/
-// urltest are registered so an admin-defined custom outbound of one of
-// those types actually has something to construct it. Not sing-box's full
-// outbound surface (no WireGuard/Hysteria/shadowsocks-as-outbound/etc.) -
-// those aren't things Core Config's structured form exposes.
+// Config can produce (see cmd/node/main.go's buildCoreOptions): direct and
+// block are always present (a node's two implicit fallback targets even
+// with zero custom Core Config outbounds); socks/http/shadowsocks/vmess/
+// trojan/vless/hysteria2/tuic/selector/urltest are registered so an
+// admin-defined custom outbound of one of those types actually has
+// something to construct it. Not sing-box's full outbound surface -
+// WireGuard is deliberately excluded (a sing-box "Endpoint", a
+// structurally different config section this rewrite doesn't wire in at
+// all yet, not just another outbound type - see coreconfig.go's own doc
+// comment), and no other protocol (Hysteria v1, TUIC's exotic siblings,
+// ShadowsocksR, Naive, Tor, SSH, ShadowTLS, AnyTLS) is something Core
+// Config's structured form exposes.
 func OutboundRegistry() *outbound.Registry {
 	registry := outbound.NewRegistry()
 	direct.RegisterOutbound(registry)
 	block.RegisterOutbound(registry)
 	socks.RegisterOutbound(registry)
 	boxhttp.RegisterOutbound(registry)
+	shadowsocks.RegisterOutbound(registry)
+	vmess.RegisterOutbound(registry)
+	trojan.RegisterOutbound(registry)
+	vless.RegisterOutbound(registry)
+	hysteria2.RegisterOutbound(registry)
+	tuic.RegisterOutbound(registry)
 	group.RegisterSelector(registry)
 	group.RegisterURLTest(registry)
 	return registry

@@ -125,6 +125,84 @@ func TestBuildOptionsWithFullCoreIsAcceptedBySingBox(t *testing.T) {
 	t.Cleanup(func() { node.Close() })
 }
 
+// TestEachOutboundProtocolIsAcceptedBySingBox is the real proof that every
+// outbound type Core Config's structured form offers (see
+// internal/httpapi/coreconfig.go's validOutboundTypes) actually has a
+// working translation in buildCoreOptions and a real registration in
+// internal/nodecore/registry.go's OutboundRegistry - each one is run
+// through the exact same nodecore.New/Start path a real node process
+// uses, not just asserted to compile. This is the table-driven form of
+// TestBuildOptionsWithFullCoreIsAcceptedBySingBox, isolating exactly
+// which protocol fails if one does (this is how the DNS transport
+// registry gap and, later, the missing hysteria2/tuic go.sum entries were
+// both first caught).
+func TestEachOutboundProtocolIsAcceptedBySingBox(t *testing.T) {
+	cases := []struct {
+		name     string
+		outbound outboundSpec
+	}{
+		{"direct", outboundSpec{Tag: "ob", Type: "direct"}},
+		{"block", outboundSpec{Tag: "ob", Type: "block"}},
+		{"socks", outboundSpec{Tag: "ob", Type: "socks", Server: "203.0.113.1", ServerPort: 1080}},
+		{"http", outboundSpec{Tag: "ob", Type: "http", Server: "203.0.113.1", ServerPort: 8080}},
+		{"shadowsocks", outboundSpec{Tag: "ob", Type: "shadowsocks", Server: "203.0.113.1", ServerPort: 8388, Method: "aes-256-gcm", Password: "test-passphrase"}},
+		{"vmess", outboundSpec{Tag: "ob", Type: "vmess", Server: "203.0.113.1", ServerPort: 443, UUID: "8f8a4c1e-1e2a-4b8a-9b1a-0000000000aa", Security: "auto"}},
+		{"vmess-tls", outboundSpec{Tag: "ob", Type: "vmess", Server: "example.com", ServerPort: 443, UUID: "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ab", Security: "auto", TLSEnabled: true, TLSServerName: "example.com"}},
+		{"trojan", outboundSpec{Tag: "ob", Type: "trojan", Server: "example.com", ServerPort: 443, Password: "trojan-pass", TLSEnabled: true, TLSServerName: "example.com"}},
+		{"vless", outboundSpec{Tag: "ob", Type: "vless", Server: "203.0.113.1", ServerPort: 443, UUID: "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ac"}},
+		{"hysteria2", outboundSpec{Tag: "ob", Type: "hysteria2", Server: "example.com", ServerPort: 443, Password: "h2-pass"}},
+		{"tuic", outboundSpec{Tag: "ob", Type: "tuic", Server: "example.com", ServerPort: 443, UUID: "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ad", Password: "tuic-pass", CongestionControl: "bbr"}},
+		{"selector", outboundSpec{Tag: "ob", Type: "selector", Outbounds: []string{"direct"}}},
+		{"urltest", outboundSpec{Tag: "ob", Type: "urltest", Outbounds: []string{"direct"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := buildOptions(startRequest{Core: &coreSpec{Outbounds: []outboundSpec{tc.outbound}}})
+			if err != nil {
+				t.Fatalf("buildOptions: %v", err)
+			}
+			node, err := nodecore.New(context.Background(), opts, traffic.NewManager())
+			if err != nil {
+				t.Fatalf("nodecore.New: %v", err)
+			}
+			if err := node.Start(); err != nil {
+				t.Fatalf("sing-box rejected a %s outbound: %v", tc.name, err)
+			}
+			node.Close()
+		})
+	}
+}
+
+func TestEachDNSServerTypeIsAcceptedBySingBox(t *testing.T) {
+	cases := []struct {
+		name string
+		srv  dnsServerSpec
+	}{
+		{"local", dnsServerSpec{Tag: "d", Type: "local"}},
+		{"udp", dnsServerSpec{Tag: "d", Type: "udp", Address: "1.1.1.1"}},
+		{"tcp", dnsServerSpec{Tag: "d", Type: "tcp", Address: "1.1.1.1"}},
+		{"tls", dnsServerSpec{Tag: "d", Type: "tls", Address: "1.1.1.1"}},
+		{"https", dnsServerSpec{Tag: "d", Type: "https", Address: "1.1.1.1", Path: "/dns-query"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := buildOptions(startRequest{Core: &coreSpec{DNSServers: []dnsServerSpec{tc.srv}}})
+			if err != nil {
+				t.Fatalf("buildOptions: %v", err)
+			}
+			node, err := nodecore.New(context.Background(), opts, traffic.NewManager())
+			if err != nil {
+				t.Fatalf("nodecore.New: %v", err)
+			}
+			if err := node.Start(); err != nil {
+				t.Fatalf("sing-box rejected a %s dns server: %v", tc.name, err)
+			}
+			node.Close()
+		})
+	}
+}
+
 func TestBuildOptionsRejectsUnknownOutboundType(t *testing.T) {
 	req := startRequest{Core: &coreSpec{Outbounds: []outboundSpec{{Tag: "x", Type: "not-a-real-type"}}}}
 	if _, err := buildOptions(req); err == nil {

@@ -229,12 +229,22 @@ type realitySpec struct {
 // definitions have to be kept in sync by hand rather than shared.
 type outboundSpec struct {
 	Tag        string   `json:"tag"`
-	Type       string   `json:"type"` // direct | block | socks | http | selector | urltest
+	Type       string   `json:"type"` // direct | block | socks | http | shadowsocks | vmess | trojan | vless | hysteria2 | tuic | selector | urltest
 	Server     string   `json:"server,omitempty"`
 	ServerPort int      `json:"server_port,omitempty"`
 	Username   string   `json:"username,omitempty"`
 	Password   string   `json:"password,omitempty"`
 	Outbounds  []string `json:"outbounds,omitempty"` // selector/urltest member tags
+
+	UUID              string `json:"uuid,omitempty"`
+	Flow              string `json:"flow,omitempty"`
+	Method            string `json:"method,omitempty"`
+	Security          string `json:"security,omitempty"`
+	CongestionControl string `json:"congestion_control,omitempty"`
+
+	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
 }
 
 type routingRuleSpec struct {
@@ -468,6 +478,19 @@ const (
 	implicitOutboundTagBlock  = "block-out"
 )
 
+// buildOutboundTLS builds the shared TLS sub-options for every TLS-capable
+// outbound type this Core Config supports. forceEnabled is for the
+// QUIC-based protocols (hysteria2/tuic), where TLS is mandatory at the
+// transport level - the admin never gets a toggle to disable it, unlike
+// the classic TCP protocols (vmess/trojan/vless) where TLS is genuinely
+// optional and ob.TLSEnabled reflects a real admin choice.
+func buildOutboundTLS(ob outboundSpec, forceEnabled bool) *sbox.OutboundTLSOptions {
+	if !forceEnabled && !ob.TLSEnabled {
+		return nil
+	}
+	return &sbox.OutboundTLSOptions{Enabled: true, ServerName: ob.TLSServerName, Insecure: ob.TLSInsecure}
+}
+
 // resolveOutboundTag maps a Core Config outbound_tag reference (which uses
 // the bare admin-facing names "direct"/"block", or a custom tag) to the
 // actual sing-box outbound tag that's really running.
@@ -515,6 +538,44 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 			opts = &sbox.HTTPOutboundOptions{
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Username:      ob.Username, Password: ob.Password,
+			}
+		case "shadowsocks":
+			opts = &sbox.ShadowsocksOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				Method:        ob.Method, Password: ob.Password,
+			}
+		case "vmess":
+			opts = &sbox.VMessOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				UUID:          ob.UUID, Security: ob.Security,
+				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+			}
+		case "trojan":
+			opts = &sbox.TrojanOutboundOptions{
+				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				Password:                    ob.Password,
+				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+			}
+		case "vless":
+			opts = &sbox.VLESSOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				UUID:          ob.UUID, Flow: ob.Flow,
+				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+			}
+		case "hysteria2":
+			// QUIC-based - TLS is mandatory at the transport level, not an
+			// admin-toggleable option like the classic TCP protocols above.
+			opts = &sbox.Hysteria2OutboundOptions{
+				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				Password:                    ob.Password,
+				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+			}
+		case "tuic":
+			// Also QUIC-based - same mandatory-TLS reasoning as hysteria2.
+			opts = &sbox.TUICOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				UUID:          ob.UUID, Password: ob.Password, CongestionControl: ob.CongestionControl,
+				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
 			}
 		case "selector":
 			opts = &sbox.SelectorOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}

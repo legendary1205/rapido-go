@@ -119,6 +119,63 @@ func TestUpdateCoreConfigRejectsSocksOutboundMissingServer(t *testing.T) {
 	}
 }
 
+func TestUpdateCoreConfigAcceptsEveryRealProtocolOutbound(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "ss1", "type": "shadowsocks", "server": "203.0.113.1", "server_port": 8388, "method": "aes-256-gcm", "password": "pw"},
+			{"tag": "vm1", "type": "vmess", "server": "203.0.113.1", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000aa", "security": "auto"},
+			{"tag": "tr1", "type": "trojan", "server": "example.com", "server_port": 443, "password": "pw", "tls_enabled": true, "tls_server_name": "example.com"},
+			{"tag": "vl1", "type": "vless", "server": "203.0.113.1", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ab"},
+			{"tag": "h2", "type": "hysteria2", "server": "example.com", "server_port": 443, "password": "pw"},
+			{"tag": "tu1", "type": "tuic", "server": "example.com", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ac", "password": "pw", "congestion_control": "bbr"},
+		},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("put core config with every protocol: %d %v", resp.Code, resp.Body)
+	}
+	outbounds := resp.Body["outbounds"].([]interface{})
+	if len(outbounds) != 6 {
+		t.Fatalf("outbounds = %v, want 6", outbounds)
+	}
+}
+
+func TestUpdateCoreConfigRejectsShadowsocksInvalidMethod(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "ss1", "type": "shadowsocks", "server": "203.0.113.1", "server_port": 8388, "method": "not-a-real-method", "password": "pw"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("shadowsocks invalid method: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsVmessMissingUUID(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "vm1", "type": "vmess", "server": "203.0.113.1", "server_port": 443, "security": "auto"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("vmess missing uuid: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsTuicInvalidCongestionControl(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "tu1", "type": "tuic", "server": "example.com", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ac", "password": "pw", "congestion_control": "not-a-real-algo"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("tuic invalid congestion_control: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
 func TestUpdateCoreConfigRejectsUnknownDNSType(t *testing.T) {
 	router, token := newTestRouter(t)
 	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{

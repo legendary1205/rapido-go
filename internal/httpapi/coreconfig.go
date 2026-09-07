@@ -16,20 +16,53 @@ import (
 // node without any Core Config at all has used since Phase 3.
 var implicitOutboundTags = map[string]bool{"direct": true, "block": true}
 
-var validOutboundTypes = map[string]bool{"direct": true, "block": true, "socks": true, "http": true, "selector": true, "urltest": true}
+// validOutboundTypes covers sing-box's real outbound registry (see
+// internal/nodecore/registry.go's OutboundRegistry) minus WireGuard -
+// WireGuard is a sing-box "Endpoint", a structurally different top-level
+// config section (option.Options.Endpoints, not Outbounds, with its own
+// registry this codebase doesn't wire in at all yet) rather than another
+// outbound type, so it needs its own future phase, not a field bolted
+// onto this one.
+var validOutboundTypes = map[string]bool{
+	"direct": true, "block": true, "socks": true, "http": true,
+	"shadowsocks": true, "vmess": true, "trojan": true, "vless": true,
+	"hysteria2": true, "tuic": true, "selector": true, "urltest": true,
+}
 var validDNSTypes = map[string]bool{"local": true, "udp": true, "tcp": true, "tls": true, "https": true}
 var validLogLevels = map[string]bool{"trace": true, "debug": true, "info": true, "warn": true, "error": true, "fatal": true, "panic": true}
 var validNetworks = map[string]bool{"tcp": true, "udp": true, "icmp": true}
 var validProtocols = map[string]bool{"tls": true, "http": true, "quic": true, "dns": true, "stun": true, "bittorrent": true, "dtls": true, "ssh": true, "rdp": true, "ntp": true}
+var validShadowsocksMethods = map[string]bool{
+	"none": true, "aes-128-gcm": true, "aes-192-gcm": true, "aes-256-gcm": true,
+	"chacha20-ietf-poly1305": true, "xchacha20-ietf-poly1305": true,
+	"2022-blake3-aes-128-gcm": true, "2022-blake3-aes-256-gcm": true, "2022-blake3-chacha20-poly1305": true,
+}
+var validVMessSecurity = map[string]bool{"auto": true, "none": true, "zero": true, "aes-128-gcm": true, "chacha20-poly1305": true}
+var validCongestionControl = map[string]bool{"cubic": true, "new_reno": true, "bbr": true}
 
 type outboundDTO struct {
 	Tag        string   `json:"tag" binding:"required"`
 	Type       string   `json:"type" binding:"required"`
 	Server     string   `json:"server,omitempty"`
 	ServerPort int      `json:"server_port,omitempty"`
-	Username   string   `json:"username,omitempty"`
-	Password   string   `json:"password,omitempty"`
+	Username   string   `json:"username,omitempty"`  // socks/http
+	Password   string   `json:"password,omitempty"`  // socks/http/shadowsocks/trojan/hysteria2/tuic
 	Outbounds  []string `json:"outbounds,omitempty"` // selector/urltest member tags
+
+	UUID              string `json:"uuid,omitempty"`               // vmess/vless/tuic
+	Flow              string `json:"flow,omitempty"`               // vless (optional - e.g. "xtls-rprx-vision")
+	Method            string `json:"method,omitempty"`             // shadowsocks
+	Security          string `json:"security,omitempty"`           // vmess encryption
+	CongestionControl string `json:"congestion_control,omitempty"` // tuic
+
+	// TLS* is the common subset every TLS-capable outbound type here
+	// shares (vmess/trojan/vless/hysteria2/tuic) - a deliberately small
+	// slice of sing-box's full OutboundTLSOptions (no ALPN/cert-pinning/
+	// client-cert fields), matching this form's "commonly-needed fields
+	// only" scope everywhere else.
+	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
 }
 
 type routingRuleDTO struct {
@@ -107,11 +140,48 @@ func validateCoreConfig(dto coreConfigDTO) string {
 		if !validOutboundTypes[ob.Type] {
 			return "invalid outbound type: " + ob.Type
 		}
-		if (ob.Type == "socks" || ob.Type == "http") && (ob.Server == "" || ob.ServerPort == 0) {
+		needsServer := ob.Type == "socks" || ob.Type == "http" || ob.Type == "shadowsocks" ||
+			ob.Type == "vmess" || ob.Type == "trojan" || ob.Type == "vless" || ob.Type == "hysteria2" || ob.Type == "tuic"
+		if needsServer && (ob.Server == "" || ob.ServerPort == 0) {
 			return "outbound " + ob.Tag + ": server and server_port are required for type " + ob.Type
 		}
 		if (ob.Type == "selector" || ob.Type == "urltest") && len(ob.Outbounds) == 0 {
 			return "outbound " + ob.Tag + ": at least one member outbound is required for type " + ob.Type
+		}
+		switch ob.Type {
+		case "shadowsocks":
+			if !validShadowsocksMethods[ob.Method] {
+				return "outbound " + ob.Tag + ": invalid shadowsocks method " + ob.Method
+			}
+			if ob.Password == "" {
+				return "outbound " + ob.Tag + ": password is required for type shadowsocks"
+			}
+		case "vmess":
+			if ob.UUID == "" {
+				return "outbound " + ob.Tag + ": uuid is required for type vmess"
+			}
+			if !validVMessSecurity[ob.Security] {
+				return "outbound " + ob.Tag + ": invalid vmess security " + ob.Security
+			}
+		case "trojan":
+			if ob.Password == "" {
+				return "outbound " + ob.Tag + ": password is required for type trojan"
+			}
+		case "vless":
+			if ob.UUID == "" {
+				return "outbound " + ob.Tag + ": uuid is required for type vless"
+			}
+		case "hysteria2":
+			if ob.Password == "" {
+				return "outbound " + ob.Tag + ": password is required for type hysteria2"
+			}
+		case "tuic":
+			if ob.UUID == "" || ob.Password == "" {
+				return "outbound " + ob.Tag + ": uuid and password are required for type tuic"
+			}
+			if ob.CongestionControl != "" && !validCongestionControl[ob.CongestionControl] {
+				return "outbound " + ob.Tag + ": invalid congestion_control " + ob.CongestionControl
+			}
 		}
 	}
 	// Member references (selector/urltest) and routing-rule targets both
