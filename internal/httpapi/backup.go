@@ -344,14 +344,16 @@ func (h *Handler) handleRestoreBackup(c *gin.Context) {
 
 // handleRestoreUpload restores (or, for a recognized legacy panel export,
 // imports) the database from an uploaded file. What actually happens
-// depends on detectUploadFormat's table-signature-based classification
+// depends on detectUploadFormat's table/key-signature-based classification
 // (see legacyimport.go): a real pg_dump upload goes through the same
 // restoreFromReader path as handleRestoreBackup; a mysqldump matching the
-// legacy Marzban/Rapido schema is parsed and mapped through
-// loadLegacyImport instead. Anything else is rejected with a clear "not
-// supported yet" message rather than attempting a mis-restore - see the
-// Phase 8.2 plan for the full list of source panels this is meant to grow
-// to cover, one at a time.
+// legacy Marzban/Rapido schema, or a real Hiddify Panel `hiddifypanel
+// backup` JSON export, is parsed and mapped through loadLegacyImport
+// instead - both interpreters produce the exact same ImportedData shape,
+// so this handler doesn't need to know or care which one ran. Anything
+// else is rejected with a clear "not supported yet" message rather than
+// attempting a mis-restore - see the Phase 8.2 plan for the full list of
+// source panels this is meant to grow to cover, one at a time.
 func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	if c.PostForm("confirm") != "true" {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "This is a destructive operation - resend with confirm=true to proceed"})
@@ -374,7 +376,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	}
 	defer os.Remove(tmpPath)
 
-	format, mysqlDump, err := detectUploadFormat(tmpPath)
+	format, mysqlDump, jsonRaw, err := detectUploadFormat(tmpPath)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
@@ -407,8 +409,21 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, result)
 
+	case uploadFormatHiddifyJSON:
+		data, err := legacyimport.FromHiddifyJSON(jsonRaw)
+		if err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+			return
+		}
+		result, err := h.loadLegacyImport(ctx, data)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel) or a Marzban mysqldump are supported today"})
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel), a Marzban mysqldump, or a Hiddify Panel export are supported today"})
 	}
 }
 

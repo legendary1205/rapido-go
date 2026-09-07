@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -64,19 +65,31 @@ const (
 	uploadFormatUnknown uploadFormat = iota
 	uploadFormatNativePostgres
 	uploadFormatMarzbanMySQL
+	uploadFormatHiddifyJSON
 )
 
+// hiddifyExportProbe checks just the three top-level keys that identify a
+// real `hiddifypanel backup` export (see internal/legacyimport/hiddify.go)
+// without decoding the (potentially large) admin_users/users/proxies
+// arrays themselves.
+type hiddifyExportProbe struct {
+	AdminUsers json.RawMessage `json:"admin_users"`
+	Users      json.RawMessage `json:"users"`
+	Proxies    json.RawMessage `json:"proxies"`
+}
+
 // detectUploadFormat reads just enough of the file to classify it - a
-// small header peek for the two "this is definitely not X" cases, and a
-// real (fast - proven well under a second even for a real ~28k-user, 13MB
-// dump) full parse only for the mysqldump case, since which specific
-// legacy panel a MySQL dump came from can only be told by which tables it
-// actually contains, not by a fixed byte offset (see the Phase 8.2 plan's
-// note on table-signature-based detection).
-func detectUploadFormat(path string) (uploadFormat, *legacyimport.MySQLDump, error) {
+// small header peek for the "this is definitely not X" cases, and a real
+// (fast - proven well under a second even for a real ~28k-user, 13MB dump)
+// full parse for the mysqldump and JSON cases, since which specific legacy
+// panel a dump came from can only be told by which tables/keys it actually
+// contains, not by a fixed byte offset (see the Phase 8.2 plan's note on
+// table-signature-based detection). jsonRaw is only populated for a JSON
+// format (uploadFormatHiddifyJSON today) - nil otherwise.
+func detectUploadFormat(path string) (format uploadFormat, mysqlDump *legacyimport.MySQLDump, jsonRaw []byte, err error) {
 	r, err := openMaybeGzipped(path)
 	if err != nil {
-		return uploadFormatUnknown, nil, fmt.Errorf("could not open the uploaded file: %w", err)
+		return uploadFormatUnknown, nil, nil, fmt.Errorf("could not open the uploaded file: %w", err)
 	}
 	defer r.Close()
 
@@ -85,20 +98,31 @@ func detectUploadFormat(path string) (uploadFormat, *legacyimport.MySQLDump, err
 
 	switch {
 	case containsBytes(head, pgDumpHeader):
-		return uploadFormatNativePostgres, nil, nil
+		return uploadFormatNativePostgres, nil, nil, nil
 	case containsBytes(head, "-- MySQL dump"):
 		dump, err := legacyimport.ParseMySQLDump(br)
 		if err != nil {
-			return uploadFormatUnknown, nil, fmt.Errorf("this looks like a MySQL dump but couldn't be parsed: %w", err)
+			return uploadFormatUnknown, nil, nil, fmt.Errorf("this looks like a MySQL dump but couldn't be parsed: %w", err)
 		}
 		if _, ok := dump.Tables["admins"]; ok {
 			if _, ok := dump.Tables["proxies"]; ok {
-				return uploadFormatMarzbanMySQL, dump, nil
+				return uploadFormatMarzbanMySQL, dump, nil, nil
 			}
 		}
-		return uploadFormatUnknown, nil, nil
+		return uploadFormatUnknown, nil, nil, nil
+	case len(head) > 0 && (head[0] == '{' || head[0] == ' ' || head[0] == '\n' || head[0] == '\t'):
+		raw, err := io.ReadAll(br)
+		if err != nil {
+			return uploadFormatUnknown, nil, nil, fmt.Errorf("could not read the uploaded file: %w", err)
+		}
+		var probe hiddifyExportProbe
+		if err := json.Unmarshal(raw, &probe); err == nil &&
+			probe.AdminUsers != nil && probe.Users != nil && probe.Proxies != nil {
+			return uploadFormatHiddifyJSON, nil, raw, nil
+		}
+		return uploadFormatUnknown, nil, nil, nil
 	default:
-		return uploadFormatUnknown, nil, nil
+		return uploadFormatUnknown, nil, nil, nil
 	}
 }
 

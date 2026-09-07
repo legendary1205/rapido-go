@@ -170,6 +170,87 @@ func TestRestoreUploadImportsLegacyMarzbanDump(t *testing.T) {
 	}
 }
 
+// A small, synthetic Hiddify Panel export - real top-level keys and field
+// names (see internal/legacyimport/hiddify.go's own doc comment for how
+// those were confirmed against a live instance), fictional values.
+const hiddifyExportFixture = `{
+  "admin_users": [
+    {"uuid": "owner-uuid", "name": "hiddify_owner", "mode": "super_admin", "parent_admin_uuid": "owner-uuid"}
+  ],
+  "users": [
+    {
+      "uuid": "22222222-2222-2222-2222-222222222222", "name": "hiddify_bob",
+      "added_by_uuid": "owner-uuid", "enable": true,
+      "current_usage_GB": 1, "usage_limit_GB": 20,
+      "package_days": 30, "start_date": "2030-01-01", "mode": "no_reset"
+    },
+    {
+      "uuid": "33333333-3333-3333-3333-333333333333", "name": "hiddify_carol",
+      "added_by_uuid": "owner-uuid", "enable": true,
+      "current_usage_GB": 2, "usage_limit_GB": 20,
+      "package_days": 30, "start_date": "2030-01-01", "mode": "no_reset"
+    }
+  ],
+  "domains": [],
+  "proxies": [
+    {"enable": true, "proto": "vless", "transport": "tcp", "l3": "tls"}
+  ]
+}`
+
+func TestRestoreUploadImportsHiddifyExport(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+	handler.dumpDatabase = fakeDump("-- pre-import state\n")
+
+	resp := doMultipartRestoreUpload(t, router, token, true, "hiddify_backup.json", []byte(hiddifyExportFixture))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("hiddify import upload: %d %s", resp.Code, resp.Raw)
+	}
+	var result legacyImportResultDTO
+	if err := json.Unmarshal(resp.Raw, &result); err != nil {
+		t.Fatalf("decode import result: %v", err)
+	}
+	// UsersImported specifically exercises a real bug this exact test
+	// caught: every Hiddify user shared the same (zero-value) SourceID
+	// before hiddify.go assigned each one a real synthetic id, so
+	// loadLegacyImport's userIDMap[u.SourceID] = created.ID collided down
+	// to a single key - both users were actually written to the database
+	// correctly, but the reported count silently undercounted to 1. A
+	// single-user fixture can never catch this class of bug.
+	if result.AdminsImported != 1 || result.UsersImported != 2 || result.InboundsImported != 1 {
+		t.Fatalf("import counts = %+v, want 1 admin, 2 users, 1 inbound", result)
+	}
+
+	adminsResp := doRequest(t, router, "GET", "/api/admins", token, nil)
+	var admins []map[string]any
+	if err := json.Unmarshal(adminsResp.Raw, &admins); err != nil {
+		t.Fatalf("decode admins: %v", err)
+	}
+	foundImportedAdmin := false
+	for _, a := range admins {
+		if a["username"] == "hiddify_owner" {
+			foundImportedAdmin = true
+			if a["is_sudo"] != true {
+				t.Errorf("hiddify_owner.is_sudo = %v, want true", a["is_sudo"])
+			}
+		}
+	}
+	if !foundImportedAdmin {
+		t.Errorf("hiddify_owner not found in admins list: %v", admins)
+	}
+
+	userResp := doRequest(t, router, "GET", "/api/user/hiddify_bob", token, nil)
+	if userResp.Code != http.StatusOK {
+		t.Fatalf("get imported user: %d %s", userResp.Code, userResp.Raw)
+	}
+	if userResp.Body["status"] != "active" {
+		t.Errorf("hiddify_bob.status = %v, want active", userResp.Body["status"])
+	}
+	proxies, _ := userResp.Body["proxies"].(map[string]any)
+	if proxies == nil || proxies["vless"] == nil {
+		t.Errorf("hiddify_bob.proxies = %v, want a vless entry keyed on their Hiddify uuid", userResp.Body["proxies"])
+	}
+}
+
 func TestRestoreUploadRejectsUnrecognizedMySQLDump(t *testing.T) {
 	router, token, _ := newTestRouterAndHandler(t)
 	unrelated := "-- MySQL dump 10.13\nCREATE TABLE `some_other_app_table` (\n  `id` int NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB;\n"
