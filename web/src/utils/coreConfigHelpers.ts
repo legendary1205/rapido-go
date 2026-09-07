@@ -1,4 +1,26 @@
-import { DNSServer, IMPLICIT_OUTBOUND_TAGS, Outbound, RoutingRule } from "types/CoreConfig";
+import { CoreConfig, DNSServer, IMPLICIT_OUTBOUND_TAGS, Outbound, RoutingRule } from "types/CoreConfig";
+
+// Outbound types that dial a remote server directly (as opposed to
+// direct/block/selector/urltest, which don't) - shared by both the "needs
+// server+port" and "needs a protocol-specific credential" checks below.
+const PROXY_OUTBOUND_TYPES = [
+  "socks",
+  "http",
+  "shadowsocks",
+  "vmess",
+  "trojan",
+  "vless",
+  "hysteria2",
+  "tuic",
+] as const;
+
+// QUIC-based outbound types, where TLS is mandatory at the transport level
+// (never an admin toggle) - see Outbound.tls_enabled's own doc comment.
+const QUIC_OUTBOUND_TYPES = ["hysteria2", "tuic"] as const;
+export const outboundTLSIsMandatory = (type: Outbound["type"]): boolean =>
+  (QUIC_OUTBOUND_TYPES as readonly string[]).includes(type);
+export const outboundIsProxyType = (type: Outbound["type"]): boolean =>
+  (PROXY_OUTBOUND_TYPES as readonly string[]).includes(type);
 
 // ---------------------------------------------------------------------------
 // Comma-separated-text <-> string[]/number[] parsing, the same convention
@@ -68,7 +90,7 @@ export const validateOutboundDraft = (ob: Outbound): string | null => {
   if ((IMPLICIT_OUTBOUND_TAGS as readonly string[]).includes(ob.tag.trim())) {
     return "rapido.coreConfig.errorTagReserved";
   }
-  if (ob.type === "socks" || ob.type === "http") {
+  if (outboundIsProxyType(ob.type)) {
     if (!ob.server?.trim() || !ob.server_port) {
       return "rapido.coreConfig.errorServerRequired";
     }
@@ -77,6 +99,26 @@ export const validateOutboundDraft = (ob: Outbound): string | null => {
     if (!ob.outbounds || ob.outbounds.length === 0) {
       return "rapido.coreConfig.errorMemberRequired";
     }
+  }
+  switch (ob.type) {
+    case "shadowsocks":
+      if (!ob.password) return "rapido.coreConfig.errorPasswordRequired";
+      break;
+    case "vmess":
+      if (!ob.uuid?.trim()) return "rapido.coreConfig.errorUuidRequired";
+      break;
+    case "trojan":
+      if (!ob.password) return "rapido.coreConfig.errorPasswordRequired";
+      break;
+    case "vless":
+      if (!ob.uuid?.trim()) return "rapido.coreConfig.errorUuidRequired";
+      break;
+    case "hysteria2":
+      if (!ob.password) return "rapido.coreConfig.errorPasswordRequired";
+      break;
+    case "tuic":
+      if (!ob.uuid?.trim() || !ob.password) return "rapido.coreConfig.errorUuidAndPasswordRequired";
+      break;
   }
   return null;
 };
@@ -110,6 +152,31 @@ export const moveItem = <T>(arr: T[], index: number, direction: -1 | 1): T[] => 
   const [item] = next.splice(index, 1);
   next.splice(target, 0, item);
   return next;
+};
+
+// ---------------------------------------------------------------------------
+// Full-JSON view <-> structured-form sync (the "advanced" section at the
+// bottom of the page). parseFullConfigJSON is deliberately lenient about
+// shape - it only guarantees the three list fields are real arrays (so the
+// rest of this page's .map() calls never crash on a hand-edited JSON blob
+// that dropped one), everything else passes through untouched and is left
+// to the server's own validateCoreConfig on Save, exactly like every other
+// edit path on this page. Throws (with the parser's own message) on
+// invalid JSON syntax - the caller is expected to catch it and show it as
+// a parse error, not silently discard the edit.
+export const parseFullConfigJSON = (text: string): CoreConfig => {
+  const parsed = JSON.parse(text);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("rapido.coreConfig.jsonMustBeObject");
+  }
+  return {
+    log_level: typeof parsed.log_level === "string" ? parsed.log_level : "warn",
+    sniff_enabled: !!parsed.sniff_enabled,
+    outbounds: Array.isArray(parsed.outbounds) ? parsed.outbounds : [],
+    routing_rules: Array.isArray(parsed.routing_rules) ? parsed.routing_rules : [],
+    dns_servers: Array.isArray(parsed.dns_servers) ? parsed.dns_servers : [],
+    updated_at: parsed.updated_at ?? null,
+  };
 };
 
 // ---------------------------------------------------------------------------

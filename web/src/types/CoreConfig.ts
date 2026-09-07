@@ -21,10 +21,43 @@ export const OUTBOUND_TYPES = [
   "block",
   "socks",
   "http",
+  "shadowsocks",
+  "vmess",
+  "trojan",
+  "vless",
+  "hysteria2",
+  "tuic",
   "selector",
   "urltest",
 ] as const;
 export type OutboundType = (typeof OUTBOUND_TYPES)[number];
+
+// The realistically-used sing-box outbound protocols (confirmed with the
+// user rather than assumed) - not sing-box's full catalog. WireGuard is
+// deliberately excluded: sing-box models it as an "Endpoint", a
+// structurally different top-level config section this rewrite doesn't
+// support yet, not just another outbound type (see coreconfig.go's own
+// doc comment). Exotic/legacy protocols (Hysteria v1, ShadowsocksR, Naive,
+// Tor, SSH, ShadowTLS, AnyTLS) aren't exposed here either.
+
+export const SHADOWSOCKS_METHODS = [
+  "none",
+  "aes-128-gcm",
+  "aes-192-gcm",
+  "aes-256-gcm",
+  "chacha20-ietf-poly1305",
+  "xchacha20-ietf-poly1305",
+  "2022-blake3-aes-128-gcm",
+  "2022-blake3-aes-256-gcm",
+  "2022-blake3-chacha20-poly1305",
+] as const;
+export type ShadowsocksMethod = (typeof SHADOWSOCKS_METHODS)[number];
+
+export const VMESS_SECURITY_TYPES = ["auto", "none", "zero", "aes-128-gcm", "chacha20-poly1305"] as const;
+export type VmessSecurity = (typeof VMESS_SECURITY_TYPES)[number];
+
+export const CONGESTION_CONTROL_TYPES = ["cubic", "new_reno", "bbr"] as const;
+export type CongestionControl = (typeof CONGESTION_CONTROL_TYPES)[number];
 
 // The two tags a node always has even with zero custom outbounds configured
 // (cmd/node/main.go's buildOptions always emits both) - reserved, so an
@@ -42,6 +75,25 @@ export type Outbound = {
   password?: string;
   /** selector/urltest member tags only - ignored for every other type. */
   outbounds?: string[];
+
+  /** vmess / vless / tuic */
+  uuid?: string;
+  /** vless (optional - e.g. "xtls-rprx-vision") */
+  flow?: string;
+  /** shadowsocks */
+  method?: ShadowsocksMethod;
+  /** vmess encryption */
+  security?: VmessSecurity;
+  /** tuic */
+  congestion_control?: CongestionControl;
+
+  /** Shared TLS subset for vmess/trojan/vless (genuinely optional there)
+   * and hysteria2/tuic (mandatory at the transport level for those two -
+   * the form hides this toggle and always sends tls_enabled: true for
+   * them, since QUIC requires TLS). */
+  tls_enabled?: boolean;
+  tls_server_name?: string;
+  tls_insecure?: boolean;
 };
 
 export const NETWORK_TYPES = ["tcp", "udp", "icmp"] as const;

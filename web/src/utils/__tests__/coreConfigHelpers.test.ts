@@ -4,8 +4,11 @@ import {
   formatIntList,
   formatList,
   moveItem,
+  outboundIsProxyType,
+  outboundTLSIsMandatory,
   parseCommaIntList,
   parseCommaList,
+  parseFullConfigJSON,
   summarizeRoutingRule,
   validateDnsServerDraft,
   validateOutboundDraft,
@@ -112,6 +115,67 @@ describe("validateOutboundDraft", () => {
   it("has no extra requirements for direct/block", () => {
     expect(validateOutboundDraft({ tag: "my-direct", type: "direct" })).toBeNull();
   });
+
+  it("requires server+port and a password for shadowsocks/trojan/hysteria2", () => {
+    for (const type of ["shadowsocks", "trojan", "hysteria2"] as const) {
+      expect(validateOutboundDraft({ tag: "ob", type, server: "1.2.3.4", server_port: 443 })).toBe(
+        "rapido.coreConfig.errorPasswordRequired"
+      );
+      expect(
+        validateOutboundDraft({ tag: "ob", type, server: "1.2.3.4", server_port: 443, password: "pw" })
+      ).toBeNull();
+    }
+  });
+
+  it("requires a uuid for vmess/vless", () => {
+    for (const type of ["vmess", "vless"] as const) {
+      expect(validateOutboundDraft({ tag: "ob", type, server: "1.2.3.4", server_port: 443 })).toBe(
+        "rapido.coreConfig.errorUuidRequired"
+      );
+      expect(
+        validateOutboundDraft({ tag: "ob", type, server: "1.2.3.4", server_port: 443, uuid: "u" })
+      ).toBeNull();
+    }
+  });
+
+  it("requires both uuid and password for tuic", () => {
+    expect(validateOutboundDraft({ tag: "ob", type: "tuic", server: "1.2.3.4", server_port: 443 })).toBe(
+      "rapido.coreConfig.errorUuidAndPasswordRequired"
+    );
+    expect(
+      validateOutboundDraft({
+        tag: "ob",
+        type: "tuic",
+        server: "1.2.3.4",
+        server_port: 443,
+        uuid: "u",
+        password: "pw",
+      })
+    ).toBeNull();
+  });
+});
+
+describe("outboundIsProxyType / outboundTLSIsMandatory", () => {
+  it("flags every server-dialing type as a proxy type, and only hysteria2/tuic as TLS-mandatory", () => {
+    const proxyTypes: Outbound["type"][] = [
+      "socks",
+      "http",
+      "shadowsocks",
+      "vmess",
+      "trojan",
+      "vless",
+      "hysteria2",
+      "tuic",
+    ];
+    for (const type of proxyTypes) expect(outboundIsProxyType(type)).toBe(true);
+    expect(outboundIsProxyType("direct")).toBe(false);
+    expect(outboundIsProxyType("selector")).toBe(false);
+
+    expect(outboundTLSIsMandatory("hysteria2")).toBe(true);
+    expect(outboundTLSIsMandatory("tuic")).toBe(true);
+    expect(outboundTLSIsMandatory("vmess")).toBe(false);
+    expect(outboundTLSIsMandatory("trojan")).toBe(false);
+  });
 });
 
 describe("validateRoutingRuleDraft", () => {
@@ -190,5 +254,42 @@ describe("moveItem", () => {
     const arr = ["a", "b", "c"];
     moveItem(arr, 0, 1);
     expect(arr).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("parseFullConfigJSON", () => {
+  it("round-trips a full config unchanged", () => {
+    const config = {
+      log_level: "debug",
+      sniff_enabled: false,
+      outbounds: [{ tag: "up", type: "socks", server: "1.2.3.4", server_port: 1080 }],
+      routing_rules: [{ ip_is_private: true, outbound_tag: "block" }],
+      dns_servers: [{ tag: "d", type: "udp", address: "1.1.1.1" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    expect(parseFullConfigJSON(JSON.stringify(config))).toEqual(config);
+  });
+
+  it("defaults missing list fields to empty arrays instead of throwing", () => {
+    const parsed = parseFullConfigJSON(JSON.stringify({ log_level: "warn", sniff_enabled: true }));
+    expect(parsed.outbounds).toEqual([]);
+    expect(parsed.routing_rules).toEqual([]);
+    expect(parsed.dns_servers).toEqual([]);
+  });
+
+  it("defaults a missing log_level to warn and sniff_enabled to false", () => {
+    const parsed = parseFullConfigJSON("{}");
+    expect(parsed.log_level).toBe("warn");
+    expect(parsed.sniff_enabled).toBe(false);
+  });
+
+  it("throws on invalid JSON syntax", () => {
+    expect(() => parseFullConfigJSON("{not valid json")).toThrow();
+  });
+
+  it("throws on a valid-JSON non-object (e.g. an array or a string)", () => {
+    expect(() => parseFullConfigJSON("[1,2,3]")).toThrow();
+    expect(() => parseFullConfigJSON('"just a string"')).toThrow();
+    expect(() => parseFullConfigJSON("null")).toThrow();
   });
 });

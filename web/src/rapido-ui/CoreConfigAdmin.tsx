@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import { useCoreConfigQuery, useSaveCoreConfigMutation } from "hooks/useCoreConfigQuery";
 import {
+  CONGESTION_CONTROL_TYPES,
   CoreConfig,
   DNSServer,
   DNS_SERVER_TYPES,
@@ -14,6 +15,8 @@ import {
   PROTOCOL_TYPES,
   ProtocolType,
   RoutingRule,
+  SHADOWSOCKS_METHODS,
+  VMESS_SECURITY_TYPES,
 } from "types/CoreConfig";
 import { errorText } from "service/errors";
 import {
@@ -22,8 +25,11 @@ import {
   formatIntList,
   formatList,
   moveItem,
+  outboundIsProxyType,
+  outboundTLSIsMandatory,
   parseCommaIntList,
   parseCommaList,
+  parseFullConfigJSON,
   summarizeRoutingRule,
   validateDnsServerDraft,
   validateOutboundDraft,
@@ -73,11 +79,28 @@ const OutboundFormModal: FC<{
   const [username, setUsername] = useState(initial?.username ?? "");
   const [password, setPassword] = useState(initial?.password ?? "");
   const [members, setMembers] = useState<Set<string>>(new Set(initial?.outbounds ?? []));
+  const [uuid, setUuid] = useState(initial?.uuid ?? "");
+  const [flow, setFlow] = useState(initial?.flow ?? "");
+  const [method, setMethod] = useState(initial?.method ?? SHADOWSOCKS_METHODS[3]); // aes-256-gcm
+  const [security, setSecurity] = useState(initial?.security ?? VMESS_SECURITY_TYPES[0]); // auto
+  const [congestionControl, setCongestionControl] = useState(
+    initial?.congestion_control ?? CONGESTION_CONTROL_TYPES[0]
+  );
+  const [tlsEnabled, setTlsEnabled] = useState(initial?.tls_enabled ?? false);
+  const [tlsServerName, setTlsServerName] = useState(initial?.tls_server_name ?? "");
+  const [tlsInsecure, setTlsInsecure] = useState(initial?.tls_insecure ?? false);
   const [error, setError] = useState("");
 
   // Excludes this outbound's own tag - a selector/urltest cannot list itself
   // as a member (buildOutboundOptions' own doc comment).
   const memberOptions = buildOutboundOptions(existing, initial?.tag);
+
+  const isProxy = outboundIsProxyType(type);
+  const isGroup = type === "selector" || type === "urltest";
+  const hasUsernamePassword = type === "socks" || type === "http";
+  const tlsMandatory = outboundTLSIsMandatory(type);
+  const showTLSSection =
+    type === "vmess" || type === "trojan" || type === "vless" || tlsMandatory;
 
   const toggleMember = (value: string) =>
     setMembers((prev) => {
@@ -91,16 +114,25 @@ const OutboundFormModal: FC<{
     opt.implicit ? t(`rapido.coreConfig.${opt.value}Builtin`) : opt.value;
 
   const submit = () => {
-    const isProxy = type === "socks" || type === "http";
-    const isGroup = type === "selector" || type === "urltest";
     const draft: Outbound = {
       tag: tag.trim(),
       type,
       server: isProxy ? server.trim() || undefined : undefined,
       server_port: isProxy && serverPort ? Number(serverPort) : undefined,
-      username: isProxy ? username.trim() || undefined : undefined,
-      password: isProxy ? password || undefined : undefined,
+      username: hasUsernamePassword ? username.trim() || undefined : undefined,
+      password:
+        hasUsernamePassword || type === "shadowsocks" || type === "trojan" || type === "hysteria2" || type === "tuic"
+          ? password || undefined
+          : undefined,
       outbounds: isGroup ? Array.from(members) : undefined,
+      uuid: type === "vmess" || type === "vless" || type === "tuic" ? uuid.trim() || undefined : undefined,
+      flow: type === "vless" ? flow.trim() || undefined : undefined,
+      method: type === "shadowsocks" ? method : undefined,
+      security: type === "vmess" ? security : undefined,
+      congestion_control: type === "tuic" ? congestionControl : undefined,
+      tls_enabled: showTLSSection ? tlsMandatory || tlsEnabled : undefined,
+      tls_server_name: showTLSSection && (tlsMandatory || tlsEnabled) ? tlsServerName.trim() || undefined : undefined,
+      tls_insecure: showTLSSection && (tlsMandatory || tlsEnabled) ? tlsInsecure : undefined,
     };
     const err = validateOutboundDraft(draft);
     if (err) {
@@ -133,23 +165,26 @@ const OutboundFormModal: FC<{
           </Select>
         </label>
 
-        {(type === "socks" || type === "http") && (
+        {isProxy && (
+          <div className="grid grid-cols-[1fr_7rem] gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.server")}</span>
+              <Input dir="ltr" value={server} onChange={(e) => setServer(e.target.value)} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.serverPort")}</span>
+              <Input
+                dir="ltr"
+                type="number"
+                value={serverPort}
+                onChange={(e) => setServerPort(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+
+        {hasUsernamePassword && (
           <>
-            <div className="grid grid-cols-[1fr_7rem] gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.server")}</span>
-                <Input dir="ltr" value={server} onChange={(e) => setServer(e.target.value)} />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.serverPort")}</span>
-                <Input
-                  dir="ltr"
-                  type="number"
-                  value={serverPort}
-                  onChange={(e) => setServerPort(e.target.value)}
-                />
-              </label>
-            </div>
             <label className="flex flex-col gap-1">
               <span className="text-xs text-rapido-muted">
                 {t("rapido.coreConfig.usernameOptional")}
@@ -169,6 +204,117 @@ const OutboundFormModal: FC<{
               />
             </label>
           </>
+        )}
+
+        {type === "shadowsocks" && (
+          <>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.method")}</span>
+              <Select dir="ltr" value={method} onChange={(e) => setMethod(e.target.value as typeof method)}>
+                {SHADOWSOCKS_METHODS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.password")}</span>
+              <Input
+                dir="ltr"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+          </>
+        )}
+
+        {(type === "vmess" || type === "vless" || type === "tuic") && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.uuid")}</span>
+            <Input dir="ltr" value={uuid} onChange={(e) => setUuid(e.target.value)} placeholder="8f8a4c1e-1e2a-4b8a-9b1a-000000000000" />
+          </label>
+        )}
+
+        {type === "vmess" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.vmessSecurity")}</span>
+            <Select dir="ltr" value={security} onChange={(e) => setSecurity(e.target.value as typeof security)}>
+              {VMESS_SECURITY_TYPES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
+
+        {type === "vless" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.flowOptional")}</span>
+            <Input dir="ltr" value={flow} onChange={(e) => setFlow(e.target.value)} placeholder="xtls-rprx-vision" />
+          </label>
+        )}
+
+        {(type === "trojan" || type === "hysteria2" || type === "tuic") && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.password")}</span>
+            <Input
+              dir="ltr"
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+        )}
+
+        {type === "tuic" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.congestionControl")}</span>
+            <Select
+              dir="ltr"
+              value={congestionControl}
+              onChange={(e) => setCongestionControl(e.target.value as typeof congestionControl)}
+            >
+              {CONGESTION_CONTROL_TYPES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
+
+        {showTLSSection && (
+          <div className="rounded-lg border border-rapido-border p-3">
+            {tlsMandatory ? (
+              <div className="mb-2 text-xs font-medium text-rapido-muted">
+                {t("rapido.coreConfig.tlsMandatory")}
+              </div>
+            ) : (
+              <Checkbox
+                checked={tlsEnabled}
+                onChange={(e) => setTlsEnabled(e.target.checked)}
+                label={t("rapido.coreConfig.tlsEnabled")}
+              />
+            )}
+            {(tlsMandatory || tlsEnabled) && (
+              <div className="mt-2 flex flex-col gap-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-rapido-muted">{t("rapido.coreConfig.tlsServerName")}</span>
+                  <Input dir="ltr" value={tlsServerName} onChange={(e) => setTlsServerName(e.target.value)} />
+                </label>
+                <Checkbox
+                  checked={tlsInsecure}
+                  onChange={(e) => setTlsInsecure(e.target.checked)}
+                  label={t("rapido.coreConfig.tlsInsecure")}
+                />
+              </div>
+            )}
+          </div>
         )}
 
         {(type === "selector" || type === "urltest") && (
@@ -219,11 +365,14 @@ const OutboundRow: FC<{ outbound: Outbound; onEdit: () => void; onRemove: () => 
           {outbound.tag}
         </span>
         <Badge tone="sky">{outbound.type}</Badge>
-        {(outbound.type === "socks" || outbound.type === "http") && outbound.server && (
+        {outboundIsProxyType(outbound.type) && outbound.server && (
           <span className="text-xs text-rapido-muted" dir="ltr">
             {outbound.server}:{outbound.server_port}
           </span>
         )}
+        {outboundTLSIsMandatory(outbound.type) || outbound.tls_enabled ? (
+          <Badge tone="green">TLS</Badge>
+        ) : null}
         {(outbound.type === "selector" || outbound.type === "urltest") &&
           (outbound.outbounds?.length ?? 0) > 0 && (
             <span className="text-xs text-rapido-muted" dir="ltr">
@@ -617,6 +766,103 @@ const DnsServerRow: FC<{ server: DNSServer; onEdit: () => void; onRemove: () => 
 };
 
 // ---------------------------------------------------------------------------
+// Full JSON - a live, two-way-synced view of the exact same draft every
+// section above edits. Not a raw Xray-config paste box (see this file's
+// own top-of-file comment on why that has no equivalent here): this JSON
+// is CoreConfig's own shape (internal/httpapi/coreconfig.go's DTO), so any
+// section above changing (e.g. toggling Sniffing) updates this view
+// automatically, and editing the JSON directly and applying it updates
+// every section above the same way a form edit would - both paths write
+// to the exact same `config` state one level up, there is no separate
+// source of truth to keep in sync.
+//
+// Sync direction is one-way-at-a-time by design, not truly simultaneous:
+// while the admin is actively typing here (jsonDirty), external changes to
+// `config` stop overwriting the textarea (nobody wants their half-typed
+// JSON clobbered by an unrelated toggle elsewhere) - a full round trip
+// (Apply, or Discard) is what settles it back into being fed from
+// `config` again. This mirrors how every other section here does its own
+// local buffering before folding into `config`.
+const FullConfigJSONCard: FC<{ config: CoreConfig; onApply: (next: CoreConfig) => void }> = ({
+  config,
+  onApply,
+}) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState(() => JSON.stringify(config, null, 2));
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+
+  // Re-serialize whenever the draft changes elsewhere (a structured-form
+  // edit, a fresh load, a discard) - but never while the admin has
+  // unapplied edits sitting in this exact textarea.
+  useEffect(() => {
+    if (!dirty) setText(JSON.stringify(config, null, 2));
+  }, [config, dirty]);
+
+  const apply = () => {
+    try {
+      const parsed = parseFullConfigJSON(text);
+      setError("");
+      setDirty(false);
+      onApply(parsed);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const discard = () => {
+    setDirty(false);
+    setError("");
+    setText(JSON.stringify(config, null, 2));
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <CardTitle>{t("rapido.coreConfig.fullJsonTitle")}</CardTitle>
+          <CardSubtitle>{t("rapido.coreConfig.fullJsonDesc")}</CardSubtitle>
+        </div>
+        <Button variant="chip" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? t("rapido.coreConfig.fullJsonHide") : t("rapido.coreConfig.fullJsonShow")}
+        </Button>
+      </div>
+      {expanded && (
+        <div className="mt-3 flex flex-col gap-2">
+          <textarea
+            dir="ltr"
+            spellCheck={false}
+            rows={16}
+            className="w-full resize-y rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              setDirty(true);
+              setError("");
+            }}
+          />
+          {error && errorBanner(`${t("rapido.coreConfig.fullJsonInvalid")}: ${error}`)}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-rapido-muted">
+              {dirty ? t("rapido.coreConfig.fullJsonUnapplied") : t("rapido.coreConfig.fullJsonInSync")}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="chip" disabled={!dirty} onClick={discard}>
+                {t("rapido.coreConfig.discard")}
+              </Button>
+              <Button variant="chip" tone="accent" disabled={!dirty} onClick={apply}>
+                {t("rapido.coreConfig.fullJsonApply")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
 
 // index -1 means "adding a new item" (append on save); any other index is
 // the position of the item being edited (replace on save). Shared shape for
@@ -854,6 +1100,8 @@ export const CoreConfigAdmin: FC = () => {
           </div>
         )}
       </Card>
+
+      <FullConfigJSONCard config={config} onApply={(next) => setConfig(next)} />
 
       {outboundModal && (
         <OutboundFormModal
