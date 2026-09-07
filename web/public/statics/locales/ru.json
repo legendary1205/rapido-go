@@ -308,6 +308,8 @@
   "rapido.hosts.saveFailed": "Не удалось сохранить хосты.",
   "rapido.hosts.saveWarning": "Меняет то, что выдаёт подписка каждому клиенту.",
   "rapido.hosts.saved": "Хосты сохранены и сразу используются новыми подписками.",
+  "rapido.hosts.moveUp": "Переместить вверх (показывается клиенту раньше)",
+  "rapido.hosts.moveDown": "Переместить вниз (показывается клиенту позже)",
   "rapido.hosts.showAdvanced": "Дополнительно",
   "rapido.hosts.variablesTitle": "Доступные переменные",
   "rapido.hosts.showVariables": "Показать переменные",

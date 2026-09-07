@@ -1,13 +1,20 @@
-import { FC, useEffect, useState } from "react";
+import { FC, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import { useHostsQuery, useSaveHostsMutation } from "hooks/useHostsQuery";
+import { useInboundsQuery } from "hooks/useInboundsQuery";
 import { Host, HostsMap } from "types/Host";
 import { errorText } from "service/errors";
 import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
-import { addHostToTag, patchHostAt, removeHostAt } from "rapido-ui/hostsReducers";
+import {
+  addHostToTag,
+  flattenSortedHosts,
+  patchHostAt,
+  removeHostAt,
+  swapHostPriority,
+} from "rapido-ui/hostsReducers";
 
 const SECURITY = ["inbound_default", "none", "tls"];
 const ALPN = ["", "h3", "h2", "http/1.1", "h3,h2,http/1.1", "h3,h2", "h2,http/1.1"];
@@ -86,9 +93,14 @@ const HostVariablesReference: FC = () => {
 
 const HostRow: FC<{
   host: Host;
+  tag: string;
   onChange: (patch: Partial<Host>) => void;
   onRemove: () => void;
-}> = ({ host, onChange, onRemove }) => {
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}> = ({ host, tag, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -101,6 +113,11 @@ const HostRow: FC<{
         disabled ? "border-rapido-border opacity-60" : "border-sky-500/40 bg-sky-500/[0.03]"
       )}
     >
+      <div className="mb-2">
+        <Badge tone="sky" dir="ltr">
+          {tag}
+        </Badge>
+      </div>
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr_5rem]">
         <label className="flex flex-col gap-1">
           <span className="text-[11px] text-rapido-muted">{t("hostsDialog.remark")}</span>
@@ -134,6 +151,24 @@ const HostRow: FC<{
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          variant="chip"
+          disabled={!canMoveUp}
+          onClick={onMoveUp}
+          title={t("rapido.hosts.moveUp")}
+          aria-label={t("rapido.hosts.moveUp")}
+        >
+          ↑
+        </Button>
+        <Button
+          variant="chip"
+          disabled={!canMoveDown}
+          onClick={onMoveDown}
+          title={t("rapido.hosts.moveDown")}
+          aria-label={t("rapido.hosts.moveDown")}
+        >
+          ↓
+        </Button>
         <Button variant="chip" onClick={() => setOpen((o) => !o)}>
           {open ? t("rapido.hosts.hideAdvanced") : t("rapido.hosts.showAdvanced")}
         </Button>
@@ -255,12 +290,28 @@ const HostRow: FC<{
 export const HostsAdmin: FC = () => {
   const { t } = useTranslation();
   const { data: remoteHosts, isLoading, isError, refetch } = useHostsQuery();
+  const { data: inboundsByProtocol } = useInboundsQuery();
   const saveHosts = useSaveHostsMutation();
 
   const [hosts, setHosts] = useState<HostsMap | null>(null);
   const [original, setOriginal] = useState<string>("");
   const [confirming, setConfirming] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+
+  // Every real inbound tag, not just ones that already have a host - a
+  // brand-new inbound (auto-created with one default host, see
+  // internal/httpapi/inbounds.go, but included here for robustness/future-
+  // proofing anyway) needs to be choosable in the "add host" tag picker
+  // even if `hosts` itself has no entry for it yet.
+  const allTags = useMemo(() => {
+    const fromInbounds = Object.values(inboundsByProtocol ?? {}).flat();
+    const fromHosts = Object.keys(hosts ?? {});
+    return Array.from(new Set([...fromInbounds, ...fromHosts])).sort();
+  }, [inboundsByProtocol, hosts]);
+  const [newHostTag, setNewHostTag] = useState("");
+  useEffect(() => {
+    if (!newHostTag && allTags.length > 0) setNewHostTag(allTags[0]);
+  }, [allTags, newHostTag]);
 
   // Local edit buffer, seeded from the query result and re-seeded whenever a
   // fresh copy arrives (initial load, a manual refetch, or a successful
@@ -287,8 +338,27 @@ export const HostsAdmin: FC = () => {
     setMsg(null);
   };
 
-  const addHost = (tag: string) => {
-    setHosts((h) => (h ? addHostToTag(h, tag) : h));
+  const addHost = () => {
+    if (!newHostTag) return;
+    setHosts((h) => (h ? addHostToTag(h, newHostTag) : h));
+    setMsg(null);
+  };
+
+  // The flattened, globally-sorted view IS the actual customer-facing
+  // order (see internal/httpapi/subscription.go's forEachUserHost, which
+  // sorts by this exact same (priority, id) pair after gathering hosts
+  // from every included tag) - moving "up"/"down" here swaps priority
+  // with the flat list's real neighbor, which can freely be a host from a
+  // different inbound tag/node. That's the point: this is what lets an
+  // admin interleave configs across tags, not just reorder within one.
+  const flat = useMemo(() => (hosts ? flattenSortedHosts(hosts) : []), [hosts]);
+
+  const moveInFlatList = (flatIndex: number, direction: "up" | "down") => {
+    const targetIndex = direction === "up" ? flatIndex - 1 : flatIndex + 1;
+    if (targetIndex < 0 || targetIndex >= flat.length) return;
+    const a = flat[flatIndex];
+    const b = flat[targetIndex];
+    setHosts((h) => (h ? swapHostPriority(h, a, b) : h));
     setMsg(null);
   };
 
@@ -324,14 +394,11 @@ export const HostsAdmin: FC = () => {
     return <p className="text-sm text-rapido-muted">{t("rapido.tickets.loading")}</p>;
   }
 
-  const tags = Object.keys(hosts);
-  const totalHosts = tags.reduce((n, tag) => n + hosts[tag].length, 0);
-
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm text-rapido-muted">
-          {t("rapido.hosts.summary", { inbounds: tags.length, hosts: totalHosts })}
+          {t("rapido.hosts.summary", { inbounds: allTags.length, hosts: flat.length })}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {dirty && <Badge tone="yellow">{t("rapido.hosts.unsaved")}</Badge>}
@@ -383,44 +450,51 @@ export const HostsAdmin: FC = () => {
 
       <HostVariablesReference />
 
-      {tags.length === 0 && (
-        <Card className="p-6 text-center text-sm text-rapido-muted">
-          {t("rapido.hosts.empty")}
-        </Card>
-      )}
-
-      {tags.map((tag) => (
-        <Card key={tag} className="p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold" dir="ltr">
-                {tag}
-              </span>
-              <Badge tone={hosts[tag].length ? "sky" : "gray"}>
-                {t("rapido.hosts.count", { count: hosts[tag].length })}
-              </Badge>
-            </div>
-            <Button variant="chip" tone="accent" onClick={() => addHost(tag)}>
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-semibold">{t("rapido.hosts.addHost")}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className={field}
+              dir="ltr"
+              value={newHostTag}
+              onChange={(e) => setNewHostTag(e.target.value)}
+              disabled={allTags.length === 0}
+            >
+              {allTags.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
+                </option>
+              ))}
+            </select>
+            <Button variant="chip" tone="accent" disabled={!newHostTag} onClick={addHost}>
               + {t("rapido.hosts.addHost")}
             </Button>
           </div>
+        </div>
+      </Card>
 
-          {hosts[tag].length === 0 ? (
-            <p className="text-xs text-rapido-muted">{t("rapido.hosts.noneForInbound")}</p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {hosts[tag].map((host, i) => (
-                <HostRow
-                  key={i}
-                  host={host}
-                  onChange={(p) => patch(tag, i, p)}
-                  onRemove={() => removeHost(tag, i)}
-                />
-              ))}
-            </div>
-          )}
+      {flat.length === 0 ? (
+        <Card className="p-6 text-center text-sm text-rapido-muted">
+          {t("rapido.hosts.empty")}
         </Card>
-      ))}
+      ) : (
+        <div className="flex flex-col gap-2">
+          {flat.map((f, flatIndex) => (
+            <HostRow
+              key={`${f.tag}:${f.host.id ?? f.index}`}
+              host={f.host}
+              tag={f.tag}
+              onChange={(p) => patch(f.tag, f.index, p)}
+              onRemove={() => removeHost(f.tag, f.index)}
+              onMoveUp={() => moveInFlatList(flatIndex, "up")}
+              onMoveDown={() => moveInFlatList(flatIndex, "down")}
+              canMoveUp={flatIndex > 0}
+              canMoveDown={flatIndex < flat.length - 1}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

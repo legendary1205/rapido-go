@@ -308,6 +308,8 @@
   "rapido.hosts.saveFailed": "无法保存主机。",
   "rapido.hosts.saveWarning": "会改变每位客户订阅所提供的内容。",
   "rapido.hosts.saved": "主机已保存，新的订阅下载会立即使用。",
+  "rapido.hosts.moveUp": "上移（更早展示给客户）",
+  "rapido.hosts.moveDown": "下移（更晚展示给客户）",
   "rapido.hosts.showAdvanced": "高级",
   "rapido.hosts.variablesTitle": "可用变量",
   "rapido.hosts.showVariables": "显示变量",

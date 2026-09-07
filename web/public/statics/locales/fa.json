@@ -313,6 +313,8 @@
   "rapido.hosts.saveFailed": "هاست‌ها ذخیره نشدند.",
   "rapido.hosts.saveWarning": "آنچه اشتراک هر مشتری تحویل می‌دهد را تغییر می‌دهد.",
   "rapido.hosts.saved": "هاست‌ها ذخیره شدند. دانلودهای بعدی اشتراک از همین‌ها استفاده می‌کنند.",
+  "rapido.hosts.moveUp": "انتقال به بالا (زودتر به مشتری نشون داده می‌شه)",
+  "rapido.hosts.moveDown": "انتقال به پایین (دیرتر به مشتری نشون داده می‌شه)",
   "rapido.hosts.showAdvanced": "پیشرفته",
   "rapido.hosts.variablesTitle": "متغیرهای قابل استفاده",
   "rapido.hosts.showVariables": "نمایش متغیرها",

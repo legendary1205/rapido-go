@@ -308,6 +308,8 @@
   "rapido.hosts.saveFailed": "Could not save hosts.",
   "rapido.hosts.saveWarning": "Changes what every customer's subscription hands out.",
   "rapido.hosts.saved": "Hosts saved. New subscription downloads use them immediately.",
+  "rapido.hosts.moveUp": "Move up (shown to customers earlier)",
+  "rapido.hosts.moveDown": "Move down (shown to customers later)",
   "rapido.hosts.showAdvanced": "Advanced",
   "rapido.hosts.variablesTitle": "Available variables",
   "rapido.hosts.showVariables": "Show variables",
