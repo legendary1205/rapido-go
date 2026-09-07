@@ -8,7 +8,7 @@ import {
   useRestoreBackupMutation,
   useRestoreUploadMutation,
 } from "hooks/useBackupsQuery";
-import { Backup, RestoreResult } from "types/Backup";
+import { Backup, LegacyImportResult, RestoreResult, isLegacyImportResult } from "types/Backup";
 import { errorText } from "service/errors";
 import { formatBytes } from "utils/formatByte";
 import { absoluteTime } from "utils/ticketHelpers";
@@ -21,9 +21,11 @@ import { Button } from "rapido-ui/Button";
 // top-level page rather than a card bolted onto Integrations, matching how
 // Nodes/Monitoring/Core Config/Tickets each got their own page in this
 // rewrite rather than being bundled together.
+type AnyRestoreResult = RestoreResult | LegacyImportResult;
+
 const BackupRow: FC<{
   backup: Backup;
-  onRestored: (result: RestoreResult | null, error: string | null) => void;
+  onRestored: (result: AnyRestoreResult | null, error: string | null) => void;
 }> = ({ backup, onRestored }) => {
   const { t, i18n } = useTranslation();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -131,7 +133,7 @@ const BackupRow: FC<{
 // higher-stakes action than the per-row Restore button, so it shouldn't
 // compete for attention with the normal backup list.
 const UploadRestoreCard: FC<{
-  onRestored: (result: RestoreResult | null, error: string | null) => void;
+  onRestored: (result: AnyRestoreResult | null, error: string | null) => void;
 }> = ({ onRestored }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -175,7 +177,7 @@ const UploadRestoreCard: FC<{
           <input
             ref={fileInputRef}
             type="file"
-            accept=".gz"
+            accept=".gz,.sql"
             onChange={onFileChange}
             className="text-xs text-rapido-muted file:mr-2 file:rounded-md file:border file:border-rapido-border file:bg-rapido-bg file:px-2.5 file:py-1 file:text-xs file:text-rapido-text"
           />
@@ -210,7 +212,11 @@ export const BackupsAdmin: FC = () => {
   const { data: backups, isLoading, isError } = useBackupsQuery();
   const createBackup = useCreateBackupMutation();
   const [createError, setCreateError] = useState("");
-  const [restoreMsg, setRestoreMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [restoreMsg, setRestoreMsg] = useState<{
+    tone: "ok" | "err";
+    text: string;
+    warnings?: string[];
+  } | null>(null);
 
   const rows = backups ?? [];
 
@@ -224,13 +230,33 @@ export const BackupsAdmin: FC = () => {
   // Shared by both the per-row Restore button and the upload-and-restore
   // card - either path ends the same way: a page-level banner naming the
   // safety backup, since the row/section that triggered it may itself
-  // reorder or disappear once the backup list refetches.
-  const handleRestored = (result: RestoreResult | null, error: string | null) => {
-    setRestoreMsg(
-      result
-        ? { tone: "ok", text: t("rapido.backups.restoreSuccess", { filename: result.safety_backup.filename }) }
-        : { tone: "err", text: error || t("rapido.backups.restoreFailed") }
-    );
+  // reorder or disappear once the backup list refetches. The upload card
+  // can additionally return a legacy-import result (different shape - see
+  // isLegacyImportResult) with real counts and per-row warnings worth
+  // surfacing, not folding into the same generic "restored" sentence.
+  const handleRestored = (result: AnyRestoreResult | null, error: string | null) => {
+    if (!result) {
+      setRestoreMsg({ tone: "err", text: error || t("rapido.backups.restoreFailed") });
+      return;
+    }
+    if (isLegacyImportResult(result)) {
+      setRestoreMsg({
+        tone: "ok",
+        text: t("rapido.backups.importSuccess", {
+          admins: result.admins_imported,
+          users: result.users_imported,
+          hosts: result.hosts_imported,
+          inbounds: result.inbounds_imported,
+          filename: result.safety_backup.filename,
+        }),
+        warnings: result.warnings,
+      });
+      return;
+    }
+    setRestoreMsg({
+      tone: "ok",
+      text: t("rapido.backups.restoreSuccess", { filename: result.safety_backup.filename }),
+    });
   };
 
   return (
@@ -260,7 +286,14 @@ export const BackupsAdmin: FC = () => {
               : "rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400"
           }
         >
-          {restoreMsg.text}
+          <div>{restoreMsg.text}</div>
+          {restoreMsg.warnings && restoreMsg.warnings.length > 0 && (
+            <ul className="mt-2 max-h-48 list-disc space-y-1 overflow-y-auto ps-5 text-xs text-amber-400">
+              {restoreMsg.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

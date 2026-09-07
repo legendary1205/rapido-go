@@ -7,9 +7,28 @@ export type Backup = {
   created_at: string;
 };
 
-// Mirrors restoreResultDTO - both restore endpoints (from an existing
-// backup, or from an uploaded file) return this same shape.
+// Mirrors restoreResultDTO - the from-existing-backup restore endpoint
+// always returns this; the upload endpoint returns it only when the
+// uploaded file turned out to be a native Postgres backup (see
+// LegacyImportResult for the other case that same endpoint can return).
 export type RestoreResult = {
   safety_backup: Backup;
   detail: string;
 };
+
+// Mirrors legacyImportResultDTO - what the upload endpoint returns when
+// the uploaded file was recognized as a legacy panel export (Marzban/
+// Rapido today, more later) instead of a native backup. No `detail`
+// field - the counts and warnings are the actual summary here.
+export type LegacyImportResult = {
+  safety_backup: Backup;
+  admins_imported: number;
+  users_imported: number;
+  hosts_imported: number;
+  inbounds_imported: number;
+  warnings: string[];
+};
+
+export const isLegacyImportResult = (
+  r: RestoreResult | LegacyImportResult
+): r is LegacyImportResult => "admins_imported" in r;

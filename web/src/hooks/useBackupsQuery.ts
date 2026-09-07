@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetch, fetcher } from "service/http";
-import { Backup, RestoreResult } from "types/Backup";
+import { Backup, LegacyImportResult, RestoreResult } from "types/Backup";
 import { queryKeys } from "utils/queryClient";
 
 export const useBackupsQuery = () =>
@@ -47,6 +47,11 @@ export const useRestoreBackupMutation = () => {
   });
 };
 
+// The upload can turn out to be either a native restore or a legacy-panel
+// import (the backend decides which by looking at what's actually inside
+// the file - see internal/httpapi/legacyimport.go's detectUploadFormat) -
+// the response shape tells the caller which one happened after the fact,
+// via isLegacyImportResult.
 export const useRestoreUploadMutation = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -54,7 +59,10 @@ export const useRestoreUploadMutation = () => {
       const form = new FormData();
       form.append("confirm", "true");
       form.append("file", file);
-      return fetch<RestoreResult>("/settings/backup/restore-upload", { method: "POST", body: form });
+      return fetch<RestoreResult | LegacyImportResult>("/settings/backup/restore-upload", {
+        method: "POST",
+        body: form,
+      });
     },
     onSuccess: () => invalidateEverythingAfterRestore(queryClient),
   });
