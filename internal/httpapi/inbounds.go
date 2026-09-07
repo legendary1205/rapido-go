@@ -260,14 +260,27 @@ func (e *inboundValidationError) Error() string { return e.msg }
 // first time it's registered. No InvalidateHosts call needed: this only
 // ever runs for a tag that handleSyncInbounds just inserted for the first
 // time, so no CachedListHostsByInboundTag entry for it can exist yet.
+//
+// Placed at the end of the existing global priority order (see migration
+// 00008 and GetMaxHostPriority's own doc comment) rather than left at the
+// priority column's bare default (0) - every host auto-created this way
+// would otherwise land on the exact same priority, making the Hosts
+// page's up/down reorder buttons a real no-op between any two of them
+// (swapping two equal values changes nothing) without anything actually
+// being broken in the swap logic itself.
 func createDefaultHost(ctx context.Context, q *generated.Queries, tag string) error {
-	_, err := q.CreateHost(ctx, generated.CreateHostParams{
+	maxPriority, err := q.GetMaxHostPriority(ctx)
+	if err != nil {
+		return fmt.Errorf("could not determine the next host priority: %w", err)
+	}
+	_, err = q.CreateHost(ctx, generated.CreateHostParams{
 		Remark:      "Rapido ({USERNAME}) [{PROTOCOL} - {TRANSPORT}]",
 		Address:     "{SERVER_IP}",
 		Security:    "inbound_default",
 		Alpn:        "none",
 		Fingerprint: "none",
 		InboundTag:  tag,
+		Priority:    maxPriority + 1,
 	})
 	return err
 }

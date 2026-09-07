@@ -282,7 +282,7 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 	}
 
 	hostsImported := 0
-	for _, hst := range data.Hosts {
+	for i, hst := range data.Hosts {
 		if _, err := h.store.Queries.CreateHost(ctx, generated.CreateHostParams{
 			Remark:          hst.Remark,
 			Address:         hst.Address,
@@ -301,6 +301,13 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 			NoiseSetting:    textFromPtr(hst.NoiseSetting),
 			RandomUserAgent: hst.RandomUserAgent,
 			UseSniAsHost:    hst.UseSNIAsHost,
+			// This loop runs right after TruncateForLegacyImport, so the
+			// table starts empty - the loop index alone is already a real,
+			// distinct priority per host (import order), not the shared
+			// column default every one of them would otherwise collide on
+			// (see createDefaultHost's own doc comment on exactly this
+			// class of bug).
+			Priority: int32(i),
 		}); err != nil {
 			warnings = append(warnings, fmt.Sprintf("host %q: %v", hst.Remark, err))
 			continue

@@ -19,6 +19,17 @@ SELECT * FROM hosts WHERE inbound_tag = $1 AND (is_disabled IS NULL OR is_disabl
 -- name: DeleteHostsByInboundTag :exec
 DELETE FROM hosts WHERE inbound_tag = $1;
 
+-- name: GetMaxHostPriority :one
+-- Used to place a freshly auto-created default host (see
+-- internal/httpapi/inbounds.go's createDefaultHost) at the END of the
+-- existing global order, matching what the Hosts page's own "+ Add host"
+-- button already does client-side (rapido-ui/hostsReducers.ts's
+-- maxPriority) - a host inserted with the bare column default (0) instead
+-- would collide with every other host already at priority 0 and make the
+-- up/down reorder buttons look broken (swapping two equal values is a
+-- real no-op, not a bug in the swap itself).
+SELECT COALESCE(MAX(priority), -1)::int AS max_priority FROM hosts;
+
 -- name: CreateHost :one
 INSERT INTO hosts (
     remark, address, port, path, sni, host, security, alpn, fingerprint,

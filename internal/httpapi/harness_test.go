@@ -156,7 +156,7 @@ func testCache(t *testing.T) *cache.Client {
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
-		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates, nodes RESTART IDENTITY CASCADE")
+		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates, nodes, gateway_peers, gateway_settings RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

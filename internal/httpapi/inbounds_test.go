@@ -84,6 +84,43 @@ func TestInboundsSyncAndDetailRoundTripATLSCertificate(t *testing.T) {
 	}
 }
 
+// TestNewInboundsGetDistinctHostPriorities is a regression test for a real
+// bug: createDefaultHost never set a priority at all, so every
+// auto-created default host landed on the hosts.priority column's bare
+// default (0) - identical to every other one. The Hosts page's up/down
+// reorder buttons swap two hosts' priority values, so swapping two hosts
+// that are both already at 0 is a real no-op (nothing to compare), making
+// reordering look broken even though the swap logic itself was correct.
+// Two inbounds synced in the same request must get their own default
+// hosts on two distinct, increasing priorities.
+func TestNewInboundsGetDistinctHostPriorities(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Priority A", "protocol": "vless"},
+	})
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Priority B", "protocol": "vless"},
+	})
+
+	resp := doRequest(t, router, "GET", "/api/hosts", token, nil)
+	if resp.Code != 200 {
+		t.Fatalf("get hosts: %d %v", resp.Code, resp.Body)
+	}
+	hostsA, _ := resp.Body["Priority A"].([]any)
+	hostsB, _ := resp.Body["Priority B"].([]any)
+	if len(hostsA) != 1 || len(hostsB) != 1 {
+		t.Fatalf("expected one default host per tag, got A=%v B=%v", hostsA, hostsB)
+	}
+	priorityA := hostsA[0].(map[string]any)["priority"].(float64)
+	priorityB := hostsB[0].(map[string]any)["priority"].(float64)
+	if priorityA == priorityB {
+		t.Errorf("Priority A and Priority B's default hosts both got priority %v, want two distinct values", priorityA)
+	}
+	if priorityB <= priorityA {
+		t.Errorf("second inbound's host priority (%v) should be greater than the first's (%v)", priorityB, priorityA)
+	}
+}
+
 func TestDeleteInboundRemovesItAndCascadesItsHosts(t *testing.T) {
 	router, token := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{{"tag": "To Delete", "protocol": "vless"}})

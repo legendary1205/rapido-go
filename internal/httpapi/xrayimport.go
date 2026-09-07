@@ -96,6 +96,21 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 	// null requirement. Also carries forward the alpn/fingerprint this
 	// package pulled off the inbound's own tlsSettings, since those live
 	// on the host in this codebase's model.
+	//
+	// nextPriority is computed once, up front, rather than re-queried on
+	// every iteration: this loop deletes each tag's existing host right
+	// before recreating it, so a fresh MAX(priority) query mid-loop could
+	// read back a lower value than it should the moment the current global
+	// max happens to be one of the hosts just deleted. Incrementing a
+	// local counter avoids that, and still gives each newly-created host
+	// its own distinct value instead of colliding on the column default
+	// (see createDefaultHost's own doc comment on exactly that bug).
+	maxPriority, err := h.store.Queries.GetMaxHostPriority(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not determine the next host priority: " + err.Error()})
+		return
+	}
+	nextPriority := maxPriority + 1
 	for _, in := range parsed.Inbounds {
 		if err := h.store.Queries.DeleteHostsByInboundTag(ctx, in.Tag); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not set up the host for " + in.Tag + ": " + err.Error()})
@@ -111,11 +126,12 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 		if _, err := h.store.Queries.CreateHost(ctx, generated.CreateHostParams{
 			Remark: "Rapido ({USERNAME}) [{PROTOCOL} - {TRANSPORT}]", Address: "{SERVER_IP}",
 			Port: pgInt4FromInt(int(in.Port)), Security: "inbound_default", Alpn: alpn, Fingerprint: fingerprint,
-			InboundTag: in.Tag,
+			InboundTag: in.Tag, Priority: nextPriority,
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not set up the host for " + in.Tag + ": " + err.Error()})
 			return
 		}
+		nextPriority++
 		if err := h.store.InvalidateHosts(ctx, in.Tag); err != nil {
 			h.logger.Warn("invalidate host cache after xray import", "tag", in.Tag, "error", err)
 		}
