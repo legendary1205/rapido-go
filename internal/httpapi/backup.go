@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/legendary1205/rapido-go/internal/legacyimport"
 )
 
 // backupFilenamePattern is deliberately an allowlist, not just
@@ -340,13 +342,16 @@ func (h *Handler) handleRestoreBackup(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// handleRestoreUpload restores the database from an uploaded file instead
-// of an existing on-server backup. Only accepts something that looks like
-// a real pg_dump output today (checked via pgDumpHeader after gunzipping) -
-// recognizing and converting a legacy MySQL/SQLite backup from the old
-// Python system is real future work (see the Phase 8 plan), deliberately
-// out of scope here rather than silently mis-restoring an incompatible
-// format.
+// handleRestoreUpload restores (or, for a recognized legacy panel export,
+// imports) the database from an uploaded file. What actually happens
+// depends on detectUploadFormat's table-signature-based classification
+// (see legacyimport.go): a real pg_dump upload goes through the same
+// restoreFromReader path as handleRestoreBackup; a mysqldump matching the
+// legacy Marzban/Rapido schema is parsed and mapped through
+// loadLegacyImport instead. Anything else is rejected with a clear "not
+// supported yet" message rather than attempting a mis-restore - see the
+// Phase 8.2 plan for the full list of source panels this is meant to grow
+// to cover, one at a time.
 func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	if c.PostForm("confirm") != "true" {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "This is a destructive operation - resend with confirm=true to proceed"})
@@ -369,51 +374,42 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	}
 	defer os.Remove(tmpPath)
 
-	if err := validatePgDumpFile(tmpPath); err != nil {
+	format, mysqlDump, err := detectUploadFormat(tmpPath)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
 
-	f, err := os.Open(tmpPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not reopen the uploaded file"})
-		return
-	}
-	defer f.Close()
-
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 	defer cancel()
-	result, err := h.restoreFromReader(ctx, f)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
 
-// validatePgDumpFile peeks at the gzipped file's decompressed header
-// without reading the whole thing into memory - a real panel's database
-// dump can be sizeable, and confirming the format only needs the first
-// couple of lines.
-func validatePgDumpFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("could not open the uploaded file: %w", err)
-	}
-	defer f.Close()
+	switch format {
+	case uploadFormatNativePostgres:
+		f, err := os.Open(tmpPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not reopen the uploaded file"})
+			return
+		}
+		defer f.Close()
+		result, err := h.restoreFromReader(ctx, f)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
 
-	gzr, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("uploaded file is not a valid gzip archive")
-	}
-	defer gzr.Close()
+	case uploadFormatMarzbanMySQL:
+		data := legacyimport.FromMarzbanMySQLDump(mysqlDump)
+		result, err := h.loadLegacyImport(ctx, data)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
 
-	head := make([]byte, 512)
-	n, _ := io.ReadFull(gzr, head)
-	if !bytes.Contains(head[:n], []byte(pgDumpHeader)) {
-		return fmt.Errorf("this doesn't look like a Postgres pg_dump backup - restoring other formats (MySQL, SQLite) isn't supported yet")
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel) or a legacy Marzban/Rapido mysqldump are supported today"})
 	}
-	return nil
 }
 
 func (h *Handler) handleDeleteBackup(c *gin.Context) {

@@ -94,3 +94,10 @@ func timestamptzToPtr(v pgtype.Timestamptz) *time.Time {
 	}
 	return &v.Time
 }
+
+func timestamptzFromPtr(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
