@@ -12,6 +12,7 @@ import {
   TicketIcon,
   ServerStackIcon,
   ChartBarIcon,
+  Cog6ToothIcon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -40,17 +41,21 @@ const NavLink: FC<{ href: string; active?: boolean; icon: FC<{ className?: strin
   </Link>
 );
 
-// This phase's whole page list. Settings (Core Config) is the one page from
-// the old dashboard still missing - it doesn't map onto this architecture
-// the same way (see the plan's own context on why). Nodes and Monitoring
-// used to be in that boat too (node-side reporting hadn't landed yet); both
-// now have real Go-backed pages (internal/httpapi/node.go,
-// internal/httpapi/monitoring.go).
+// This phase's whole page list. Core Config (the sing-box engine's own
+// settings - log level, sniffing, outbounds, routing rules, DNS) is a
+// genuinely new, structured page, not a port of the old dashboard's raw-JSON
+// CoreSettings.tsx - that shape doesn't exist here at all since the engine
+// changed from Xray to sing-box. Nodes and Monitoring used to be the "still
+// missing" page too (node-side reporting hadn't landed yet); both now have
+// real Go-backed pages (internal/httpapi/node.go,
+// internal/httpapi/monitoring.go), same as Core Config now has
+// internal/httpapi/coreconfig.go.
 export type RapidoNavKey =
   | "overview"
   | "users"
   | "tickets"
   | "hosts"
+  | "coreConfig"
   | "nodes"
   | "monitoring"
   | "admins"
@@ -71,6 +76,13 @@ const NAV_ITEMS: {
   // backend already scopes the list to the users they own.
   { key: "tickets", href: "/tickets/", labelKey: "rapido.tickets.nav", icon: TicketIcon },
   { key: "hosts", href: "/hosts/", labelKey: "rapido.hosts.nav", icon: GlobeAltIcon, sudoOnly: true },
+  {
+    key: "coreConfig",
+    href: "/core-config/",
+    labelKey: "rapido.coreConfig.nav",
+    icon: Cog6ToothIcon,
+    sudoOnly: true,
+  },
   { key: "nodes", href: "/nodes/", labelKey: "rapido.nodes.nav", icon: ServerStackIcon, sudoOnly: true },
   {
     key: "monitoring",

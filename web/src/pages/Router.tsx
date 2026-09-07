@@ -29,6 +29,7 @@ const RapidoHome = lazy(() => import("./RapidoHome"));
 const UsersPage = lazy(() => import("./UsersPage"));
 const TicketsPage = lazy(() => import("./TicketsPage"));
 const HostsPage = lazy(() => import("./HostsPage"));
+const CoreConfigPage = lazy(() => import("./CoreConfigPage"));
 const AdminsPage = lazy(() => import("./AdminsPage"));
 const IntegrationsPage = lazy(() => import("./IntegrationsPage"));
 const UserTemplatesPage = lazy(() => import("./UserTemplatesPage"));
@@ -90,6 +91,18 @@ export const router = createHashRouter([
       <SudoOnly>
         <Suspense fallback={null}>
           <HostsPage />
+        </Suspense>
+      </SudoOnly>
+    ),
+    errorElement: <Login />,
+    loader: fetchAdminLoader,
+  },
+  {
+    path: "/core-config/",
+    element: (
+      <SudoOnly>
+        <Suspense fallback={null}>
+          <CoreConfigPage />
         </Suspense>
       </SudoOnly>
     ),

@@ -17,6 +17,7 @@ export const queryKeys = {
   users: (filters: Record<string, unknown>) => ["users", filters] as const,
   inbounds: ["inbounds"] as const,
   hosts: ["hosts"] as const,
+  coreConfig: ["core-config"] as const,
   admins: ["admins"] as const,
   tickets: (filters: Record<string, unknown>) => ["tickets", filters] as const,
   ticket: (id: number | null) => ["ticket", id] as const,
