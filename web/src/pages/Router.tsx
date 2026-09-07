@@ -29,6 +29,7 @@ const RapidoHome = lazy(() => import("./RapidoHome"));
 const UsersPage = lazy(() => import("./UsersPage"));
 const TicketsPage = lazy(() => import("./TicketsPage"));
 const HostsPage = lazy(() => import("./HostsPage"));
+const InboundsPage = lazy(() => import("./InboundsPage"));
 const CoreConfigPage = lazy(() => import("./CoreConfigPage"));
 const AdminsPage = lazy(() => import("./AdminsPage"));
 const IntegrationsPage = lazy(() => import("./IntegrationsPage"));
@@ -82,6 +83,23 @@ export const router = createHashRouter([
       <Suspense fallback={null}>
         <TicketsPage />
       </Suspense>
+    ),
+    errorElement: <Login />,
+    loader: fetchAdminLoader,
+  },
+  {
+    // Inbounds are the protocol/tag definitions themselves (GET
+    // /api/inbounds/detail, POST /api/inbounds/sync, DELETE
+    // /api/inbounds/:tag) - deliberately a separate page from Hosts, which
+    // only manages each inbound's client-facing display config and assumes
+    // the tag already exists.
+    path: "/inbounds/",
+    element: (
+      <SudoOnly>
+        <Suspense fallback={null}>
+          <InboundsPage />
+        </Suspense>
+      </SudoOnly>
     ),
     errorElement: <Login />,
     loader: fetchAdminLoader,

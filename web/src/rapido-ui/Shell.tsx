@@ -14,6 +14,7 @@ import {
   ChartBarIcon,
   Cog6ToothIcon,
   CircleStackIcon,
+  Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -55,6 +56,7 @@ export type RapidoNavKey =
   | "overview"
   | "users"
   | "tickets"
+  | "inbounds"
   | "hosts"
   | "coreConfig"
   | "nodes"
@@ -77,6 +79,13 @@ const NAV_ITEMS: {
   // requireSudo - a reseller answers their own customers' tickets, and the
   // backend already scopes the list to the users they own.
   { key: "tickets", href: "/tickets/", labelKey: "rapido.tickets.nav", icon: TicketIcon },
+  {
+    key: "inbounds",
+    href: "/inbounds/",
+    labelKey: "rapido.inbounds.nav",
+    icon: Squares2X2Icon,
+    sudoOnly: true,
+  },
   { key: "hosts", href: "/hosts/", labelKey: "rapido.hosts.nav", icon: GlobeAltIcon, sudoOnly: true },
   {
     key: "coreConfig",

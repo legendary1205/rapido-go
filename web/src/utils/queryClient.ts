@@ -16,6 +16,7 @@ export const queryKeys = {
   currentAdmin: ["current-admin"] as const,
   users: (filters: Record<string, unknown>) => ["users", filters] as const,
   inbounds: ["inbounds"] as const,
+  inboundsDetail: ["inbounds-detail"] as const,
   hosts: ["hosts"] as const,
   coreConfig: ["core-config"] as const,
   admins: ["admins"] as const,
