@@ -17,16 +17,26 @@ import (
 // presence dot always agree on what "online" means.
 const onlineWindow = 180 * time.Second
 
+// marzbanCompatVersion is a static, zero-cost compatibility value - external
+// fleet-management bots (e.g. Mirza-bot-style panels, which "get_user" style
+// tools like Guard resemble) probe this field before deciding which request
+// shape to send (pre- vs post-Groups Marzban). Matches the real production
+// panel's own currently-reported __version__ exactly (app/__init__.py),
+// which such bots already treat as "legacy shape" successfully - not a
+// version this rewrite is pinned to or will ever bump.
+const marzbanCompatVersion = "0.8.4"
+
 type systemStatsDTO struct {
-	TotalUser         int64 `json:"total_user"`
-	OnlineUsers       int64 `json:"online_users"`
-	UsersActive       int64 `json:"users_active"`
-	UsersOnHold       int64 `json:"users_on_hold"`
-	UsersDisabled     int64 `json:"users_disabled"`
-	UsersExpired      int64 `json:"users_expired"`
-	UsersLimited      int64 `json:"users_limited"`
-	IncomingBandwidth int64 `json:"incoming_bandwidth"`
-	OutgoingBandwidth int64 `json:"outgoing_bandwidth"`
+	Version           string `json:"version"`
+	TotalUser         int64  `json:"total_user"`
+	OnlineUsers       int64  `json:"online_users"`
+	UsersActive       int64  `json:"users_active"`
+	UsersOnHold       int64  `json:"users_on_hold"`
+	UsersDisabled     int64  `json:"users_disabled"`
+	UsersExpired      int64  `json:"users_expired"`
+	UsersLimited      int64  `json:"users_limited"`
+	IncomingBandwidth int64  `json:"incoming_bandwidth"`
+	OutgoingBandwidth int64  `json:"outgoing_bandwidth"`
 }
 
 // handleGetSystemStats implements GET /api/system, scoped like
@@ -62,7 +72,7 @@ func (h *Handler) handleGetSystemStats(c *gin.Context) {
 		return
 	}
 
-	stats := systemStatsDTO{TotalUser: total, OnlineUsers: online}
+	stats := systemStatsDTO{Version: marzbanCompatVersion, TotalUser: total, OnlineUsers: online}
 	if sys, err := h.store.Queries.GetSystem(ctx); err == nil {
 		stats.IncomingBandwidth = pgInt8ToInt64(sys.Uplink)
 		stats.OutgoingBandwidth = pgInt8ToInt64(sys.Downlink)

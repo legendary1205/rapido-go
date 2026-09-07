@@ -103,6 +103,16 @@ type userResponseDTO struct {
 	NextPlan               *nextPlanDTO               `json:"next_plan"`
 	SubscriptionURL        string                     `json:"subscription_url"`
 	OnlineAt               *time.Time                 `json:"online_at"`
+	// Links is populated only by handleGetUser (the single-user GET), never
+	// by the batched buildUserResponses a paginated user-list page shares -
+	// generating every proxy's share links is real per-user work, and this
+	// project's own compatibility-fix history (see the buildUserResponses
+	// doc comment above) is specifically about NOT paying that cost per row
+	// of a list. Kept anyway on single GET because a real external
+	// panel-management bot (Mirza-bot-style, which reads it exactly this
+	// way from GET /api/user/{username}) reads it directly rather than
+	// hitting the subscription endpoint separately.
+	Links []string `json:"links"`
 }
 
 // handleCreateUser implements POST /api/user.
@@ -297,11 +307,25 @@ func (h *Handler) handleGetUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	resp, err := h.buildUserResponse(c.Request.Context(), dbuser)
+	ctx := c.Request.Context()
+	resp, err := h.buildUserResponse(ctx, dbuser)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
 		return
 	}
+	// Only the single-user GET pays for link generation - see the Links
+	// field's own doc comment on userResponseDTO. A failure here degrades
+	// to an empty list rather than failing the whole request: an external
+	// bot reading a missing/empty links array is far less disruptive than
+	// this endpoint suddenly 500ing on a link-formatting edge case.
+	links, err := h.buildUserLinks(ctx, dbuser)
+	if err != nil {
+		h.logger.Warn("could not build user links for GET /user", "username", dbuser.Username, "error", err)
+	}
+	if links == nil {
+		links = []string{}
+	}
+	resp.Links = links
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -848,8 +872,10 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			}
 		}
 
-		// lifetime_used_traffic (used_traffic + sum of user_usage_logs) and
-		// the per-format `links` array are deferred - see the Phase 2/4 reports.
+		// lifetime_used_traffic (used_traffic + sum of user_usage_logs) is
+		// still deferred - see the Phase 2/4 reports. `links` is populated
+		// for real only by handleGetUser's single-user path, deliberately
+		// not here (see userResponseDTO's own doc comment on Links).
 		subToken := subscription.CreateToken(u.Username, h.jwtSecret)
 		subURL := h.subURLPrefix + "/sub/" + subToken
 
@@ -861,6 +887,11 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
 			Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
 			SubscriptionURL: subURL, OnlineAt: timestamptzToPtr(u.OnlineAt),
+			// Not the real per-user links list (see handleGetUser, the only
+			// caller that pays for that) - a literal empty slice here is
+			// free and keeps every other endpoint's JSON shape as "links":[]
+			// like the real system, never "links":null.
+			Links: []string{},
 		})
 	}
 	return out, nil

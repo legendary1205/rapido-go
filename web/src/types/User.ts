@@ -1,10 +1,13 @@
 // Mirrors internal/httpapi/user.go's userResponseDTO/userWriteRequest -
 // the Go backend's actual field set, not the old Python-targeting frontend's.
 // Notably absent from the old type and present here: `online_at` (added to
-// the Go DTO this same phase) and `excluded_inbounds`. Notably absent from
-// here versus the old type: `links` (the Go backend only ever returns
-// `subscription_url` - there is no per-format links array yet) and node
-// connection states ("error"/"connecting"/"connected") that were never real
+// the Go DTO this same phase) and `excluded_inbounds`. Deliberately omits
+// `links` even though the backend's single-user GET now returns it (added
+// for external panel-management bot compatibility, e.g. Mirza-bot-style
+// tools reading a user's share links directly - see internal/httpapi/
+// system.go's marzbanCompatVersion and user.go's handleGetUser) - the
+// dashboard itself never reads it, it always uses `subscription_url`, and
+// node connection states ("error"/"connecting"/"connected") were never real
 // user statuses to begin with, just leftover node-status values on the same
 // old union.
 export type Status = "active" | "disabled" | "limited" | "expired" | "on_hold";
