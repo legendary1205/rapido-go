@@ -38,6 +38,13 @@ type hostDTO struct {
 	NoiseSetting    *string `json:"noise_setting"`
 	RandomUserAgent bool    `json:"random_user_agent"`
 	UseSNIAsHost    bool    `json:"use_sni_as_host"`
+	// Priority is a GLOBAL rank (see migration 00008), not scoped to this
+	// host's own inbound_tag - it's what lets an admin interleave configs
+	// from different inbound tags/nodes into one chosen sequence. Set
+	// explicitly by the client (the frontend computes it from a flattened,
+	// cross-tag view - see hostsReducers.ts's flattenSortedHosts), not
+	// derived from this array's position within its own tag's slice.
+	Priority int32 `json:"priority"`
 }
 
 func toHostDTO(h generated.Host) hostDTO {
@@ -48,6 +55,7 @@ func toHostDTO(h generated.Host) hostDTO {
 		AllowInsecure: pgBoolToPtr(h.Allowinsecure), IsDisabled: pgBoolToPtr(h.IsDisabled), MuxEnable: h.MuxEnable,
 		FragmentSetting: textToPtr(h.FragmentSetting), NoiseSetting: textToPtr(h.NoiseSetting),
 		RandomUserAgent: h.RandomUserAgent, UseSNIAsHost: h.UseSniAsHost,
+		Priority: h.Priority,
 	}
 }
 
@@ -119,6 +127,7 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 				InboundTag: tag, Allowinsecure: pgBoolFromPtr(host.AllowInsecure), IsDisabled: pgBoolFromPtr(host.IsDisabled),
 				MuxEnable: host.MuxEnable, FragmentSetting: textFromPtr(host.FragmentSetting), NoiseSetting: textFromPtr(host.NoiseSetting),
 				RandomUserAgent: host.RandomUserAgent, UseSniAsHost: host.UseSNIAsHost,
+				Priority: host.Priority,
 			})
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not create host for " + tag})

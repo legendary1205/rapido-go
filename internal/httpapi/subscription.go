@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -130,10 +131,19 @@ func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format 
 	}
 }
 
-// forEachUserHost walks proxy -> included inbound tag -> host, exactly the
-// traversal writeSubscription always needed - factored out so
-// buildUserLinks/buildUserSingBoxOutbounds (and the HTML page's Servers
-// tab, via buildUserLinks) don't each re-implement it.
+// forEachUserHost walks proxy -> host (across every included inbound tag,
+// in one globally-sorted sequence), exactly the traversal writeSubscription
+// always needed - factored out so buildUserLinks/buildUserSingBoxOutbounds
+// (and the HTML page's Servers tab, via buildUserLinks) don't each
+// re-implement it.
+//
+// Hosts are gathered from every included tag first and THEN sorted once by
+// (priority, id) globally, rather than emitted tag-by-tag - this is what
+// lets an admin interleave configs from different inbound tags/nodes into
+// one chosen sequence (see hosts.priority, migration 00008) instead of
+// always seeing every tag's hosts grouped together in alphabetical-tag
+// order. Each generated.Host already carries its own InboundTag column, so
+// no second lookup is needed to know which tag a gathered host came from.
 func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound)) error {
 	proxies, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(user.ID)))
 	if err != nil {
@@ -156,24 +166,33 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 		}
 		includedTags := subtractTags(known, excluded)
 
+		var allHosts []generated.Host
 		for _, tag := range includedTags {
-			inbound, err := h.store.CachedGetInboundByTag(ctx, tag)
-			if err != nil {
-				continue
-			}
 			hosts, err := h.store.CachedListHostsByInboundTag(ctx, tag)
 			if err != nil {
 				continue
 			}
-			for _, host := range hosts {
-				eff := subscription.BuildEffectiveInbound(inbound, host)
-				remarkVars := vars
-				remarkVars["PROTOCOL"] = p.Type
-				remarkVars["TRANSPORT"] = eff.Network
-				remark := remarkVars.Format(host.Remark)
-				address := remarkVars.Format(host.Address)
-				fn(p.Type, settings, remark, address, eff)
+			allHosts = append(allHosts, hosts...)
+		}
+		sort.Slice(allHosts, func(i, j int) bool {
+			if allHosts[i].Priority != allHosts[j].Priority {
+				return allHosts[i].Priority < allHosts[j].Priority
 			}
+			return allHosts[i].ID < allHosts[j].ID
+		})
+
+		for _, host := range allHosts {
+			inbound, err := h.store.CachedGetInboundByTag(ctx, host.InboundTag)
+			if err != nil {
+				continue
+			}
+			eff := subscription.BuildEffectiveInbound(inbound, host)
+			remarkVars := vars
+			remarkVars["PROTOCOL"] = p.Type
+			remarkVars["TRANSPORT"] = eff.Network
+			remark := remarkVars.Format(host.Remark)
+			address := remarkVars.Format(host.Address)
+			fn(p.Type, settings, remark, address, eff)
 		}
 	}
 	return nil

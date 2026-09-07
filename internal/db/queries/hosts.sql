@@ -1,14 +1,20 @@
 -- name: ListHosts :many
 -- All hosts for every inbound tag, in one query - GET /api/hosts groups them
--- by inbound_tag in Go rather than issuing one query per tag.
-SELECT * FROM hosts ORDER BY inbound_tag, id;
+-- by inbound_tag in Go rather than issuing one query per tag. Ordered by the
+-- admin-controlled global priority (see migration 00008), not inbound_tag -
+-- a host's own inbound_tag column still tells the caller which tag it
+-- belongs to, this ordering is purely display/subscription sequence.
+SELECT * FROM hosts ORDER BY priority, id;
 
 -- name: ListHostsByInboundTag :many
 -- Excludes disabled hosts - matches the current system's global exclusion
 -- in app/xray/__init__.py's hosts DictStorage builder (a disabled host
 -- never appears in subscription output for any format, not a per-format
--- decision).
-SELECT * FROM hosts WHERE inbound_tag = $1 AND (is_disabled IS NULL OR is_disabled = false) ORDER BY id;
+-- decision). Ordered by priority (see migration 00008) - forEachUserHost
+-- (internal/httpapi/subscription.go) gathers results from every included
+-- tag and re-sorts the combined set by this same (priority, id) pair, so
+-- the admin's global cross-tag order actually reaches subscription output.
+SELECT * FROM hosts WHERE inbound_tag = $1 AND (is_disabled IS NULL OR is_disabled = false) ORDER BY priority, id;
 
 -- name: DeleteHostsByInboundTag :exec
 DELETE FROM hosts WHERE inbound_tag = $1;
@@ -17,8 +23,8 @@ DELETE FROM hosts WHERE inbound_tag = $1;
 INSERT INTO hosts (
     remark, address, port, path, sni, host, security, alpn, fingerprint,
     inbound_tag, allowinsecure, is_disabled, mux_enable, fragment_setting,
-    noise_setting, random_user_agent, use_sni_as_host
+    noise_setting, random_user_agent, use_sni_as_host, priority
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 )
 RETURNING *;
