@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import {
   useDeleteInboundMutation,
+  useImportXrayConfigMutation,
   useInboundsDetailQuery,
   useSyncInboundMutation,
 } from "hooks/useInboundsQuery";
 import { Inbound, InboundNetwork, InboundSecurity } from "types/Inbound";
+import { XrayImportResult } from "types/XrayImport";
 import { errorText } from "service/errors";
 import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
@@ -333,10 +335,122 @@ const InboundCard: FC<{ row: Inbound }> = ({ row }) => {
 
 // ---------------------------------------------------------------------------
 
+// XrayImportModal is a two-step preview-then-apply flow around POST
+// /api/inbounds/import-xray: "Preview" (confirm:false) always runs first
+// and shows the parsed counts/warnings without writing anything, and only
+// once that's happened does "Apply" (confirm:true) - re-running the exact
+// same parse server-side, not reusing the preview's client-side result -
+// become available. Re-editing the pasted text after a preview resets
+// back to preview-only, so Apply can never fire against text the admin
+// hasn't actually previewed.
+const XrayImportModal: FC<{ onClose: () => void; onApplied: () => void }> = ({ onClose, onApplied }) => {
+  const { t } = useTranslation();
+  const [config, setConfig] = useState("");
+  const [preview, setPreview] = useState<XrayImportResult | null>(null);
+  const [applied, setApplied] = useState<XrayImportResult | null>(null);
+  const [error, setError] = useState("");
+  const importXray = useImportXrayConfigMutation();
+
+  const runPreview = () => {
+    setError("");
+    setApplied(null);
+    importXray.mutate(
+      { config, confirm: false },
+      {
+        onSuccess: (result) => setPreview(result),
+        onError: (e) => setError(errorText(e, t("rapido.inbounds.xrayImportFailed"))),
+      }
+    );
+  };
+
+  const runApply = () => {
+    setError("");
+    importXray.mutate(
+      { config, confirm: true },
+      {
+        onSuccess: (result) => {
+          setApplied(result);
+          onApplied();
+        },
+        onError: (e) => setError(errorText(e, t("rapido.inbounds.xrayImportFailed"))),
+      }
+    );
+  };
+
+  const summary = applied ?? preview;
+
+  return (
+    <Modal onClose={onClose} className="max-w-2xl">
+      <h2 className="mb-1 text-lg font-semibold">{t("rapido.inbounds.xrayImportTitle")}</h2>
+      <p className="mb-4 text-xs text-rapido-muted">{t("rapido.inbounds.xrayImportSubtitle")}</p>
+      <div className="flex flex-col gap-3">
+        <textarea
+          dir="ltr"
+          rows={12}
+          value={config}
+          onChange={(e) => {
+            setConfig(e.target.value);
+            setPreview(null);
+            setApplied(null);
+          }}
+          placeholder='{ "inbounds": [...], "outbounds": [...], "routing": {...} }'
+          className="w-full resize-y rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
+        />
+
+        {summary && (
+          <div className="rounded-lg border border-rapido-border p-3 text-xs">
+            <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 font-medium">
+              <span>{t("rapido.inbounds.xrayImportInbounds", { count: summary.inbounds_created })}</span>
+              <span>{t("rapido.inbounds.xrayImportOutbounds", { count: summary.outbounds_saved })}</span>
+              <span>{t("rapido.inbounds.xrayImportRules", { count: summary.routing_rules_saved })}</span>
+              <span>{t("rapido.inbounds.xrayImportDns", { count: summary.dns_servers_saved })}</span>
+            </div>
+            {summary.warnings.length > 0 && (
+              <ul className="list-inside list-disc space-y-0.5 text-amber-400">
+                {summary.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            )}
+            {applied && <p className="mt-2 text-emerald-400">{t("rapido.inbounds.xrayImportApplied")}</p>}
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-2 flex justify-end gap-2">
+          <Button variant="chip" onClick={onClose}>
+            {applied ? t("rapido.close") : t("cancel")}
+          </Button>
+          {!applied && (
+            <>
+              <Button variant="chip" tone="accent" disabled={!config.trim() || importXray.isPending} onClick={runPreview}>
+                {importXray.isPending && !preview ? t("rapido.pleaseWait") : t("rapido.inbounds.xrayImportPreview")}
+              </Button>
+              {preview && (
+                <Button variant="chip" tone="accent" disabled={importXray.isPending} onClick={runApply}>
+                  {importXray.isPending ? t("rapido.pleaseWait") : t("rapido.inbounds.xrayImportApply")}
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+// ---------------------------------------------------------------------------
+
 export const InboundsAdmin: FC = () => {
   const { t } = useTranslation();
   const { data: rows, isLoading, isError } = useInboundsDetailQuery();
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   return (
     <div className="flex flex-col gap-4">
@@ -344,9 +458,14 @@ export const InboundsAdmin: FC = () => {
         <div className="text-sm text-rapido-muted">
           {t("rapido.inbounds.summary", { count: rows?.length ?? 0 })}
         </div>
-        <Button variant="chip" tone="accent" onClick={() => setAdding(true)}>
-          + {t("rapido.inbounds.addTitle")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="chip" onClick={() => setImporting(true)}>
+            {t("rapido.inbounds.xrayImportTitle")}
+          </Button>
+          <Button variant="chip" tone="accent" onClick={() => setAdding(true)}>
+            + {t("rapido.inbounds.addTitle")}
+          </Button>
+        </div>
       </div>
 
       {isError && (
@@ -368,6 +487,9 @@ export const InboundsAdmin: FC = () => {
       )}
 
       {adding && <InboundForm onClose={() => setAdding(false)} />}
+      {importing && (
+        <XrayImportModal onClose={() => setImporting(false)} onApplied={() => {}} />
+      )}
     </div>
   );
 };
