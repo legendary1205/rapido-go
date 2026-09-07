@@ -18,6 +18,70 @@ const FINGERPRINT = [
 const field =
   "w-full rounded-lg border border-rapido-border bg-rapido-bg px-2.5 py-1.5 text-xs text-rapido-text placeholder:text-rapido-muted focus:outline-none focus:ring-1 focus:ring-rapido-accent";
 
+// The exact, complete set this backend's placeholder substitution
+// (internal/subscription/vars.go) actually supports - every token here
+// works identically in both the Remark and Address fields (see
+// internal/httpapi/subscription.go's forEachUserHost, which formats both
+// through the same Variables map). Deliberately does NOT list
+// {ACTIVE_USERS}: that token is referenced only in a doc comment in
+// vars.go, never actually assigned - listing it here would advertise a
+// token that silently renders as "<missing>" today. Also omits
+// {SERVER_IPV6}/{JALALI_EXPIRE_DATE}, both explicitly deferred (never
+// ported from the old Python system) for the same reason.
+const VARIABLES: { token: string; descKey: string }[] = [
+  { token: "{USERNAME}", descKey: "hostsDialog.username" },
+  { token: "{SERVER_IP}", descKey: "hostsDialog.currentServer" },
+  { token: "{DATA_USAGE}", descKey: "hostsDialog.dataUsage" },
+  { token: "{DATA_LIMIT}", descKey: "hostsDialog.dataLimit" },
+  { token: "{DATA_LEFT}", descKey: "hostsDialog.remainingData" },
+  { token: "{USAGE_PERCENTAGE}", descKey: "rapido.hosts.varUsagePercentage" },
+  { token: "{DAYS_LEFT}", descKey: "hostsDialog.remainingDays" },
+  { token: "{TIME_LEFT}", descKey: "hostsDialog.remainingTime" },
+  { token: "{EXPIRE_DATE}", descKey: "hostsDialog.expireDate" },
+  { token: "{STATUS_EMOJI}", descKey: "hostsDialog.statusEmoji" },
+  { token: "{STATUS_TEXT}", descKey: "hostsDialog.statusText" },
+  { token: "{PROTOCOL}", descKey: "rapido.hosts.varProtocol" },
+  { token: "{TRANSPORT}", descKey: "rapido.hosts.varTransport" },
+];
+
+const HostVariablesReference: FC = () => {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold">{t("rapido.hosts.variablesTitle")}</div>
+          <div className="text-xs text-rapido-muted">{t("hostsDialog.desc")}</div>
+        </div>
+        <Button variant="chip" onClick={() => setOpen((o) => !o)}>
+          {open ? t("rapido.hosts.hideVariables") : t("rapido.hosts.showVariables")}
+        </Button>
+      </div>
+
+      {open && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          <p className="text-xs text-rapido-muted">{t("rapido.hosts.variablesScope")}</p>
+          <div className="flex flex-col divide-y divide-rapido-border overflow-x-auto">
+            {VARIABLES.map((v) => (
+              <div key={v.token} className="flex items-center gap-3 py-1.5 text-xs">
+                <span
+                  className="w-40 shrink-0 font-mono text-rapido-accent"
+                  dir="ltr"
+                >
+                  {v.token}
+                </span>
+                <span className="text-rapido-muted">{t(v.descKey)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+};
+
 // ---------------------------------------------------------------------------
 
 const HostRow: FC<{
@@ -316,6 +380,8 @@ export const HostsAdmin: FC = () => {
           {msg.text}
         </div>
       )}
+
+      <HostVariablesReference />
 
       {tags.length === 0 && (
         <Card className="p-6 text-center text-sm text-rapido-muted">
