@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetch, fetcher } from "service/http";
-import { Backup } from "types/Backup";
+import { Backup, RestoreResult } from "types/Backup";
 import { queryKeys } from "utils/queryClient";
 
 export const useBackupsQuery = () =>
@@ -26,6 +26,37 @@ export const useDeleteBackupMutation = () => {
     mutationFn: (filename: string) =>
       fetch(`/settings/backup/${encodeURIComponent(filename)}`, { method: "DELETE" }),
     onSuccess: () => invalidateBackups(queryClient),
+  });
+};
+
+// Both restore paths invalidate every query that could be reading now-
+// replaced data, not just the backups list - the whole database (users,
+// admins, hosts, ...) was just swapped out from under every other page.
+const invalidateEverythingAfterRestore = (queryClient: ReturnType<typeof useQueryClient>) =>
+  queryClient.invalidateQueries();
+
+export const useRestoreBackupMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (filename: string) =>
+      fetch<RestoreResult>(`/settings/backup/${encodeURIComponent(filename)}/restore`, {
+        method: "POST",
+        body: { confirm: true },
+      }),
+    onSuccess: () => invalidateEverythingAfterRestore(queryClient),
+  });
+};
+
+export const useRestoreUploadMutation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append("confirm", "true");
+      form.append("file", file);
+      return fetch<RestoreResult>("/settings/backup/restore-upload", { method: "POST", body: form });
+    },
+    onSuccess: () => invalidateEverythingAfterRestore(queryClient),
   });
 };
 

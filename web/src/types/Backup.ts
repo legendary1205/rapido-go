@@ -6,3 +6,10 @@ export type Backup = {
   size_bytes: number;
   created_at: string;
 };
+
+// Mirrors restoreResultDTO - both restore endpoints (from an existing
+// backup, or from an uploaded file) return this same shape.
+export type RestoreResult = {
+  safety_backup: Backup;
+  detail: string;
+};
