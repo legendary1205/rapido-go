@@ -48,6 +48,86 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// inboundDetailDTO is the full-fidelity shape a real "Inbounds" management
+// page needs (tag/protocol/network/security/reality fields) - deliberately
+// a NEW response shape on a NEW route rather than changing GET /api/inbounds
+// itself, which stays the simple map[protocol][]tag shape the KirBot
+// filtering logic and InboundsPicker.tsx already depend on.
+type inboundDetailDTO struct {
+	Tag        string `json:"tag"`
+	Protocol   string `json:"protocol"`
+	Network    string `json:"network"`
+	HeaderType string `json:"header_type"`
+
+	Security          string   `json:"security"`
+	RealityPrivateKey string   `json:"reality_private_key,omitempty"`
+	RealityShortIDs   []string `json:"reality_short_ids,omitempty"`
+	RealityServerName string   `json:"reality_server_name,omitempty"`
+	RealityServerPort int32    `json:"reality_server_port,omitempty"`
+}
+
+func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
+	// pgtype.Text/Int4's own zero value is "" / 0 when !Valid, exactly the
+	// "unset" wire value this DTO wants - no helper needed.
+	return inboundDetailDTO{
+		Tag: in.Tag, Protocol: in.Protocol, Network: in.Network, HeaderType: in.HeaderType.String,
+		Security:          in.Security,
+		RealityPrivateKey: in.RealityPrivateKey.String,
+		RealityShortIDs:   in.RealityShortIds,
+		RealityServerName: in.RealityServerName.String,
+		RealityServerPort: in.RealityServerPort.Int32,
+	}
+}
+
+// handleListInboundsDetailed implements GET /api/inbounds/detail (sudo
+// only) - the real list a dedicated Inbounds admin page renders, as opposed
+// to handleListInbounds's simpler protocol-grouped tag list every admin can
+// read for the user-create form's inbound picker.
+func (h *Handler) handleListInboundsDetailed(c *gin.Context) {
+	rows, err := h.store.Queries.ListInbounds(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list inbounds"})
+		return
+	}
+	out := make([]inboundDetailDTO, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toInboundDetailDTO(r))
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// handleDeleteInbound implements DELETE /api/inbounds/:tag (sudo only).
+// Cascades to that inbound's hosts/exclusions/template-associations at the
+// DB level (see DeleteInboundByTag's own doc comment) - nothing here needs
+// to clean those up itself, only the caches that would otherwise keep
+// serving the deleted tag until their TTL.
+func (h *Handler) handleDeleteInbound(c *gin.Context) {
+	tag := c.Param("tag")
+	ctx := c.Request.Context()
+
+	inbound, err := h.store.Queries.GetInboundByTag(ctx, tag)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Inbound not found"})
+		return
+	}
+	if err := h.store.Queries.DeleteInboundByTag(ctx, tag); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete inbound"})
+		return
+	}
+	if err := h.store.InvalidateInbound(ctx, tag, inbound.Protocol, nil); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate inbound cache"})
+		return
+	}
+	if err := h.store.InvalidateHosts(ctx, tag); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate host cache"})
+		return
+	}
+	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
+		h.logger.Warn("invalidate node config cache", "error", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": "Inbound removed successfully"})
+}
+
 type inboundSyncEntry struct {
 	Tag        string `json:"tag" binding:"required"`
 	Protocol   string `json:"protocol" binding:"required"`

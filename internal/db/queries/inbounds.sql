@@ -27,3 +27,9 @@ SELECT * FROM inbounds ORDER BY protocol, tag;
 
 -- name: ListInboundTagsByProtocol :many
 SELECT tag FROM inbounds WHERE protocol = $1 ORDER BY tag;
+
+-- name: DeleteInboundByTag :exec
+-- Cascades to that inbound's hosts, exclude_inbounds_association rows, and
+-- template_inbounds_association rows (all ON DELETE CASCADE - see
+-- 00001_init_schema.sql) - no separate cleanup query needed.
+DELETE FROM inbounds WHERE tag = $1;
