@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/legendary1205/rapido-go/internal/cache"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
 
@@ -19,7 +20,7 @@ const MetricsRetention = 48 * time.Hour
 // model's job list (see collect_metrics.py's own prune_metrics, run
 // hourly). Meant to run as a goroutine inside the backend singleton's
 // locked section, alongside reviewjob.Run.
-func PruneLoop(ctx context.Context, queries *generated.Queries, logger *slog.Logger, interval time.Duration) {
+func PruneLoop(ctx context.Context, queries *generated.Queries, maintenance *cache.Client, logger *slog.Logger, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -27,6 +28,11 @@ func PruneLoop(ctx context.Context, queries *generated.Queries, logger *slog.Log
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if on, err := maintenance.IsMaintenanceMode(ctx); err != nil {
+				logger.Error("hostmetrics: checking maintenance mode", "error", err)
+			} else if on {
+				continue
+			}
 			cutoff := time.Now().UTC().Add(-MetricsRetention)
 			deleted, err := queries.PruneOldHostMetrics(ctx, pgtype.Timestamptz{Time: cutoff, Valid: true})
 			if err != nil {
@@ -47,7 +53,7 @@ func PruneLoop(ctx context.Context, queries *generated.Queries, logger *slog.Log
 // Meant to run as a goroutine inside the backend singleton's locked
 // section: sampling the panel from every stateless API replica too would
 // write one redundant row per replica per tick.
-func PanelSelfSampleLoop(ctx context.Context, queries *generated.Queries, tracker *PreviousTracker, logger *slog.Logger, interval time.Duration) {
+func PanelSelfSampleLoop(ctx context.Context, queries *generated.Queries, tracker *PreviousTracker, maintenance *cache.Client, logger *slog.Logger, interval time.Duration) {
 	const selfKey = "panel"
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -56,6 +62,11 @@ func PanelSelfSampleLoop(ctx context.Context, queries *generated.Queries, tracke
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if on, err := maintenance.IsMaintenanceMode(ctx); err != nil {
+				logger.Error("hostmetrics: checking maintenance mode", "error", err)
+			} else if on {
+				continue
+			}
 			sample := Collect(false, "")
 			derived := tracker.Derive(selfKey, sample)
 			if err := Store(ctx, queries, nil, sample, derived, true); err != nil {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,10 +32,11 @@ type Handler struct {
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
 
-	databaseURL  string
-	backupDir    string
-	backupKeep   int
-	dumpDatabase dumpDatabaseFn
+	databaseURL     string
+	backupDir       string
+	backupKeep      int
+	dumpDatabase    dumpDatabaseFn
+	restoreDatabase restoreDatabaseFn
 }
 
 func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
@@ -48,8 +50,9 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
 		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker,
 		databaseURL: databaseURL, backupDir: backupDir, backupKeep: backupKeep,
-		dumpDatabase: func(ctx context.Context, w *os.File) error { return execPgDump(ctx, databaseURL, w) },
-		logger:       logger,
+		dumpDatabase:    func(ctx context.Context, w *os.File) error { return execPgDump(ctx, databaseURL, w) },
+		restoreDatabase: func(ctx context.Context, gz io.Reader) error { return execPsqlRestore(ctx, databaseURL, gz) },
+		logger:          logger,
 	}
 }
 
@@ -59,7 +62,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(slogMiddleware(logger), gin.Recovery(), CORS(allowedOrigins))
+	r.Use(slogMiddleware(logger), gin.Recovery(), CORS(allowedOrigins), maintenanceMiddleware(h.store))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -131,6 +134,8 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/settings/backup", requireSudo, h.handleCreateBackup)
 		api.GET("/settings/backup/:filename", requireSudo, h.handleDownloadBackup)
 		api.DELETE("/settings/backup/:filename", requireSudo, h.handleDeleteBackup)
+		api.POST("/settings/backup/:filename/restore", requireSudo, h.handleRestoreBackup)
+		api.POST("/settings/backup/restore-upload", requireSudo, h.handleRestoreUpload)
 
 		api.GET("/tickets", requireAdmin, h.handleListTickets)
 		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)
@@ -156,6 +161,27 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 	r.POST("/sub/:token/tickets/:id/messages", h.handleReplyMyTicket)
 
 	return r
+}
+
+// maintenanceMiddleware rejects every request except /health while a
+// database restore (internal/httpapi/backup.go's restoreFromReader) is in
+// progress - the schema itself may not exist for a moment during a
+// restore's drop+recreate, so letting requests through would just trade a
+// clean 503 for a confusing 500 mid-query. /health stays reachable so an
+// external monitor doesn't flap the whole process as down over an
+// expected, bounded restore window.
+func maintenanceMiddleware(store *Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.URL.Path == "/health" {
+			c.Next()
+			return
+		}
+		if on, err := store.Cache.IsMaintenanceMode(c.Request.Context()); err == nil && on {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"detail": "The panel is restoring a database backup - try again shortly"})
+			return
+		}
+		c.Next()
+	}
 }
 
 func slogMiddleware(logger *slog.Logger) gin.HandlerFunc {

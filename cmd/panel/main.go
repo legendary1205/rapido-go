@@ -111,7 +111,7 @@ func run(logger *slog.Logger) error {
 	hostMetricsTracker := hostmetrics.NewPreviousTracker()
 
 	if cfg.Role == config.RoleBackend {
-		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, logger)
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, logger)
 	}
 
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
@@ -158,7 +158,7 @@ func run(logger *slog.Logger) error {
 // as long as its holding connection does, and a pool connection can be
 // silently recycled or closed at any time, which would release the lock
 // out from under this process without it noticing.
-func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, logger *slog.Logger) {
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, redisClient *cache.Client, logger *slog.Logger) {
 	const retryInterval = 10 * time.Second
 	for {
 		select {
@@ -195,9 +195,9 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		// correct (see hostmetrics.PreviousTracker's doc comment), and
 		// pruning old rows from every replica at once would just be
 		// redundant DELETEs racing each other.
-		go hostmetrics.PruneLoop(ctx, queries, logger, time.Hour)
-		go hostmetrics.PanelSelfSampleLoop(ctx, queries, hostMetricsTracker, logger, 30*time.Second)
-		reviewjob.Run(ctx, queries, dispatcher, logger, 10*time.Second)
+		go hostmetrics.PruneLoop(ctx, queries, redisClient, logger, time.Hour)
+		go hostmetrics.PanelSelfSampleLoop(ctx, queries, hostMetricsTracker, redisClient, logger, 30*time.Second)
+		reviewjob.Run(ctx, queries, dispatcher, redisClient, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -
 		// release the lock and let the deferred loop exit via ctx.Done() above.

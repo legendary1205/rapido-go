@@ -84,6 +84,15 @@ const (
 	// identical payload (same architecture as the current Python system's
 	// single shared config), so this is one global key, not per-node.
 	nsNodeConfig = "rapido:node_config"
+
+	// nsMaintenance gates the whole panel during a destructive database
+	// restore (internal/httpapi/backup.go) - set for the duration of a
+	// schema drop+recreate so the HTTP middleware can reject requests and
+	// the backend-singleton's background loops (reviewjob, hostmetrics) can
+	// skip a tick, instead of either racing a query against a half-dropped
+	// schema. A Redis key rather than a DB row/column, since the database
+	// itself is what's being wiped.
+	nsMaintenance = "rapido:maintenance"
 )
 
 func AdminByUsernameKey(username string) string {
@@ -121,6 +130,37 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 
 func (c *Client) Del(ctx context.Context, keys ...string) error {
 	return c.rdb.Del(ctx, keys...).Err()
+}
+
+// FlushAll wipes the entire Redis logical DB this client is connected to.
+// Safe here specifically because this project's Redis instance is
+// dedicated to this panel (docker-compose.yml runs it just for rapido-go,
+// nothing else shares the connection/DB index) - a per-namespace scan+del
+// would be more surgical but strictly unnecessary, and this is only ever
+// called right after a full database restore, when every cached value is
+// definitionally stale anyway.
+func (c *Client) FlushAll(ctx context.Context) error {
+	return c.rdb.FlushDB(ctx).Err()
+}
+
+// SetMaintenanceMode toggles the panel-wide maintenance flag (see
+// nsMaintenance's doc comment). No TTL: cleared explicitly by the restore
+// handler's defer, not left to expire on its own - an expiring flag could
+// lapse mid-restore under a slow disk/large dump.
+func (c *Client) SetMaintenanceMode(ctx context.Context, on bool) error {
+	if !on {
+		return c.rdb.Del(ctx, nsMaintenance).Err()
+	}
+	return c.rdb.Set(ctx, nsMaintenance, "1", 0).Err()
+}
+
+// IsMaintenanceMode reports whether a restore is currently in progress.
+func (c *Client) IsMaintenanceMode(ctx context.Context) (bool, error) {
+	n, err := c.rdb.Exists(ctx, nsMaintenance).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // ErrNil is returned by Get when the key does not exist - a re-export of

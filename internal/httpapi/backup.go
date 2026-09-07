@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -115,43 +116,51 @@ func execPgDump(ctx context.Context, databaseURL string, w *os.File) error {
 }
 
 func (h *Handler) handleCreateBackup(c *gin.Context) {
-	if err := os.MkdirAll(h.backupDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not create the backup directory"})
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+	defer cancel()
+	info, err := h.createBackupNow(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
+	}
+	c.JSON(http.StatusOK, info)
+}
+
+// createBackupNow is handleCreateBackup's actual work, factored out so the
+// restore flow below can take a real safety backup of the current database
+// before ever touching it - the one genuine protection against "restored
+// the wrong file" - without going through gin.Context/HTTP at all.
+func (h *Handler) createBackupNow(ctx context.Context) (backupInfo, error) {
+	if err := os.MkdirAll(h.backupDir, 0o755); err != nil {
+		return backupInfo{}, fmt.Errorf("could not create the backup directory: %w", err)
 	}
 
 	filename := newBackupFilename(time.Now())
 	path := filepath.Join(h.backupDir, filename)
 	f, err := os.Create(path)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not create the backup file"})
-		return
+		return backupInfo{}, fmt.Errorf("could not create the backup file: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-	defer cancel()
 	dumpErr := h.dumpDatabase(ctx, f)
 	closeErr := f.Close()
 	if dumpErr != nil {
 		os.Remove(path)
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Backup failed: " + dumpErr.Error()})
-		return
+		return backupInfo{}, fmt.Errorf("backup failed: %w", dumpErr)
 	}
 	if closeErr != nil {
 		os.Remove(path)
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not finalize the backup file"})
-		return
+		return backupInfo{}, fmt.Errorf("could not finalize the backup file: %w", closeErr)
 	}
 
 	h.pruneOldBackups()
 
-	info, err := os.Stat(path)
+	stat, err := os.Stat(path)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Backup created but could not be read back"})
-		return
+		return backupInfo{}, fmt.Errorf("backup created but could not be read back: %w", err)
 	}
 	createdAt, _ := backupCreatedAt(filename)
-	c.JSON(http.StatusOK, backupInfo{Filename: filename, SizeBytes: info.Size(), CreatedAt: createdAt})
+	return backupInfo{Filename: filename, SizeBytes: stat.Size(), CreatedAt: createdAt}, nil
 }
 
 // pruneOldBackups keeps only the most recent h.backupKeep files, mirroring
@@ -180,6 +189,231 @@ func (h *Handler) handleDownloadBackup(c *gin.Context) {
 		return
 	}
 	c.FileAttachment(path, filename)
+}
+
+// restoreDatabaseFn is the shape of h.restoreDatabase - the restore-side
+// counterpart of dumpDatabaseFn above, replaceable for the same reason
+// (tests exercise the surrounding maintenance-mode/safety-backup/response
+// logic without needing the real psql binary installed).
+type restoreDatabaseFn func(ctx context.Context, gz io.Reader) error
+
+// pgDumpHeader is what every dump execPgDump produces starts with (pg_dump
+// always emits this comment first) - the one check handleRestoreUpload can
+// make without a real Postgres instance to hand the file to: does this at
+// least look like a Postgres dump, as opposed to a MySQL/SQLite backup from
+// the old system (which this endpoint doesn't support converting yet).
+const pgDumpHeader = "-- PostgreSQL database dump"
+
+// execPsqlRestore is the real implementation: replaces the ENTIRE public
+// schema and replays gz's (gzip-compressed) SQL against it, all inside one
+// psql --single-transaction session. Postgres DDL is transactional, so
+// DROP SCHEMA/CREATE SCHEMA is part of the same atomic unit as the actual
+// restore - a failure anywhere rolls back to the exact pre-restore state,
+// not a half-dropped one. This is prepended to the dump content rather
+// than run as a separate statement beforehand specifically to get that
+// atomicity for free from psql/Postgres instead of building it by hand.
+func execPsqlRestore(ctx context.Context, databaseURL string, gz io.Reader) error {
+	gzr, err := gzip.NewReader(gz)
+	if err != nil {
+		return fmt.Errorf("not a valid gzip stream: %w", err)
+	}
+	defer gzr.Close()
+
+	cmd := exec.CommandContext(ctx, "psql", databaseURL,
+		"--set", "ON_ERROR_STOP=1", "--single-transaction", "-q")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("psql: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("psql: %w", err)
+	}
+	// copyDone (not a plain shared variable) matters here: cmd.Wait() only
+	// waits for the process to exit and for Cmd's OWN internal stdout/
+	// stderr-copying goroutines - it does not know about this goroutine,
+	// which is ours. Reading a plain variable right after Wait() returns
+	// would be a data race with no guarantee the write below has happened
+	// yet (e.g. psql exiting early on a bad statement while this goroutine
+	// is still mid-write) - a channel receive after Wait() gives a real
+	// happens-before edge instead.
+	copyDone := make(chan error, 1)
+	go func() {
+		defer stdin.Close()
+		if _, err := io.WriteString(stdin, "DROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\n"); err != nil {
+			copyDone <- err
+			return
+		}
+		_, err := io.Copy(stdin, gzr)
+		copyDone <- err
+	}()
+	waitErr := cmd.Wait()
+	copyErr := <-copyDone
+	if waitErr != nil {
+		return fmt.Errorf("psql: %w: %s", waitErr, stderr.String())
+	}
+	if copyErr != nil {
+		return fmt.Errorf("streaming restore data to psql: %w", copyErr)
+	}
+	return nil
+}
+
+type restoreResultDTO struct {
+	SafetyBackup backupInfo `json:"safety_backup"`
+	Detail       string     `json:"detail"`
+}
+
+// restoreFromReader is the shared core of both restore endpoints below:
+// enter maintenance mode (always lifted via defer, even on panic/error),
+// take a real safety backup of the current database first, then replace
+// it wholesale with gz's content. The safety backup happens AFTER
+// maintenance mode is entered so nothing can write to the database in the
+// gap between "we captured the safety backup" and "we started
+// overwriting" - otherwise a write landing in that gap would be silently
+// lost by the restore with no backup covering it either.
+func (h *Handler) restoreFromReader(ctx context.Context, gz io.Reader) (restoreResultDTO, error) {
+	if err := h.store.Cache.SetMaintenanceMode(ctx, true); err != nil {
+		return restoreResultDTO{}, fmt.Errorf("could not enter maintenance mode: %w", err)
+	}
+	defer h.store.Cache.SetMaintenanceMode(context.Background(), false)
+
+	safety, err := h.createBackupNow(ctx)
+	if err != nil {
+		return restoreResultDTO{}, fmt.Errorf("aborted before touching the database - could not take a safety backup first: %w", err)
+	}
+
+	if err := h.restoreDatabase(ctx, gz); err != nil {
+		return restoreResultDTO{}, fmt.Errorf("restore failed after a safety backup (%s) was already taken - restore that backup to recover: %w", safety.Filename, err)
+	}
+
+	// Every cached value (admin lookups, core config, node config, ...) is
+	// definitionally stale the instant the database it was read from gets
+	// replaced wholesale - flush rather than try to invalidate individual
+	// keys one at a time (see cache.Client.FlushAll's own doc comment on
+	// why a full flush is safe on this project's dedicated Redis instance).
+	if err := h.store.Cache.FlushAll(ctx); err != nil {
+		return restoreResultDTO{}, fmt.Errorf("database restored from %s, but the cache could not be flushed - restart the panel process: %w", safety.Filename, err)
+	}
+
+	return restoreResultDTO{
+		SafetyBackup: safety,
+		Detail:       "Database restored. A safety backup of the previous data was taken first: " + safety.Filename,
+	}, nil
+}
+
+type restoreRequestDTO struct {
+	Confirm bool `json:"confirm"`
+}
+
+// handleRestoreBackup restores the database from one of the backups
+// already sitting in BackupDir - no upload needed, the file's own
+// filename (validated against the same allowlist regex download/delete
+// use) is enough provenance.
+func (h *Handler) handleRestoreBackup(c *gin.Context) {
+	filename := c.Param("filename")
+	if !backupFilenamePattern.MatchString(filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "Invalid backup filename"})
+		return
+	}
+	var req restoreRequestDTO
+	if err := c.ShouldBindJSON(&req); err != nil || !req.Confirm {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This is a destructive operation - resend with {\"confirm\": true} to proceed"})
+		return
+	}
+	path := filepath.Join(h.backupDir, filename)
+	f, err := os.Open(path)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Backup not found"})
+		return
+	}
+	defer f.Close()
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+	result, err := h.restoreFromReader(ctx, f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// handleRestoreUpload restores the database from an uploaded file instead
+// of an existing on-server backup. Only accepts something that looks like
+// a real pg_dump output today (checked via pgDumpHeader after gunzipping) -
+// recognizing and converting a legacy MySQL/SQLite backup from the old
+// Python system is real future work (see the Phase 8 plan), deliberately
+// out of scope here rather than silently mis-restoring an incompatible
+// format.
+func (h *Handler) handleRestoreUpload(c *gin.Context) {
+	if c.PostForm("confirm") != "true" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This is a destructive operation - resend with confirm=true to proceed"})
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "No file uploaded"})
+		return
+	}
+
+	if err := os.MkdirAll(h.backupDir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not create a scratch directory for the upload"})
+		return
+	}
+	tmpPath := filepath.Join(h.backupDir, ".upload-"+newBackupFilename(time.Now()))
+	if err := c.SaveUploadedFile(fileHeader, tmpPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not save the uploaded file"})
+		return
+	}
+	defer os.Remove(tmpPath)
+
+	if err := validatePgDumpFile(tmpPath); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not reopen the uploaded file"})
+		return
+	}
+	defer f.Close()
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+	result, err := h.restoreFromReader(ctx, f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// validatePgDumpFile peeks at the gzipped file's decompressed header
+// without reading the whole thing into memory - a real panel's database
+// dump can be sizeable, and confirming the format only needs the first
+// couple of lines.
+func validatePgDumpFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("could not open the uploaded file: %w", err)
+	}
+	defer f.Close()
+
+	gzr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("uploaded file is not a valid gzip archive")
+	}
+	defer gzr.Close()
+
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(gzr, head)
+	if !bytes.Contains(head[:n], []byte(pgDumpHeader)) {
+		return fmt.Errorf("this doesn't look like a Postgres pg_dump backup - restoring other formats (MySQL, SQLite) isn't supported yet")
+	}
+	return nil
 }
 
 func (h *Handler) handleDeleteBackup(c *gin.Context) {

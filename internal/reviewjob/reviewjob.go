@@ -25,14 +25,19 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/legendary1205/rapido-go/internal/cache"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/report"
 )
 
 // Run ticks every interval until ctx is canceled, calling review once per
 // tick. Errors are logged, not fatal - one bad tick shouldn't kill the
-// whole backend process.
-func Run(ctx context.Context, q *generated.Queries, dispatcher *report.Dispatcher, logger *slog.Logger, interval time.Duration) {
+// whole backend process. Skips a tick entirely while maintenance mode is
+// on (internal/httpapi/backup.go's restore flow) - the schema itself may
+// not exist for a moment during a restore's drop+recreate, and this job
+// mutates rows, so running it against that window risks a spurious error
+// at best and a write racing the restore at worst.
+func Run(ctx context.Context, q *generated.Queries, dispatcher *report.Dispatcher, maintenance *cache.Client, logger *slog.Logger, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -40,6 +45,11 @@ func Run(ctx context.Context, q *generated.Queries, dispatcher *report.Dispatche
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if on, err := maintenance.IsMaintenanceMode(ctx); err != nil {
+				logger.Error("review_users: checking maintenance mode", "error", err)
+			} else if on {
+				continue
+			}
 			if err := review(ctx, q, dispatcher, logger); err != nil {
 				logger.Error("review_users tick failed", "error", err)
 			}
