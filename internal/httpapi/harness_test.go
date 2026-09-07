@@ -38,6 +38,18 @@ const (
 // Skips if TEST_DATABASE_URL isn't set - see store_test.go's testPool.
 func newTestRouter(t *testing.T) (http.Handler, string) {
 	t.Helper()
+	router, token, _ := newTestRouterAndHandler(t)
+	return router, token
+}
+
+// newTestRouterAndHandler is newTestRouter plus the underlying *Handler -
+// only backup_test.go needs the handler itself, to swap h.dumpDatabase for
+// a fake that doesn't need the real pg_dump binary installed (see
+// dumpDatabaseFn's doc comment in backup.go). Mutating h.dumpDatabase after
+// the router is built still takes effect: every route calls a method on
+// the same *Handler at request time, not at registration time.
+func newTestRouterAndHandler(t *testing.T) (http.Handler, string, *Handler) {
+	t.Helper()
 	pool := testPool(t)
 	truncateAll(t, pool)
 	cacheClient := testCache(t)
@@ -73,14 +85,15 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 5 * time.Second})
 
 	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "",
-		envDefaults, dispatcher, kirbotClient, nil, hostmetrics.NewPreviousTracker(), logger)
+		envDefaults, dispatcher, kirbotClient, nil, hostmetrics.NewPreviousTracker(),
+		os.Getenv("TEST_DATABASE_URL"), t.TempDir(), 5, logger)
 	router := NewRouter(handler, logger, []string{"*"})
 
 	token, err := issuer.Issue(testSudoUsername, true)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	return router, token
+	return router, token, handler
 }
 
 // testCache connects to a real Redis instance and flushes its DB - point

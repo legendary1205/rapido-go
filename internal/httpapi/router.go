@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,17 +30,26 @@ type Handler struct {
 	loginNotifyWhitelist []string
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
+
+	databaseURL  string
+	backupDir    string
+	backupKeep   int
+	dumpDatabase dumpDatabaseFn
 }
 
 func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
 	publicIP, subURLPrefix string, envDefaults integrationsettings.Values, reports *report.Dispatcher,
 	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
+	databaseURL, backupDir string, backupKeep int,
 	logger *slog.Logger) *Handler {
 	return &Handler{
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
 		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
-		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker, logger: logger,
+		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker,
+		databaseURL: databaseURL, backupDir: backupDir, backupKeep: backupKeep,
+		dumpDatabase: func(ctx context.Context, w *os.File) error { return execPgDump(ctx, databaseURL, w) },
+		logger:       logger,
 	}
 }
 
@@ -115,6 +126,11 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 		api.GET("/settings/core-config", requireSudo, h.handleGetCoreConfig)
 		api.PUT("/settings/core-config", requireSudo, h.handleUpdateCoreConfig)
+
+		api.GET("/settings/backup", requireSudo, h.handleListBackups)
+		api.POST("/settings/backup", requireSudo, h.handleCreateBackup)
+		api.GET("/settings/backup/:filename", requireSudo, h.handleDownloadBackup)
+		api.DELETE("/settings/backup/:filename", requireSudo, h.handleDeleteBackup)
 
 		api.GET("/tickets", requireAdmin, h.handleListTickets)
 		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)

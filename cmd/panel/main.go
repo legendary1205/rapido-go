@@ -115,7 +115,8 @@ func run(logger *slog.Logger) error {
 	}
 
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
-		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker, logger)
+		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
+		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
 
