@@ -652,7 +652,7 @@
   "rapido.backups.restoreSuccess": "Database restored. A safety backup of the previous data was taken first: {{filename}}",
   "rapido.backups.importSuccess": "Imported {{admins}} admins, {{users}} users, {{hosts}} hosts, {{inbounds}} inbounds. A safety backup of the previous data was taken first: {{filename}}",
   "rapido.backups.uploadTitle": "Restore from an uploaded file",
-  "rapido.backups.uploadDesc": "A Postgres backup from this panel (.sql.gz), or a MySQL export from Marzban (.sql, gzipped or not).",
+  "rapido.backups.uploadDesc": "A Postgres backup from this panel (.sql.gz), a MySQL export from Marzban (.sql, gzipped or not), or a Hiddify Panel export (.json, from \"hiddifypanel backup\" or the Backup page).",
   "rapido.backups.showUpload": "Show",
   "rapido.backups.hideUpload": "Hide",
   "rapido.overviewSubtitle": "A live snapshot of your fleet and users.",

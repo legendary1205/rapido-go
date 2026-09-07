@@ -657,7 +657,7 @@
   "rapido.backups.restoreSuccess": "دیتابیس ریستور شد. یک بکاپ ایمنی از داده‌های قبلی گرفته شد: {{filename}}",
   "rapido.backups.importSuccess": "{{admins}} ادمین، {{users}} کاربر، {{hosts}} میزبان، {{inbounds}} اینباند وارد شد. یک بکاپ ایمنی از داده‌های قبلی گرفته شد: {{filename}}",
   "rapido.backups.uploadTitle": "ریستور از یک فایل آپلودی",
-  "rapido.backups.uploadDesc": "یک بکاپ Postgres از همین پنل (.sql.gz)، یا یک خروجی MySQL از مرزبان (.sql، فشرده یا فشرده‌نشده).",
+  "rapido.backups.uploadDesc": "یک بکاپ Postgres از همین پنل (.sql.gz)، یک خروجی MySQL از مرزبان (.sql، فشرده یا فشرده‌نشده)، یا یک خروجی Hiddify Panel (.json، از دستور «hiddifypanel backup» یا صفحه‌ی Backup).",
   "rapido.backups.showUpload": "نمایش",
   "rapido.backups.hideUpload": "پنهان کردن",
   "rapido.overviewSubtitle": "خلاصه‌ی زنده از وضعیت نودها و کاربران.",
