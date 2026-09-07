@@ -1,17 +1,18 @@
 -- name: ListAutoSyncInbounds :many
 -- Inbounds eligible for automatic node-config generation (see
--- internal/httpapi/nodeconfig.go): only 'none' and 'reality' security
--- modes are fully self-contained in this schema already - a 'tls' inbound
--- needs a certificate/key this rewrite has nowhere to store yet (a
--- separate, pre-existing gap, not something this phase's scope covers),
--- so it's excluded here and stays on the existing manual POST /start path
--- untouched. The primary host (lowest id, not disabled, with a real port)
--- supplies the actual listen port - Hosts can carry several rows per
--- inbound tag for client-facing branding, but a raw inbound listener has
--- exactly one real port, same limitation the Xray config this data model
--- is descended from already has.
+-- internal/httpapi/nodeconfig.go): 'none' and 'reality' security modes are
+-- always self-contained; a 'tls' inbound is included too, but only once an
+-- admin has actually pasted a real certificate+key (see migration 00009) -
+-- one with security='tls' and no certificate yet stays excluded, same as
+-- before, rather than being pushed to nodes with no TLS material to serve.
+-- The primary host (lowest id, not disabled, with a real port) supplies
+-- the actual listen port - Hosts can carry several rows per inbound tag
+-- for client-facing branding, but a raw inbound listener has exactly one
+-- real port, same limitation the Xray config this data model is descended
+-- from already has.
 SELECT i.tag, i.protocol, i.network, i.header_type, i.security,
        i.reality_private_key, i.reality_short_ids, i.reality_server_name, i.reality_server_port,
+       i.tls_certificate, i.tls_key, i.tls_server_name,
        h.port, h.sni, h.host
 FROM inbounds i
 JOIN LATERAL (
@@ -20,6 +21,7 @@ JOIN LATERAL (
     ORDER BY id LIMIT 1
 ) h ON true
 WHERE i.security IN ('none', 'reality')
+   OR (i.security = 'tls' AND COALESCE(i.tls_certificate, '') != '' AND COALESCE(i.tls_key, '') != '')
 ORDER BY i.tag;
 
 -- name: ListActiveUserProxiesForNodeConfig :many

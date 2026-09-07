@@ -63,9 +63,25 @@ type outboundDTO struct {
 	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
+
+	// BindInterface binds this outbound's dialer to a specific network
+	// interface (e.g. a WireGuard tunnel device name) - the sing-box
+	// equivalent of Xray's streamSettings.sockopt.interface, which the
+	// real production fleet's per-location exit selection depends on
+	// entirely. Meaningless for selector/urltest (group types have no
+	// dialer of their own); harmless if set on one, just never read.
+	BindInterface string `json:"bind_interface,omitempty"`
 }
 
 type routingRuleDTO struct {
+	// Inbound matches by which inbound tag a connection arrived through -
+	// the mechanism that lets one rule route only e.g. "node1"'s traffic
+	// to a specific outbound, matching Xray's inboundTag routing-rule
+	// field. Unlike Domain/IPCIDR/etc (free-form data an admin types),
+	// entries here must be real inbound tags - validated against the
+	// live inbounds table in handleUpdateCoreConfig, not here (this DTO
+	// has no DB access).
+	Inbound       []string `json:"inbound,omitempty"`
 	Domain        []string `json:"domain,omitempty"`
 	DomainSuffix  []string `json:"domain_suffix,omitempty"`
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
@@ -245,11 +261,44 @@ func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+
+	// A routing rule's `inbound` entries reference a separate resource
+	// (the inbounds table) that isn't part of this request body at all,
+	// unlike outbound_tag (validated inside validateCoreConfig against
+	// this same DTO's own outbound list) - so this check needs a real
+	// query and lives here instead of in that pure function.
+	needsInboundTags := false
+	for _, rule := range dto.RoutingRules {
+		if len(rule.Inbound) > 0 {
+			needsInboundTags = true
+			break
+		}
+	}
+	if needsInboundTags {
+		tags, err := h.store.Queries.ListInboundTags(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not validate routing rules"})
+			return
+		}
+		known := make(map[string]bool, len(tags))
+		for _, t := range tags {
+			known[t] = true
+		}
+		for _, rule := range dto.RoutingRules {
+			for _, tag := range rule.Inbound {
+				if !known[tag] {
+					c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "routing rule targets unknown inbound: " + tag})
+					return
+				}
+			}
+		}
+	}
+
 	outboundsJSON, _ := json.Marshal(dto.Outbounds)
 	rulesJSON, _ := json.Marshal(dto.RoutingRules)
 	dnsJSON, _ := json.Marshal(dto.DNSServers)
 
-	ctx := c.Request.Context()
 	row, err := h.store.Queries.UpdateCoreConfig(ctx, generated.UpdateCoreConfigParams{
 		LogLevel: dto.LogLevel, SniffEnabled: dto.SniffEnabled,
 		Outbounds: outboundsJSON, RoutingRules: rulesJSON, DnsServers: dnsJSON,

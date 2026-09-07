@@ -33,6 +33,31 @@ const (
 	testSudoPassword = "test-sudo-password"
 )
 
+// testCertPEM/testKeyPEM are a real, valid, self-signed ECDSA cert/key pair
+// (CN=example.test, 10-year validity) - used by any test that needs a real
+// TLS inbound certificate rather than a placeholder string, so the round
+// trip through storage/JSON/node-config actually exercises real PEM
+// content. Never used for anything but tests; generated once and frozen
+// here rather than regenerated per test run.
+const testCertPEM = `-----BEGIN CERTIFICATE-----
+MIIBXTCCAQOgAwIBAgIBATAKBggqhkjOPQQDAjAXMRUwEwYDVQQDEwxleGFtcGxl
+LnRlc3QwHhcNMjYwOTA3MTI1MjM4WhcNMzYwOTA3MTM1MjM4WjAXMRUwEwYDVQQD
+EwxleGFtcGxlLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATyGO/P9eCr
+vTXXCTRjgfAF7ndDAU1SM+DTYBOj6rVaa9+tRvJ6l3vYpZtT2D2NMPBMzgVuV8iG
+u8A9/JcE/irMo0AwPjAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUH
+AwEwFwYDVR0RBBAwDoIMZXhhbXBsZS50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDq
+gibaZwip7+t66D64WsXJ9SBOsKTq+L3t5Thc5bzaFQIgOC73EDy+FbfuttkW+X8N
+hbY2Lo7pOEX6xRezdduatlo=
+-----END CERTIFICATE-----
+`
+
+const testKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEICiESJZ2LnzP+hpr9U26Puzb5DoiaYNIH/vBsj4wAoDvoAoGCCqGSM49
+AwEHoUQDQgAE8hjvz/Xgq7011wk0Y4HwBe53QwFNUjPg02ATo+q1WmvfrUbyepd7
+2KWbU9g9jTDwTM4FblfIhrvAPfyXBP4qzA==
+-----END EC PRIVATE KEY-----
+`
+
 // newTestRouter builds a full router (real Postgres, real JWT issuer) and
 // returns it plus a bearer token for the env-bootstrapped sudo account.
 // Skips if TEST_DATABASE_URL isn't set - see store_test.go's testPool.

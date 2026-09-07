@@ -245,9 +245,12 @@ type outboundSpec struct {
 	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
+
+	BindInterface string `json:"bind_interface,omitempty"`
 }
 
 type routingRuleSpec struct {
+	Inbound       []string `json:"inbound,omitempty"`
 	Domain        []string `json:"domain,omitempty"`
 	DomainSuffix  []string `json:"domain_suffix,omitempty"`
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
@@ -524,40 +527,54 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 
 	for _, ob := range core.Outbounds {
 		var opts any
+		// Shared by every leaf (non-group) outbound type below - the sing-box
+		// equivalent of Xray's streamSettings.sockopt.interface, which the
+		// real production fleet's per-location WireGuard-tunnel exit
+		// selection depends on entirely. selector/urltest (group types)
+		// don't embed DialerOptions at all, so it's simply never referenced
+		// in those two cases - a set BindInterface on one of those is inert,
+		// never wired to anything.
+		dialerOptions := sbox.DialerOptions{AbstractDialerOptions: sbox.AbstractDialerOptions{BindInterface: ob.BindInterface}}
 		switch ob.Type {
 		case "direct":
-			opts = &sbox.DirectOutboundOptions{}
+			opts = &sbox.DirectOutboundOptions{DialerOptions: dialerOptions}
 		case "block":
 			opts = &sbox.StubOptions{}
 		case "socks":
 			opts = &sbox.SOCKSOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Username:      ob.Username, Password: ob.Password,
 			}
 		case "http":
 			opts = &sbox.HTTPOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Username:      ob.Username, Password: ob.Password,
 			}
 		case "shadowsocks":
 			opts = &sbox.ShadowsocksOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Method:        ob.Method, Password: ob.Password,
 			}
 		case "vmess":
 			opts = &sbox.VMessOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				UUID:          ob.UUID, Security: ob.Security,
 				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
 			}
 		case "trojan":
 			opts = &sbox.TrojanOutboundOptions{
+				DialerOptions:               dialerOptions,
 				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Password:                    ob.Password,
 				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
 			}
 		case "vless":
 			opts = &sbox.VLESSOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				UUID:          ob.UUID, Flow: ob.Flow,
 				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
@@ -566,6 +583,7 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 			// QUIC-based - TLS is mandatory at the transport level, not an
 			// admin-toggleable option like the classic TCP protocols above.
 			opts = &sbox.Hysteria2OutboundOptions{
+				DialerOptions:               dialerOptions,
 				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				Password:                    ob.Password,
 				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
@@ -573,6 +591,7 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 		case "tuic":
 			// Also QUIC-based - same mandatory-TLS reasoning as hysteria2.
 			opts = &sbox.TUICOutboundOptions{
+				DialerOptions: dialerOptions,
 				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
 				UUID:          ob.UUID, Password: ob.Password, CongestionControl: ob.CongestionControl,
 				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
@@ -601,6 +620,9 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 	for _, r := range core.RoutingRules {
 		raw := sbox.RawDefaultRule{
 			IPIsPrivate: r.IPIsPrivate,
+		}
+		if len(r.Inbound) > 0 {
+			raw.Inbound = badoption.Listable[string](r.Inbound)
 		}
 		if len(r.Domain) > 0 {
 			raw.Domain = badoption.Listable[string](r.Domain)

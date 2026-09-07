@@ -108,7 +108,8 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: uint16(in.Port.Int32),
 			Users: usersByProtocol[in.Protocol],
 		}
-		if in.Security == "reality" {
+		switch in.Security {
+		case "reality":
 			tls := &nodeConfigTLSSpec{
 				Reality: &nodeConfigRealitySpec{
 					PrivateKey: in.RealityPrivateKey.String,
@@ -118,6 +119,15 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 			tls.Reality.Handshake.ServerName = in.RealityServerName.String
 			tls.Reality.Handshake.ServerPort = uint16(in.RealityServerPort.Int32)
 			spec.TLS = tls
+		case "tls":
+			// ListAutoSyncInbounds only returns a 'tls' row once both are
+			// non-empty (see that query's own doc comment) - Certificate/Key
+			// are never blank here.
+			spec.TLS = &nodeConfigTLSSpec{
+				ServerName:  in.TlsServerName.String,
+				Certificate: in.TlsCertificate.String,
+				Key:         in.TlsKey.String,
+			}
 		}
 		if spec.Users == nil {
 			spec.Users = []nodeConfigUserSpec{}

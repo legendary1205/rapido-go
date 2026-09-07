@@ -125,6 +125,77 @@ func TestBuildOptionsWithFullCoreIsAcceptedBySingBox(t *testing.T) {
 	t.Cleanup(func() { node.Close() })
 }
 
+// testCertPEM/testKeyPEM mirror internal/httpapi/harness_test.go's own
+// fixture of the same name (a real, valid, self-signed ECDSA cert/key pair,
+// CN=example.test) - duplicated rather than imported since cmd/node is a
+// separate package/module boundary from internal/httpapi.
+const testCertPEM = `-----BEGIN CERTIFICATE-----
+MIIBXTCCAQOgAwIBAgIBATAKBggqhkjOPQQDAjAXMRUwEwYDVQQDEwxleGFtcGxl
+LnRlc3QwHhcNMjYwOTA3MTI1MjM4WhcNMzYwOTA3MTM1MjM4WjAXMRUwEwYDVQQD
+EwxleGFtcGxlLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATyGO/P9eCr
+vTXXCTRjgfAF7ndDAU1SM+DTYBOj6rVaa9+tRvJ6l3vYpZtT2D2NMPBMzgVuV8iG
+u8A9/JcE/irMo0AwPjAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUH
+AwEwFwYDVR0RBBAwDoIMZXhhbXBsZS50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDq
+gibaZwip7+t66D64WsXJ9SBOsKTq+L3t5Thc5bzaFQIgOC73EDy+FbfuttkW+X8N
+hbY2Lo7pOEX6xRezdduatlo=
+-----END CERTIFICATE-----
+`
+
+const testKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEICiESJZ2LnzP+hpr9U26Puzb5DoiaYNIH/vBsj4wAoDvoAoGCCqGSM49
+AwEHoUQDQgAE8hjvz/Xgq7011wk0Y4HwBe53QwFNUjPg02ATo+q1WmvfrUbyepd7
+2KWbU9g9jTDwTM4FblfIhrvAPfyXBP4qzA==
+-----END EC PRIVATE KEY-----
+`
+
+// TestBuildOptionsWithRealTLSInboundRoutingRuleAndBindInterfaceIsAccepted
+// is the real proof for the three gaps this session's work closes (see
+// the plan: TLS certificate storage, inbound-tag routing, outbound
+// bind_interface) - a real self-signed cert/key pair on a vless inbound, a
+// routing rule matching that same inbound tag, and a direct outbound bound
+// to a real local interface name, all run through the exact
+// nodecore.New/Start path a real node process uses. bind_interface is set
+// to "lo" (loopback) rather than a fabricated name specifically so this
+// proves sing-box accepts a *real* interface, not just that the field
+// round-trips syntactically - a nonexistent interface name is a separate,
+// deliberately-not-covered runtime failure (see the plan's own note that
+// full multi-WireGuard-interface routing can't be proven on a single-NIC
+// test box).
+func TestBuildOptionsWithRealTLSInboundRoutingRuleAndBindInterfaceIsAccepted(t *testing.T) {
+	req := startRequest{
+		Inbounds: []inboundSpec{{
+			Tag: "tls-in", Protocol: "vless", ListenPort: 0,
+			Users: []userSpec{{Name: "u", UUID: "8f8a4c1e-1e2a-4b8a-9b1a-000000000098"}},
+			TLS:   &tlsSpec{ServerName: "example.test", Certificate: testCertPEM, Key: testKeyPEM},
+		}},
+		Core: &coreSpec{
+			LogLevel: "warn",
+			Outbounds: []outboundSpec{
+				{Tag: "bound-out", Type: "direct", BindInterface: "lo"},
+			},
+			RoutingRules: []routingRuleSpec{
+				{Inbound: []string{"tls-in"}, OutboundTag: "bound-out"},
+			},
+		},
+	}
+	opts, err := buildOptions(req)
+	if err != nil {
+		t.Fatalf("buildOptions: %v", err)
+	}
+	if len(opts.Route.Rules) != 1 {
+		t.Fatalf("Route.Rules = %v, want 1", opts.Route.Rules)
+	}
+
+	node, err := nodecore.New(context.Background(), opts, traffic.NewManager())
+	if err != nil {
+		t.Fatalf("nodecore.New rejected the built options: %v", err)
+	}
+	if err := node.Start(); err != nil {
+		t.Fatalf("sing-box rejected a real TLS cert + inbound-tag routing rule + bind_interface config at Start: %v", err)
+	}
+	t.Cleanup(func() { node.Close() })
+}
+
 // TestEachOutboundProtocolIsAcceptedBySingBox is the real proof that every
 // outbound type Core Config's structured form offers (see
 // internal/httpapi/coreconfig.go's validOutboundTypes) actually has a

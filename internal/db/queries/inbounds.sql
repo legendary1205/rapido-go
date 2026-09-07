@@ -6,8 +6,9 @@
 -- add_default_host in the current crud.get_or_create_inbound).
 INSERT INTO inbounds (
     tag, protocol, network, header_type, security,
-    reality_private_key, reality_short_ids, reality_server_name, reality_server_port
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    reality_private_key, reality_short_ids, reality_server_name, reality_server_port,
+    tls_certificate, tls_key, tls_server_name
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (tag) DO UPDATE SET
     protocol = EXCLUDED.protocol,
     network = EXCLUDED.network,
@@ -16,7 +17,10 @@ ON CONFLICT (tag) DO UPDATE SET
     reality_private_key = EXCLUDED.reality_private_key,
     reality_short_ids = EXCLUDED.reality_short_ids,
     reality_server_name = EXCLUDED.reality_server_name,
-    reality_server_port = EXCLUDED.reality_server_port
+    reality_server_port = EXCLUDED.reality_server_port,
+    tls_certificate = EXCLUDED.tls_certificate,
+    tls_key = EXCLUDED.tls_key,
+    tls_server_name = EXCLUDED.tls_server_name
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: GetInboundByTag :one
@@ -27,6 +31,12 @@ SELECT * FROM inbounds ORDER BY protocol, tag;
 
 -- name: ListInboundTagsByProtocol :many
 SELECT tag FROM inbounds WHERE protocol = $1 ORDER BY tag;
+
+-- name: ListInboundTags :many
+-- Every real inbound tag, no other columns - used by PUT
+-- /api/settings/core-config to validate a routing rule's `inbound` field
+-- references real tags without pulling every column ListInbounds would.
+SELECT tag FROM inbounds ORDER BY tag;
 
 -- name: DeleteInboundByTag :exec
 -- Cascades to that inbound's hosts, exclude_inbounds_association rows, and

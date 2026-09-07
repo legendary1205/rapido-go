@@ -56,16 +56,15 @@ func TestGetNodeConfigBuildsInboundFromActiveUsersOnly(t *testing.T) {
 	}
 }
 
-func TestGetNodeConfigExcludesTLSInbounds(t *testing.T) {
+func TestGetNodeConfigExcludesTLSInboundsWithoutACertificate(t *testing.T) {
 	router, token := newTestRouter(t)
 	_, secret := createTestNode(t, router, token, "config-test-node-2")
 
-	// PUT /api/hosts with security "tls" flips the inbound to security=tls
-	// via the same sync path handleSyncInbounds/handlePutHosts already use -
-	// simplest is to sync the inbound then directly mark it tls-secured the
-	// same way a real TLS host setup would (host security field), but
-	// ListAutoSyncInbounds filters on the *inbound's* security column, set
-	// via inbound sync.
+	// A security=tls inbound with no certificate/key yet stays excluded
+	// from auto-sync (see ListAutoSyncInbounds's own doc comment) - there
+	// would be nothing real to serve. See
+	// TestGetNodeConfigIncludesTLSInboundsWithARealCertificate below for
+	// the companion case once a certificate is actually set.
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
 		{"tag": "TLS Inbound", "protocol": "vless", "security": "tls"},
 	})
@@ -83,8 +82,48 @@ func TestGetNodeConfigExcludesTLSInbounds(t *testing.T) {
 	inbounds := resp.Body["inbounds"].([]interface{})
 	for _, i := range inbounds {
 		if i.(map[string]interface{})["tag"] == "TLS Inbound" {
-			t.Fatalf("a security=tls inbound must be excluded from auto-sync (no certificate storage exists yet), got it in the response: %v", inbounds)
+			t.Fatalf("a security=tls inbound with no certificate yet must stay excluded from auto-sync, got it in the response: %v", inbounds)
 		}
+	}
+}
+
+func TestGetNodeConfigIncludesTLSInboundsWithARealCertificate(t *testing.T) {
+	router, token := newTestRouter(t)
+	_, secret := createTestNode(t, router, token, "config-test-node-tls")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{
+			"tag": "TLS Inbound Real", "protocol": "vless", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "example.test",
+		},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"TLS Inbound Real": []map[string]interface{}{{"remark": "n1", "address": "1.2.3.4", "port": 8444}},
+	})
+
+	resp := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get node config: %d %v", resp.Code, resp.Body)
+	}
+	inbounds := resp.Body["inbounds"].([]interface{})
+	var found map[string]interface{}
+	for _, i := range inbounds {
+		if i.(map[string]interface{})["tag"] == "TLS Inbound Real" {
+			found = i.(map[string]interface{})
+		}
+	}
+	if found == nil {
+		t.Fatalf("a security=tls inbound with a real certificate must be included in auto-sync, got %v", inbounds)
+	}
+	tls, ok := found["tls"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected a populated tls object, got %v", found)
+	}
+	if tls["certificate"] != testCertPEM || tls["key"] != testKeyPEM || tls["server_name"] != "example.test" {
+		t.Errorf("tls spec = %v, want the real certificate/key/server_name round-tripped", tls)
+	}
+	if _, hasReality := tls["reality"]; hasReality {
+		t.Errorf("a plain tls inbound must not carry a reality section: %v", tls)
 	}
 }
 

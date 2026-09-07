@@ -44,6 +44,46 @@ func TestListInboundsDetailedReturnsRealFields(t *testing.T) {
 	}
 }
 
+func TestInboundsSyncAndDetailRoundTripATLSCertificate(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{
+			"tag": "TLS Inbound", "protocol": "vless", "network": "tcp", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "example.test",
+		},
+	})
+
+	resp := doRequest(t, router, "GET", "/api/inbounds/detail", token, nil)
+	if resp.Code != 200 {
+		t.Fatalf("list detailed inbounds: %d %v", resp.Code, resp.Body)
+	}
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(resp.Raw, &rows); err != nil {
+		t.Fatalf("decode inbounds detail: %v", err)
+	}
+	var found map[string]interface{}
+	for _, r := range rows {
+		if r["tag"] == "TLS Inbound" {
+			found = r
+		}
+	}
+	if found == nil {
+		t.Fatalf("TLS Inbound not found in %v", rows)
+	}
+	if found["security"] != "tls" {
+		t.Errorf("security = %v, want tls", found["security"])
+	}
+	if found["tls_certificate"] != testCertPEM {
+		t.Errorf("tls_certificate did not round-trip byte-for-byte")
+	}
+	if found["tls_key"] != testKeyPEM {
+		t.Errorf("tls_key did not round-trip byte-for-byte")
+	}
+	if found["tls_server_name"] != "example.test" {
+		t.Errorf("tls_server_name = %v, want example.test", found["tls_server_name"])
+	}
+}
+
 func TestDeleteInboundRemovesItAndCascadesItsHosts(t *testing.T) {
 	router, token := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{{"tag": "To Delete", "protocol": "vless"}})

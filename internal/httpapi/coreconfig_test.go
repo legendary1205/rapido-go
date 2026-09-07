@@ -109,6 +109,56 @@ func TestUpdateCoreConfigRejectsRuleTargetingUnknownOutbound(t *testing.T) {
 	}
 }
 
+func TestUpdateCoreConfigRejectsRuleTargetingUnknownInbound(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"routing_rules": []map[string]interface{}{{"inbound": []string{"no-such-inbound"}, "outbound_tag": "block"}},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("rule targeting unknown inbound: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigAcceptsRuleTargetingARealInbound(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "VLESS TCP", "protocol": "vless"}})
+
+	putResp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"routing_rules": []map[string]interface{}{{"inbound": []string{"VLESS TCP"}, "outbound_tag": "block"}},
+	})
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("put core config with a real inbound reference: %d %v", putResp.Code, putResp.Body)
+	}
+
+	getResp := doRequest(t, router, "GET", "/api/settings/core-config", token, nil)
+	rules := getResp.Body["routing_rules"].([]interface{})
+	if len(rules) != 1 {
+		t.Fatalf("routing_rules = %v, want 1 entry", rules)
+	}
+	rule := rules[0].(map[string]interface{})
+	inbound := rule["inbound"].([]interface{})
+	if len(inbound) != 1 || inbound[0] != "VLESS TCP" {
+		t.Errorf("rule.inbound = %v, want [\"VLESS TCP\"]", inbound)
+	}
+}
+
+func TestUpdateCoreConfigRoundTripsBindInterface(t *testing.T) {
+	router, token := newTestRouter(t)
+	putResp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "germany", "type": "direct", "bind_interface": "wg-germany"},
+		},
+	})
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("put core config with bind_interface: %d %v", putResp.Code, putResp.Body)
+	}
+	outbounds := putResp.Body["outbounds"].([]interface{})
+	ob := outbounds[0].(map[string]interface{})
+	if ob["bind_interface"] != "wg-germany" {
+		t.Errorf("bind_interface = %v, want wg-germany", ob["bind_interface"])
+	}
+}
+
 func TestUpdateCoreConfigRejectsSocksOutboundMissingServer(t *testing.T) {
 	router, token := newTestRouter(t)
 	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{

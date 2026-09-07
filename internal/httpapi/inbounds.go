@@ -64,6 +64,17 @@ type inboundDetailDTO struct {
 	RealityShortIDs   []string `json:"reality_short_ids,omitempty"`
 	RealityServerName string   `json:"reality_server_name,omitempty"`
 	RealityServerPort int32    `json:"reality_server_port,omitempty"`
+
+	// TLS* is only meaningful when Security is "tls" - a real customer-
+	// facing certificate/key pair (plain PEM text, same no-encryption-at-
+	// rest convention RealityPrivateKey already uses), NOT the panel's own
+	// CA in the `tls` table used for node mTLS. An inbound with
+	// Security="tls" and an empty TLSCertificate/TLSKey stays out of
+	// automatic node sync until both are filled in - see
+	// ListAutoSyncInbounds's own doc comment.
+	TLSCertificate string `json:"tls_certificate,omitempty"`
+	TLSKey         string `json:"tls_key,omitempty"`
+	TLSServerName  string `json:"tls_server_name,omitempty"`
 }
 
 func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
@@ -76,6 +87,9 @@ func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
 		RealityShortIDs:   in.RealityShortIds,
 		RealityServerName: in.RealityServerName.String,
 		RealityServerPort: in.RealityServerPort.Int32,
+		TLSCertificate:    in.TlsCertificate.String,
+		TLSKey:            in.TlsKey.String,
+		TLSServerName:     in.TlsServerName.String,
 	}
 }
 
@@ -139,6 +153,10 @@ type inboundSyncEntry struct {
 	RealityShortIDs   []string `json:"reality_short_ids,omitempty"`
 	RealityServerName string   `json:"reality_server_name,omitempty"`
 	RealityServerPort int32    `json:"reality_server_port,omitempty"`
+
+	TLSCertificate string `json:"tls_certificate,omitempty"`
+	TLSKey         string `json:"tls_key,omitempty"`
+	TLSServerName  string `json:"tls_server_name,omitempty"`
 }
 
 // handleSyncInbounds implements POST /api/inbounds/sync (sudo only) - an
@@ -184,6 +202,9 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 			RealityShortIds:   e.RealityShortIDs,
 			RealityServerName: textFromPtr(normalizeZeroString(&e.RealityServerName)),
 			RealityServerPort: realityPortToPg(e.RealityServerPort),
+			TlsCertificate:    textFromPtr(normalizeZeroString(&e.TLSCertificate)),
+			TlsKey:            textFromPtr(normalizeZeroString(&e.TLSKey)),
+			TlsServerName:     textFromPtr(normalizeZeroString(&e.TLSServerName)),
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
