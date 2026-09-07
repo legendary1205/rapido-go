@@ -1,13 +1,17 @@
-import { FetchOptions, $fetch as ohMyFetch } from "ofetch";
+import { FetchOptions, ResponseType, $fetch as ohMyFetch } from "ofetch";
 import { getAuthToken } from "utils/authStorage";
 
 export const $fetch = ohMyFetch.create({
   baseURL: import.meta.env.VITE_BASE_API,
 });
 
-export const fetcher = <T = any>(
+// Generic over ResponseType (defaulting to "json", same as every existing
+// call site) rather than hardcoded to it - hooks/useBackupsQuery.ts's
+// downloadBackup is the first caller that needs responseType: "blob" to
+// pull down a real file instead of a parsed JSON body.
+export const fetcher = <T = any, R extends ResponseType = "json">(
   url: string,
-  ops: FetchOptions<"json"> = {}
+  ops: FetchOptions<R> = {} as FetchOptions<R>
 ) => {
   const token = getAuthToken();
   if (token) {
@@ -16,7 +20,7 @@ export const fetcher = <T = any>(
       Authorization: `Bearer ${getAuthToken()}`,
     };
   }
-  return $fetch<T>(url, ops);
+  return $fetch<T, R>(url, ops);
 };
 
 export const fetch = fetcher;

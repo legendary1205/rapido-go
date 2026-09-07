@@ -37,4 +37,5 @@ export const queryKeys = {
   monitoring: ["monitoring"] as const,
   monitoringHistory: (nodeId: number | null) =>
     ["monitoring-history", nodeId] as const,
+  backups: ["backups"] as const,
 };
