@@ -76,6 +76,14 @@ const (
 	nsInboundTagsByProto = "rapido:inbound_tags"
 	nsInboundHosts       = "rapido:inbound_hosts"
 	nsExcludedInbounds   = "rapido:excluded_inbounds"
+
+	// nsNodeConfig caches the fully-computed node-config payload (see
+	// internal/httpapi/nodeconfig.go) - inbounds + their active users +
+	// core_config's outbounds/routing/dns - not the raw core_config row
+	// nsCoreConfig above caches. Every node in the fleet is served the
+	// identical payload (same architecture as the current Python system's
+	// single shared config), so this is one global key, not per-node.
+	nsNodeConfig = "rapido:node_config"
 )
 
 func AdminByUsernameKey(username string) string {
@@ -100,6 +108,8 @@ func PortConnKey(port int) string { return fmt.Sprintf("%s:%d", nsPortConn, port
 func SettingsKey() string { return nsSettings }
 
 func CoreConfigKey() string { return nsCoreConfig }
+
+func NodeConfigKey() string { return nsNodeConfig }
 
 func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	return c.rdb.Get(ctx, key).Result()

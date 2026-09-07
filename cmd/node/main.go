@@ -11,11 +11,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"sync"
 	"syscall"
@@ -96,6 +98,13 @@ type server struct {
 	// which is nil'd on POST /stop) so a core restart never loses
 	// in-flight byte counts the push loop hasn't drained yet.
 	traffic *traffic.Manager
+
+	// lastPulled is the last config successfully fetched from
+	// GET /api/internal/node-config and applied (hot or full) - nil until
+	// the first successful pull. Guarded by mu, same as node: applying a
+	// pulled config and handling a manual POST /start/POST /stop must
+	// never interleave.
+	lastPulled *pulledConfig
 }
 
 func main() {
@@ -129,9 +138,9 @@ func main() {
 	mux.HandleFunc("PUT /inbounds/{tag}/users", srv.handleUpdateUsers)
 
 	if cfg.PanelURL != "" && cfg.ReportSecret != "" {
-		go srv.pushLoop(ctx, cfg)
+		go srv.syncLoop(ctx, cfg)
 	} else {
-		logger.Warn("PANEL_URL/NODE_REPORT_SECRET not set - usage/health reporting to the panel is disabled")
+		logger.Warn("PANEL_URL/NODE_REPORT_SECRET not set - usage/health reporting and config sync with the panel are both disabled")
 	}
 
 	httpServer := &http.Server{
@@ -213,8 +222,61 @@ type realitySpec struct {
 	} `json:"handshake"`
 }
 
+// outboundSpec/routingRuleSpec/dnsServerSpec/coreSpec mirror
+// internal/httpapi/coreconfig.go's outboundDTO/routingRuleDTO/
+// dnsServerDTO/coreConfigDTO byte-for-byte (JSON field names) - see
+// nodeConfigResponse's own doc comment in that file for why these two
+// definitions have to be kept in sync by hand rather than shared.
+type outboundSpec struct {
+	Tag        string   `json:"tag"`
+	Type       string   `json:"type"` // direct | block | socks | http | selector | urltest
+	Server     string   `json:"server,omitempty"`
+	ServerPort int      `json:"server_port,omitempty"`
+	Username   string   `json:"username,omitempty"`
+	Password   string   `json:"password,omitempty"`
+	Outbounds  []string `json:"outbounds,omitempty"` // selector/urltest member tags
+}
+
+type routingRuleSpec struct {
+	Domain        []string `json:"domain,omitempty"`
+	DomainSuffix  []string `json:"domain_suffix,omitempty"`
+	DomainKeyword []string `json:"domain_keyword,omitempty"`
+	IPCIDR        []string `json:"ip_cidr,omitempty"`
+	IPIsPrivate   bool     `json:"ip_is_private,omitempty"`
+	Port          []int    `json:"port,omitempty"`
+	PortRange     []string `json:"port_range,omitempty"`
+	Network       []string `json:"network,omitempty"`
+	Protocol      []string `json:"protocol,omitempty"`
+	OutboundTag   string   `json:"outbound_tag"`
+}
+
+type dnsServerSpec struct {
+	Tag     string `json:"tag"`
+	Type    string `json:"type"` // local | udp | tcp | tls | https
+	Address string `json:"address,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Path    string `json:"path,omitempty"`
+}
+
+// coreSpec is the fleet-wide slice of Phase 7.4's Core Config - everything
+// buildOptions used to hardcode (a single direct outbound, a bare Final
+// route) now comes from here instead, sourced from the panel's
+// core_config table via GET /api/internal/node-config.
+type coreSpec struct {
+	LogLevel     string            `json:"log_level"`
+	SniffEnabled bool              `json:"sniff_enabled"`
+	Outbounds    []outboundSpec    `json:"outbounds"`
+	RoutingRules []routingRuleSpec `json:"routing_rules"`
+	DNSServers   []dnsServerSpec   `json:"dns_servers"`
+}
+
 type startRequest struct {
 	Inbounds []inboundSpec `json:"inbounds"`
+	// Core is optional on the manual POST /start path (nil means "no
+	// custom outbounds/routing/dns - just the built-in direct/block",
+	// preserving this endpoint's original behavior for anyone still using
+	// it directly instead of through the pull loop below).
+	Core *coreSpec `json:"core,omitempty"`
 }
 
 func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -383,11 +445,189 @@ func buildOptions(req startRequest) (sbox.Options, error) {
 		}
 	}
 
+	outbounds, route, dns, log, err := buildCoreOptions(req.Core)
+	if err != nil {
+		return sbox.Options{}, err
+	}
 	return sbox.Options{
+		Log:       log,
+		DNS:       dns,
 		Inbounds:  inbounds,
-		Outbounds: []sbox.Outbound{{Type: "direct", Tag: "direct-out", Options: &sbox.DirectOutboundOptions{}}},
-		Route:     &sbox.RouteOptions{Final: "direct-out"},
+		Outbounds: outbounds,
+		Route:     route,
 	}, nil
+}
+
+// implicitOutboundTag{Direct,Block} are always present regardless of
+// whether any custom outbound is configured - matches
+// internal/httpapi/coreconfig.go's implicitOutboundTags, and is what let
+// buildOptions hardcode a working single-outbound setup before Phase 7.4
+// existed at all.
+const (
+	implicitOutboundTagDirect = "direct-out"
+	implicitOutboundTagBlock  = "block-out"
+)
+
+// resolveOutboundTag maps a Core Config outbound_tag reference (which uses
+// the bare admin-facing names "direct"/"block", or a custom tag) to the
+// actual sing-box outbound tag that's really running.
+func resolveOutboundTag(tag string) string {
+	switch tag {
+	case "direct":
+		return implicitOutboundTagDirect
+	case "block":
+		return implicitOutboundTagBlock
+	default:
+		return tag
+	}
+}
+
+// buildCoreOptions translates Phase 7.4's Core Config (outbounds/routing
+// rules/DNS/log level/sniffing default) into real sing-box option types -
+// see internal/httpapi/coreconfig.go's validateCoreConfig for the
+// server-side checks a core is guaranteed to have already passed before
+// ever reaching a node (unknown outbound references, invalid enum values).
+// core may be nil (the manual POST /start path predates Core Config and
+// still works with none configured at all).
+func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbox.DNSOptions, *sbox.LogOptions, error) {
+	outbounds := []sbox.Outbound{
+		{Type: "direct", Tag: implicitOutboundTagDirect, Options: &sbox.DirectOutboundOptions{}},
+		{Type: "block", Tag: implicitOutboundTagBlock, Options: &sbox.StubOptions{}},
+	}
+	route := &sbox.RouteOptions{Final: implicitOutboundTagDirect}
+	if core == nil {
+		return outbounds, route, nil, nil, nil
+	}
+
+	for _, ob := range core.Outbounds {
+		var opts any
+		switch ob.Type {
+		case "direct":
+			opts = &sbox.DirectOutboundOptions{}
+		case "block":
+			opts = &sbox.StubOptions{}
+		case "socks":
+			opts = &sbox.SOCKSOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				Username:      ob.Username, Password: ob.Password,
+			}
+		case "http":
+			opts = &sbox.HTTPOutboundOptions{
+				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
+				Username:      ob.Username, Password: ob.Password,
+			}
+		case "selector":
+			opts = &sbox.SelectorOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}
+		case "urltest":
+			opts = &sbox.URLTestOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}
+		default:
+			return nil, nil, nil, nil, fmt.Errorf("unknown outbound type: %s", ob.Type)
+		}
+		outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: opts})
+	}
+
+	rules := make([]sbox.Rule, 0, len(core.RoutingRules)+1)
+	if core.SniffEnabled {
+		// An unconditional leading rule (no match criteria at all) applies
+		// to every connection - the modern sing-box replacement for the
+		// deprecated per-inbound InboundOptions.SniffEnabled field (see
+		// migration 00007's own doc comment for why there's no
+		// "override destination" equivalent to also carry over).
+		rules = append(rules, sbox.Rule{Type: "default", DefaultOptions: sbox.DefaultRule{
+			RuleAction: sbox.RuleAction{Action: "sniff"},
+		}})
+	}
+	for _, r := range core.RoutingRules {
+		raw := sbox.RawDefaultRule{
+			IPIsPrivate: r.IPIsPrivate,
+		}
+		if len(r.Domain) > 0 {
+			raw.Domain = badoption.Listable[string](r.Domain)
+		}
+		if len(r.DomainSuffix) > 0 {
+			raw.DomainSuffix = badoption.Listable[string](r.DomainSuffix)
+		}
+		if len(r.DomainKeyword) > 0 {
+			raw.DomainKeyword = badoption.Listable[string](r.DomainKeyword)
+		}
+		if len(r.IPCIDR) > 0 {
+			raw.IPCIDR = badoption.Listable[string](r.IPCIDR)
+		}
+		if len(r.PortRange) > 0 {
+			raw.PortRange = badoption.Listable[string](r.PortRange)
+		}
+		if len(r.Network) > 0 {
+			raw.Network = badoption.Listable[string](r.Network)
+		}
+		if len(r.Protocol) > 0 {
+			raw.Protocol = badoption.Listable[string](r.Protocol)
+		}
+		if len(r.Port) > 0 {
+			ports := make(badoption.Listable[uint16], len(r.Port))
+			for i, p := range r.Port {
+				ports[i] = uint16(p)
+			}
+			raw.Port = ports
+		}
+		rules = append(rules, sbox.Rule{Type: "default", DefaultOptions: sbox.DefaultRule{
+			RawDefaultRule: raw,
+			RuleAction: sbox.RuleAction{
+				Action:       "route",
+				RouteOptions: sbox.RouteActionOptions{Outbound: resolveOutboundTag(r.OutboundTag)},
+			},
+		}})
+	}
+	route.Rules = rules
+
+	var dns *sbox.DNSOptions
+	if len(core.DNSServers) > 0 {
+		servers := make([]sbox.DNSServerOptions, 0, len(core.DNSServers))
+		for _, s := range core.DNSServers {
+			var opts any
+			switch s.Type {
+			case "local":
+				opts = &sbox.LocalDNSServerOptions{}
+			case "udp", "tcp":
+				opts = &sbox.RemoteDNSServerOptions{
+					DNSServerAddressOptions: sbox.DNSServerAddressOptions{Server: s.Address, ServerPort: uint16(s.Port)},
+				}
+			case "tls":
+				opts = &sbox.RemoteTLSDNSServerOptions{
+					RemoteDNSServerOptions: sbox.RemoteDNSServerOptions{
+						DNSServerAddressOptions: sbox.DNSServerAddressOptions{Server: s.Address, ServerPort: uint16(s.Port)},
+					},
+				}
+			case "https":
+				opts = &sbox.RemoteHTTPSDNSServerOptions{
+					RemoteTLSDNSServerOptions: sbox.RemoteTLSDNSServerOptions{
+						RemoteDNSServerOptions: sbox.RemoteDNSServerOptions{
+							DNSServerAddressOptions: sbox.DNSServerAddressOptions{Server: s.Address, ServerPort: uint16(s.Port)},
+						},
+					},
+					Path: s.Path,
+				}
+			default:
+				return nil, nil, nil, nil, fmt.Errorf("unknown dns server type: %s", s.Type)
+			}
+			servers = append(servers, sbox.DNSServerOptions{Type: s.Type, Tag: s.Tag, Options: opts})
+		}
+		dns = &sbox.DNSOptions{RawDNSOptions: sbox.RawDNSOptions{Servers: servers}}
+	}
+
+	var log *sbox.LogOptions
+	if core.LogLevel != "" {
+		log = &sbox.LogOptions{Level: core.LogLevel}
+	}
+
+	return outbounds, route, dns, log, nil
+}
+
+func resolveOutboundTags(tags []string) []string {
+	out := make([]string, len(tags))
+	for i, t := range tags {
+		out[i] = resolveOutboundTag(t)
+	}
+	return out
 }
 
 // singBoxVersion is the pinned version from go.mod, reported as-is rather
@@ -406,15 +646,16 @@ type reportRequest struct {
 	Host  hostmetrics.Sample `json:"host"`
 }
 
-// pushLoop is the sending half of Phase 7.3's usage/health reporting - see
-// internal/httpapi/nodereport.go for the receiving side and its own doc
-// comment on why PanelURL must point at the backend-singleton instance
-// specifically. Runs for the node process's whole lifetime, independent of
-// whether a sing-box core is currently started - an idle node still
-// reports its own host health (zero user usage, xray_running: false), the
-// same way the current Python system's health-check job keeps polling a
-// stopped-but-connected node.
-func (s *server) pushLoop(ctx context.Context, cfg config) {
+// syncLoop is both halves of the node<->panel sync mechanism: Phase 7.3's
+// usage/health push (see internal/httpapi/nodereport.go for the receiving
+// side) and Phase 7.4's config pull (see internal/httpapi/nodeconfig.go).
+// Combined into one loop/ticker rather than two independent ones since
+// they share the same interval and HTTP client, and there's no reason for
+// a node to make two separate round trips to the same panel every tick.
+// Runs for the node process's whole lifetime, independent of whether a
+// sing-box core is currently started - an idle node still reports its own
+// host health and still checks whether it should start one.
+func (s *server) syncLoop(ctx context.Context, cfg config) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	ticker := time.NewTicker(cfg.ReportInterval)
 	defer ticker.Stop()
@@ -424,6 +665,7 @@ func (s *server) pushLoop(ctx context.Context, cfg config) {
 			return
 		case <-ticker.C:
 			s.pushOnce(ctx, client, cfg)
+			s.pullOnce(ctx, client, cfg)
 		}
 	}
 }
@@ -463,4 +705,157 @@ func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Warn("push report: panel rejected report", "status", resp.StatusCode)
 	}
+}
+
+// pulledConfig is GET /api/internal/node-config's response shape - see
+// internal/httpapi/nodeconfig.go's nodeConfigResponse, which this mirrors
+// field-for-field (Inbounds reuses the exact same inboundSpec/userSpec/
+// tlsSpec/realitySpec types startRequest already decodes for POST /start).
+type pulledConfig struct {
+	Version  string        `json:"version"`
+	Inbounds []inboundSpec `json:"inbounds"`
+	Core     coreSpec      `json:"core"`
+}
+
+// pullOnce fetches the panel's current desired config and, if it differs
+// from what's currently running, applies it - hot where possible (only a
+// VLESS inbound's user list changed, using the same UpdateVLESSUsers path
+// PUT /inbounds/{tag}/users already exposes), otherwise a full stop+
+// rebuild+start. See diffPulledConfig for exactly what counts as which.
+func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.PanelURL+"/api/internal/node-config", nil)
+	if err != nil {
+		s.logger.Error("pull config: build request", "error", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.ReportSecret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Warn("pull config: request failed, will retry next tick", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("pull config: panel rejected request", "status", resp.StatusCode)
+		return
+	}
+	var pulled pulledConfig
+	if err := json.NewDecoder(resp.Body).Decode(&pulled); err != nil {
+		s.logger.Error("pull config: decode response", "error", err)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lastPulled != nil && s.lastPulled.Version == pulled.Version {
+		return
+	}
+
+	needsRestart, vlessTagsChanged := diffPulledConfig(s.lastPulled, pulled)
+
+	if s.node == nil {
+		if len(pulled.Inbounds) == 0 {
+			s.lastPulled = &pulled
+			return
+		}
+		needsRestart = true
+	}
+
+	if needsRestart {
+		s.applyFullLocked(pulled)
+		return
+	}
+
+	byTag := make(map[string]inboundSpec, len(pulled.Inbounds))
+	for _, in := range pulled.Inbounds {
+		byTag[in.Tag] = in
+	}
+	for _, tag := range vlessTagsChanged {
+		in := byTag[tag]
+		users := make([]sbox.VLESSUser, 0, len(in.Users))
+		for _, u := range in.Users {
+			users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
+		}
+		if err := s.node.UpdateVLESSUsers(tag, users); err != nil {
+			s.logger.Error("pull config: hot-apply users", "tag", tag, "error", err)
+		} else {
+			s.logger.Info("pull config: hot-applied user list", "tag", tag, "users", len(users))
+		}
+	}
+	s.lastPulled = &pulled
+}
+
+// applyFullLocked stops whatever's currently running (if anything) and
+// starts fresh from pulled - the same internal path POST /start already
+// uses. Caller must hold s.mu.
+func (s *server) applyFullLocked(pulled pulledConfig) {
+	if s.node != nil {
+		if err := s.node.Close(); err != nil {
+			s.logger.Warn("pull config: close previous node before restart", "error", err)
+		}
+		s.node = nil
+	}
+	opts, err := buildOptions(startRequest{Inbounds: pulled.Inbounds, Core: &pulled.Core})
+	if err != nil {
+		s.logger.Error("pull config: build options", "error", err)
+		return
+	}
+	node, err := nodecore.New(s.ctx, opts, s.traffic)
+	if err != nil {
+		s.logger.Error("pull config: build node", "error", err)
+		return
+	}
+	if err := node.Start(); err != nil {
+		s.logger.Error("pull config: start node", "error", err)
+		return
+	}
+	s.node = node
+	s.lastPulled = &pulled
+	s.logger.Info("pull config: applied full restart", "inbounds", len(pulled.Inbounds), "version", pulled.Version)
+}
+
+// diffPulledConfig decides what changed between the last applied config
+// and a newly-pulled one. needsRestart covers anything a hot update can't
+// handle: a first-ever config (old == nil), any inbound added/removed,
+// any inbound's shape changing (protocol/port/TLS - everything except its
+// user list), the fleet-wide Core section changing at all, or a non-VLESS
+// inbound's user list changing (no hot-update path exists for those
+// protocols yet - see internal/nodecore/vless's own doc comment on why
+// only VLESS has the fork this needs). When needsRestart is false,
+// vlessTags lists exactly the VLESS-tagged inbounds whose user list
+// actually changed and should be hot-applied.
+func diffPulledConfig(old *pulledConfig, next pulledConfig) (needsRestart bool, vlessTags []string) {
+	if old == nil {
+		return true, nil
+	}
+	if !reflect.DeepEqual(old.Core, next.Core) {
+		return true, nil
+	}
+	oldByTag := make(map[string]inboundSpec, len(old.Inbounds))
+	for _, in := range old.Inbounds {
+		oldByTag[in.Tag] = in
+	}
+	if len(oldByTag) != len(next.Inbounds) {
+		return true, nil
+	}
+	for _, in := range next.Inbounds {
+		oldIn, ok := oldByTag[in.Tag]
+		if !ok {
+			return true, nil
+		}
+		oldShape, newShape := oldIn, in
+		oldShape.Users, newShape.Users = nil, nil
+		if !reflect.DeepEqual(oldShape, newShape) {
+			return true, nil
+		}
+		if !reflect.DeepEqual(oldIn.Users, in.Users) {
+			if in.Protocol != "vless" {
+				return true, nil
+			}
+			vlessTags = append(vlessTags, in.Tag)
+		}
+	}
+	return false, vlessTags
 }

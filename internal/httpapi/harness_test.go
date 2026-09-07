@@ -45,6 +45,7 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 	store := NewStore(pool, cacheClient)
 	ensureTestCA(t, store)
 	resetIntegrationSettings(t, pool)
+	resetCoreConfig(t, pool)
 	testSecret := []byte("test-secret")
 	issuer := auth.NewTokenIssuer(testSecret, time.Hour)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -137,6 +138,19 @@ func resetIntegrationSettings(t *testing.T, pool *pgxpool.Pool) {
 		webhook_addresses = NULL, webhook_secret = NULL, discord_webhook_url = NULL, updated_at = NULL`)
 	if err != nil {
 		t.Fatalf("reset integration_settings: %v", err)
+	}
+}
+
+// resetCoreConfig resets the core_config singleton row back to its
+// migration-seeded defaults before each test - same reasoning as
+// resetIntegrationSettings: a TRUNCATE would need to re-seed a singleton
+// rather than just clear it, so a plain UPDATE is simpler.
+func resetCoreConfig(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `UPDATE core_config SET
+		log_level = 'warn', sniff_enabled = true, outbounds = '[]', routing_rules = '[]', dns_servers = '[]', updated_at = now()`)
+	if err != nil {
+		t.Fatalf("reset core_config: %v", err)
 	}
 }
 

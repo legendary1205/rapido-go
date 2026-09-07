@@ -113,6 +113,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/settings/integrations", requireSudo, h.handleGetIntegrationSettings)
 		api.PUT("/settings/integrations", requireSudo, h.handleUpdateIntegrationSettings)
 
+		api.GET("/settings/core-config", requireSudo, h.handleGetCoreConfig)
+		api.PUT("/settings/core-config", requireSudo, h.handleUpdateCoreConfig)
+
 		api.GET("/tickets", requireAdmin, h.handleListTickets)
 		api.GET("/tickets/:id", requireAdmin, h.handleGetTicket)
 		api.POST("/tickets/:id/messages", requireAdmin, h.handleAdminReplyTicket)
@@ -123,6 +126,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// pointed at the backend-singleton's own address in deployment, not
 		// a load-balanced API pool - see handleNodeReport's doc comment.
 		api.POST("/internal/node-report", h.requireNodeSecret, h.handleNodeReport)
+		// Panel -> node config pull (see handleGetNodeConfig's doc comment) -
+		// every node polls this on the same interval as node-report above.
+		api.GET("/internal/node-config", h.requireNodeSecret, h.handleGetNodeConfig)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)

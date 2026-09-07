@@ -12,9 +12,14 @@ import (
 	"github.com/sagernet/sing-box/adapter/outbound"
 	boxService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/dns"
+	dnstransport "github.com/sagernet/sing-box/dns/transport"
 	"github.com/sagernet/sing-box/dns/transport/local"
+	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
+	"github.com/sagernet/sing-box/protocol/group"
+	boxhttp "github.com/sagernet/sing-box/protocol/http"
 	"github.com/sagernet/sing-box/protocol/shadowsocks"
+	"github.com/sagernet/sing-box/protocol/socks"
 	"github.com/sagernet/sing-box/protocol/trojan"
 	"github.com/sagernet/sing-box/protocol/vmess"
 
@@ -34,26 +39,43 @@ func InboundRegistry() *inbound.Registry {
 	return registry
 }
 
-// OutboundRegistry registers "direct" only - proxied connections are
-// forwarded straight to their destination, matching how Rapido's nodes
-// operate today (no outbound chaining/selection).
+// OutboundRegistry registers exactly the outbound types Phase 7.4's Core
+// Config can produce (see cmd/node/main.go's buildCoreOptions) - direct
+// and block are always present (a node's two implicit fallback targets
+// even with zero custom Core Config outbounds); socks/http/selector/
+// urltest are registered so an admin-defined custom outbound of one of
+// those types actually has something to construct it. Not sing-box's full
+// outbound surface (no WireGuard/Hysteria/shadowsocks-as-outbound/etc.) -
+// those aren't things Core Config's structured form exposes.
 func OutboundRegistry() *outbound.Registry {
 	registry := outbound.NewRegistry()
 	direct.RegisterOutbound(registry)
+	block.RegisterOutbound(registry)
+	socks.RegisterOutbound(registry)
+	boxhttp.RegisterOutbound(registry)
+	group.RegisterSelector(registry)
+	group.RegisterURLTest(registry)
 	return registry
 }
 
 // The remaining registries are required by box.New but unused by Rapido's
-// node (no WireGuard/Tailscale endpoints, no custom DNS transports beyond
-// the box default, no extra services, no ACME) - empty is a valid registry.
+// node (no WireGuard/Tailscale endpoints, no extra services, no ACME) -
+// empty is a valid registry.
 func EndpointRegistry() *endpoint.Registry { return endpoint.NewRegistry() }
 
-// The "local" transport is the one box.New falls back to by default when a
-// config declares no DNS servers of its own - required even though Rapido's
-// simple direct-proxy config never actually resolves a domain today.
+// DNSTransportRegistry registers "local" (box.New's own fallback when a
+// config declares no DNS servers, needed even when Core Config has none
+// configured) plus every DNS server type Core Config's structured form can
+// produce (see cmd/node/main.go's buildCoreOptions: local/udp/tcp/tls/
+// https) - not sing-box's full DNS transport surface (no DHCP/mDNS/
+// FakeIP/QUIC/DoH3, none of which Core Config exposes).
 func DNSTransportRegistry() *dns.TransportRegistry {
 	registry := dns.NewTransportRegistry()
 	local.RegisterTransport(registry)
+	dnstransport.RegisterUDP(registry)
+	dnstransport.RegisterTCP(registry)
+	dnstransport.RegisterTLS(registry)
+	dnstransport.RegisterHTTPS(registry)
 	return registry
 }
 func ServiceRegistry() *boxService.Registry                 { return boxService.NewRegistry() }

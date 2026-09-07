@@ -131,6 +131,9 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 			return
 		}
 	}
+	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
+		h.logger.Warn("invalidate node config cache", "error", err)
+	}
 	c.JSON(http.StatusOK, out)
 }
 

@@ -121,6 +121,9 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 			created++
 		}
 	}
+	if err := h.store.InvalidateNodeConfigPayload(c.Request.Context()); err != nil {
+		h.logger.Warn("invalidate node config cache", "error", err)
+	}
 	c.JSON(http.StatusOK, gin.H{"synced": len(entries), "created": created})
 }
 
