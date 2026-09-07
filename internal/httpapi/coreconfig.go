@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -245,23 +248,27 @@ func validateCoreConfig(dto coreConfigDTO) string {
 	return ""
 }
 
-// handleUpdateCoreConfig implements PUT /api/settings/core-config (sudo
-// only) - a full-object replace, matching PUT /hosts's own convention.
-func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
-	var dto coreConfigDTO
-	if err := c.ShouldBindJSON(&dto); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
-		return
-	}
+// coreConfigValidationError marks an error as a 400-shaped admin mistake
+// (bad field value, unknown reference) rather than an internal failure -
+// applyCoreConfig's callers (the plain PUT handler and the Xray-config
+// importer) both need to tell the two apart to pick the right HTTP status/
+// response shape, without applyCoreConfig itself knowing about gin.
+type coreConfigValidationError struct{ msg string }
+
+func (e *coreConfigValidationError) Error() string { return e.msg }
+
+// applyCoreConfig is the real work behind PUT /api/settings/core-config:
+// validate, persist, invalidate the caches a stale read would otherwise
+// serve from. Extracted out of handleUpdateCoreConfig so the Xray-config
+// importer (internal/httpapi/xrayimport.go) can reuse the exact same
+// validation and write path instead of duplicating it.
+func (h *Handler) applyCoreConfig(ctx context.Context, dto coreConfigDTO) (coreConfigDTO, error) {
 	if dto.LogLevel == "" {
 		dto.LogLevel = "warn"
 	}
 	if msg := validateCoreConfig(dto); msg != "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": msg})
-		return
+		return coreConfigDTO{}, &coreConfigValidationError{msg}
 	}
-
-	ctx := c.Request.Context()
 
 	// A routing rule's `inbound` entries reference a separate resource
 	// (the inbounds table) that isn't part of this request body at all,
@@ -278,8 +285,7 @@ func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
 	if needsInboundTags {
 		tags, err := h.store.Queries.ListInboundTags(ctx)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not validate routing rules"})
-			return
+			return coreConfigDTO{}, fmt.Errorf("could not validate routing rules: %w", err)
 		}
 		known := make(map[string]bool, len(tags))
 		for _, t := range tags {
@@ -288,8 +294,7 @@ func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
 		for _, rule := range dto.RoutingRules {
 			for _, tag := range rule.Inbound {
 				if !known[tag] {
-					c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "routing rule targets unknown inbound: " + tag})
-					return
+					return coreConfigDTO{}, &coreConfigValidationError{"routing rule targets unknown inbound: " + tag}
 				}
 			}
 		}
@@ -304,8 +309,7 @@ func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
 		Outbounds: outboundsJSON, RoutingRules: rulesJSON, DnsServers: dnsJSON,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not save core config"})
-		return
+		return coreConfigDTO{}, fmt.Errorf("could not save core config: %w", err)
 	}
 	if err := h.store.InvalidateCoreConfig(ctx); err != nil {
 		h.logger.Warn("invalidate core config cache", "error", err)
@@ -313,5 +317,26 @@ func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
 	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)
 	}
-	c.JSON(http.StatusOK, toCoreConfigDTO(row))
+	return toCoreConfigDTO(row), nil
+}
+
+// handleUpdateCoreConfig implements PUT /api/settings/core-config (sudo
+// only) - a full-object replace, matching PUT /hosts's own convention.
+func (h *Handler) handleUpdateCoreConfig(c *gin.Context) {
+	var dto coreConfigDTO
+	if err := c.ShouldBindJSON(&dto); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	saved, err := h.applyCoreConfig(c.Request.Context(), dto)
+	if err != nil {
+		var verr *coreConfigValidationError
+		if errors.As(err, &verr) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": verr.msg})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, saved)
 }

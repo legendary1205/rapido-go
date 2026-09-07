@@ -92,6 +92,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/inbounds/sync", requireSudo, h.handleSyncInbounds)
 		api.GET("/inbounds/detail", requireSudo, h.handleListInboundsDetailed)
 		api.DELETE("/inbounds/:tag", requireSudo, h.handleDeleteInbound)
+		api.POST("/inbounds/import-xray", requireSudo, h.handleImportXrayConfig)
 
 		// Read-only aggregate endpoints for the dashboard's Overview page -
 		// available to every admin (scoped to their own users when not sudo),

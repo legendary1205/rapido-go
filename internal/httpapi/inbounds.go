@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -159,24 +160,22 @@ type inboundSyncEntry struct {
 	TLSServerName  string `json:"tls_server_name,omitempty"`
 }
 
-// handleSyncInbounds implements POST /api/inbounds/sync (sudo only) - an
-// interim stand-in for the real proxy-core-config sync the node-agent phase
-// will do. Newly-registered tags get a default host, mirroring
-// add_default_host in the current crud.get_or_create_inbound.
-func (h *Handler) handleSyncInbounds(c *gin.Context) {
-	var entries []inboundSyncEntry
-	if err := c.ShouldBindJSON(&entries); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
-		return
-	}
+// syncInboundEntries is the real work behind POST /api/inbounds/sync:
+// upsert-by-tag, creating a default host (no real port yet) for any
+// genuinely new tag. Extracted out of handleSyncInbounds so the
+// Xray-config importer (internal/httpapi/xrayimport.go) can reuse the
+// exact same write path instead of duplicating it - unlike that HTTP
+// handler, this returns a plain Go error (an unknown-protocol entry is
+// reported the same way any other failure is, via the returned error, not
+// a distinct HTTP status - both callers already validate protocol values
+// upstream of this function in their own way).
+func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncEntry) (created int, err error) {
 	for _, e := range entries {
 		if !proxyTypeValid(e.Protocol) {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "unknown protocol: " + e.Protocol})
-			return
+			return created, &inboundValidationError{"unknown protocol: " + e.Protocol}
 		}
 	}
 
-	created := 0
 	for _, e := range entries {
 		network := e.Network
 		if network == "" {
@@ -188,14 +187,13 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 		}
 
 		var oldProtocol *string
-		if existing, err := h.store.Queries.GetInboundByTag(c.Request.Context(), e.Tag); err == nil {
+		if existing, err := h.store.Queries.GetInboundByTag(ctx, e.Tag); err == nil {
 			oldProtocol = &existing.Protocol
 		} else if !errors.Is(err, pgx.ErrNoRows) {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
-			return
+			return created, fmt.Errorf("could not sync inbound %s: %w", e.Tag, err)
 		}
 
-		row, err := h.store.Queries.UpsertInbound(c.Request.Context(), generated.UpsertInboundParams{
+		row, err := h.store.Queries.UpsertInbound(ctx, generated.UpsertInboundParams{
 			Tag: e.Tag, Protocol: e.Protocol, Network: network, HeaderType: textFromPtr(normalizeZeroString(&e.HeaderType)),
 			Security:          security,
 			RealityPrivateKey: textFromPtr(normalizeZeroString(&e.RealityPrivateKey)),
@@ -207,26 +205,55 @@ func (h *Handler) handleSyncInbounds(c *gin.Context) {
 			TlsServerName:     textFromPtr(normalizeZeroString(&e.TLSServerName)),
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not sync inbound " + e.Tag})
-			return
+			return created, fmt.Errorf("could not sync inbound %s: %w", e.Tag, err)
 		}
-		if err := h.store.InvalidateInbound(c.Request.Context(), e.Tag, e.Protocol, oldProtocol); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate inbound cache for " + e.Tag})
-			return
+		if err := h.store.InvalidateInbound(ctx, e.Tag, e.Protocol, oldProtocol); err != nil {
+			return created, fmt.Errorf("could not invalidate inbound cache for %s: %w", e.Tag, err)
 		}
 		if row.Inserted {
-			if err := createDefaultHost(c.Request.Context(), h.store.Queries, e.Tag); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not create default host for " + e.Tag})
-				return
+			if err := createDefaultHost(ctx, h.store.Queries, e.Tag); err != nil {
+				return created, fmt.Errorf("could not create default host for %s: %w", e.Tag, err)
 			}
 			created++
 		}
 	}
-	if err := h.store.InvalidateNodeConfigPayload(c.Request.Context()); err != nil {
+	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)
+	}
+	return created, nil
+}
+
+// handleSyncInbounds implements POST /api/inbounds/sync (sudo only) - an
+// interim stand-in for the real proxy-core-config sync the node-agent phase
+// will do.
+func (h *Handler) handleSyncInbounds(c *gin.Context) {
+	var entries []inboundSyncEntry
+	if err := c.ShouldBindJSON(&entries); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	created, err := h.syncInboundEntries(c.Request.Context(), entries)
+	if err != nil {
+		var verr *inboundValidationError
+		if errors.As(err, &verr) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": verr.msg})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"synced": len(entries), "created": created})
 }
+
+// inboundValidationError marks an error from syncInboundEntries as a
+// client mistake (400-shaped) rather than an internal failure - same
+// pattern as coreconfig.go's coreConfigValidationError, for the same
+// reason: this function's callers (the plain sync handler and the
+// Xray-config importer) need to tell the two apart without this function
+// itself knowing about gin/HTTP status codes.
+type inboundValidationError struct{ msg string }
+
+func (e *inboundValidationError) Error() string { return e.msg }
 
 // createDefaultHost mirrors add_default_host in the current
 // crud.get_or_create_inbound: every inbound gets one default ProxyHost the
