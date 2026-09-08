@@ -147,11 +147,20 @@ const UserActions: FC<{ user: User }> = ({ user }) => {
   const setRevokeSubscriptionUser = useUsersUiStore((s) => s.setRevokeSubscriptionUser);
   const setSubscriptionLinkUser = useUsersUiStore((s) => s.setSubscriptionLinkUser);
 
+  // A Gateway replica (see types/User.ts's own doc comment) can only
+  // change via the panel that actually owns it - the backend rejects a
+  // direct edit outright (handleModifyUser), so hiding Edit here isn't
+  // just cosmetic, it matches a real enforced rule rather than promising
+  // something the click would then fail on.
+  const isReplica = !!user.synced_from_panel_name;
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <Button variant="chip" tone="accent" onClick={() => setEditingUser(user)}>
-        {t("rapido.edit")}
-      </Button>
+      {!isReplica && (
+        <Button variant="chip" tone="accent" onClick={() => setEditingUser(user)}>
+          {t("rapido.edit")}
+        </Button>
+      )}
       <Button variant="chip" tone="amber" onClick={() => setResetUsageUser(user)}>
         {t("userDialog.resetUsage")}
       </Button>
@@ -219,6 +228,11 @@ const UserRow: FC<{ user: User }> = ({ user }) => {
             <Badge tone={statusTone[user.status] ?? "gray"}>
               {t(`status.${user.status}`)}
             </Badge>
+            {user.synced_from_panel_name && (
+              <Badge tone="sky">
+                {t("rapido.gateway.syncedFrom", { name: user.synced_from_panel_name })}
+              </Badge>
+            )}
             {protocols.map((protocol) => (
               <Badge key={protocol} tone="brand">
                 {protocol}

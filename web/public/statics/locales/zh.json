@@ -685,6 +685,7 @@
   "rapido.gateway.testFailed": "连接失败:{{detail}}",
   "rapido.gateway.loadFailed": "无法加载对端列表。",
   "rapido.gateway.empty": "还没有对端。添加一个即可开始与其他安装均衡流量。",
+  "rapido.gateway.syncedFrom": "同步自 {{name}}",
   "rapido.integrations.downloadFailed": "下载失败。",
   "rapido.overviewSubtitle": "服务器和用户的实时概览。",
   "rapido.fleetStatus": "服务器状态",

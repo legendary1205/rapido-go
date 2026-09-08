@@ -53,6 +53,11 @@ export type User = {
   on_hold_timeout: string | null;
   auto_delete_in_days: number | null;
   admin_username: string | null;
+  // Non-null only for a Gateway replica (see internal/httpapi/gateway_sync.go) -
+  // a real local user always has this null. The panel that pushed this user
+  // out to us is the only one allowed to change it - see UsersAdmin.tsx's own
+  // read-only treatment, matching the backend's own rejection of a direct edit.
+  synced_from_panel_name: string | null;
   proxies: ProxySettingsMap;
   inbounds: UserInbounds;
   excluded_inbounds: UserInbounds;

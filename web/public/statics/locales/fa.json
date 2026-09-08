@@ -690,6 +690,7 @@
   "rapido.gateway.testFailed": "اتصال ناموفق: {{detail}}",
   "rapido.gateway.loadFailed": "پنل‌ها بارگذاری نشدن.",
   "rapido.gateway.empty": "هنوز پنلی اضافه نشده. یکی اضافه کن تا بالانس ترافیک با نصب دیگه شروع بشه.",
+  "rapido.gateway.syncedFrom": "همگام‌شده از {{name}}",
   "rapido.overviewSubtitle": "خلاصه‌ی زنده از وضعیت نودها و کاربران.",
   "rapido.fleetStatus": "وضعیت نودها",
   "rapido.resourceStatus": "وضعیت منابع نودها",

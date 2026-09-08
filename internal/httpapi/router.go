@@ -168,6 +168,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// above but checked against gateway_settings instead of a specific
 		// node's report_secret. See internal/httpapi/gateway.go.
 		api.GET("/internal/gateway/ping", h.requireGatewaySecret, h.handleGatewayPing)
+		api.POST("/internal/gateway/users/sync", h.requireGatewaySecret, h.handleGatewaySyncUser)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)

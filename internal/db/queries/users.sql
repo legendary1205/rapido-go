@@ -10,6 +10,33 @@ RETURNING *;
 -- name: GetUserByUsername :one
 SELECT * FROM users WHERE username = $1;
 
+-- name: CreateGatewaySyncedUser :one
+-- Gateway sub-phase 2: a replica of a user that genuinely lives on a peer
+-- panel, pushed here via POST /api/internal/gateway/users/sync - same
+-- shape as CreateUser but with synced_from_panel_name set and no admin_id
+-- (a replica has no local owning admin; policy/ownership belongs to the
+-- panel that actually owns the user).
+INSERT INTO users (
+    username, status, data_limit, data_limit_reset_strategy, expire, synced_from_panel_name
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+RETURNING *;
+
+-- name: UpdateGatewaySyncedUser :one
+-- Refreshes a replica's policy fields from a later sync push - never
+-- touches note/on_hold_*/auto_delete_in_days (never synced in the first
+-- place, see gatewaySyncPayload's own doc comment) or synced_from_panel_name
+-- itself (a replica never changes which panel it's a replica of).
+UPDATE users SET
+    status = $2,
+    data_limit = $3,
+    data_limit_reset_strategy = $4,
+    expire = $5,
+    edit_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1;
 

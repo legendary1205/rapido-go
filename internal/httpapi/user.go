@@ -83,26 +83,32 @@ type userCreateRequest struct {
 }
 
 type userResponseDTO struct {
-	ID                     int32                      `json:"id"`
-	Username               string                     `json:"username"`
-	Status                 string                     `json:"status"`
-	UsedTraffic            int64                      `json:"used_traffic"`
-	LifetimeUsedTraffic    int64                      `json:"lifetime_used_traffic"`
-	DataLimit              *int64                     `json:"data_limit"`
-	DataLimitResetStrategy string                     `json:"data_limit_reset_strategy"`
-	Expire                 *int64                     `json:"expire"`
-	Note                   *string                    `json:"note"`
-	CreatedAt              time.Time                  `json:"created_at"`
-	OnHoldExpireDuration   *int64                     `json:"on_hold_expire_duration"`
-	OnHoldTimeout          *time.Time                 `json:"on_hold_timeout"`
-	AutoDeleteInDays       *int32                     `json:"auto_delete_in_days"`
-	AdminUsername          *string                    `json:"admin_username"`
-	Proxies                map[string]json.RawMessage `json:"proxies"`
-	Inbounds               map[string][]string        `json:"inbounds"`
-	ExcludedInbounds       map[string][]string        `json:"excluded_inbounds"`
-	NextPlan               *nextPlanDTO               `json:"next_plan"`
-	SubscriptionURL        string                     `json:"subscription_url"`
-	OnlineAt               *time.Time                 `json:"online_at"`
+	ID                     int32      `json:"id"`
+	Username               string     `json:"username"`
+	Status                 string     `json:"status"`
+	UsedTraffic            int64      `json:"used_traffic"`
+	LifetimeUsedTraffic    int64      `json:"lifetime_used_traffic"`
+	DataLimit              *int64     `json:"data_limit"`
+	DataLimitResetStrategy string     `json:"data_limit_reset_strategy"`
+	Expire                 *int64     `json:"expire"`
+	Note                   *string    `json:"note"`
+	CreatedAt              time.Time  `json:"created_at"`
+	OnHoldExpireDuration   *int64     `json:"on_hold_expire_duration"`
+	OnHoldTimeout          *time.Time `json:"on_hold_timeout"`
+	AutoDeleteInDays       *int32     `json:"auto_delete_in_days"`
+	AdminUsername          *string    `json:"admin_username"`
+	// SyncedFromPanelName is non-nil only for a Gateway replica (see
+	// gateway_sync.go) - a real local user (the overwhelming majority)
+	// always has this nil. Frontend uses it to badge the user and disable
+	// direct edits, matching handleModifyUser's own backend-enforced
+	// rejection of the same thing.
+	SyncedFromPanelName *string                    `json:"synced_from_panel_name"`
+	Proxies             map[string]json.RawMessage `json:"proxies"`
+	Inbounds            map[string][]string        `json:"inbounds"`
+	ExcludedInbounds    map[string][]string        `json:"excluded_inbounds"`
+	NextPlan            *nextPlanDTO               `json:"next_plan"`
+	SubscriptionURL     string                     `json:"subscription_url"`
+	OnlineAt            *time.Time                 `json:"online_at"`
 	// Links is populated only by handleGetUser (the single-user GET), never
 	// by the batched buildUserResponses a paginated user-list page shares -
 	// generating every proxy's share links is real per-user work, and this
@@ -255,6 +261,7 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 	// sets admin_id to the caller's own id) - the bootstrap sudo account has
 	// no admins row at all, so its created users have no owning admin.
 	h.reports.UserCreated(ctx, toUserSummary(resp), identity.Username, h.resolveAdminRef(ctx, dbuser.AdminID))
+	h.dispatchGatewayUserSync(ctx, dbuser)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -356,6 +363,16 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
 	if !ok {
+		return
+	}
+	// A Gateway replica (see gateway_sync.go) is only ever supposed to
+	// change via a sync push FROM the panel that actually owns it - a
+	// direct edit here would apply locally only, silently diverge from
+	// that panel's own state, and then get invisibly clobbered by its next
+	// sync push anyway. Reject outright rather than let that footgun exist
+	// just because dispatchGatewayUserSync happens to skip replicas.
+	if dbuser.SyncedFromPanelName.Valid {
+		c.JSON(http.StatusConflict, gin.H{"detail": "This user is managed by another panel (" + dbuser.SyncedFromPanelName.String + ") via the Gateway - edit it there instead."})
 		return
 	}
 	var req userWriteRequest
@@ -519,6 +536,7 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 	if updated.Status != dbuser.Status {
 		h.reports.StatusChange(ctx, updated.Username, updated.Status, userAdmin)
 	}
+	h.dispatchGatewayUserSync(ctx, updated)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -629,6 +647,7 @@ func (h *Handler) handleDeleteUser(c *gin.Context) {
 	// serial PK that's never reused, so any leftover cache entry keyed on
 	// one just expires unread via its TTL - never served to anyone.
 	h.reports.UserDeleted(ctx, dbuser.Username, identity.Username, userAdmin)
+	h.dispatchGatewayUserDelete(ctx, dbuser)
 	c.JSON(http.StatusOK, gin.H{"detail": "User removed successfully"})
 }
 
@@ -885,7 +904,8 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			Expire: pgInt4ToPtrInt64(u.Expire), Note: textToPtr(u.Note), CreatedAt: u.CreatedAt.Time,
 			OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
 			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
-			Proxies: proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
+			SyncedFromPanelName: textToPtr(u.SyncedFromPanelName),
+			Proxies:             proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
 			SubscriptionURL: subURL, OnlineAt: timestamptzToPtr(u.OnlineAt),
 			// Not the real per-user links list (see handleGetUser, the only
 			// caller that pays for that) - a literal empty slice here is

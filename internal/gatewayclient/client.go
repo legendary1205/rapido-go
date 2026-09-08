@@ -8,6 +8,7 @@
 package gatewayclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,67 @@ func Ping(ctx context.Context, baseURL, secret string) (PingResult, error) {
 	var result PingResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return PingResult{}, fmt.Errorf("could not decode peer response: %w", err)
+	}
+	return result, nil
+}
+
+// UserSyncPayload mirrors internal/httpapi/gateway_sync.go's
+// gatewaySyncPayload - a full snapshot of one user's identity/policy/
+// credentials (not a diff), sent by the panel that actually owns the
+// user to every peer it's configured with. Deliberately doesn't wrap
+// this in the same struct on both ends: internal/httpapi owns the real
+// definition (it also has to read this shape back out of an inbound
+// request), this is just the outbound wire copy so gatewayclient doesn't
+// import internal/httpapi (which would be the wrong dependency direction
+// - httpapi is the one importing this package, not the other way round).
+type UserSyncPayload struct {
+	OriginPanelName        string                     `json:"origin_panel_name"`
+	Username               string                     `json:"username"`
+	Deleted                bool                       `json:"deleted"`
+	Status                 string                     `json:"status,omitempty"`
+	DataLimit              *int64                     `json:"data_limit,omitempty"`
+	DataLimitResetStrategy string                     `json:"data_limit_reset_strategy,omitempty"`
+	Expire                 *int64                     `json:"expire,omitempty"`
+	Proxies                map[string]json.RawMessage `json:"proxies,omitempty"`
+}
+
+// SyncUserResult is deliberately tiny - the caller (a fire-and-forget
+// background goroutine, see internal/httpapi/gateway_sync.go's dispatch
+// helper) only ever logs success/failure, never acts on the response
+// body beyond that.
+type SyncUserResult struct {
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// SyncUser pushes one user's full state to a peer - create/update if
+// payload.Deleted is false, delete if true. Same secret/timeout/error
+// shape as Ping.
+func SyncUser(ctx context.Context, baseURL, secret string, payload UserSyncPayload) (SyncUserResult, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return SyncUserResult{}, fmt.Errorf("could not encode payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/internal/gateway/users/sync", bytes.NewReader(body))
+	if err != nil {
+		return SyncUserResult{}, fmt.Errorf("could not build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return SyncUserResult{}, fmt.Errorf("could not reach peer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result SyncUserResult
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if resp.StatusCode != http.StatusOK {
+		if result.Detail == "" {
+			result.Detail = fmt.Sprintf("peer responded with status %d", resp.StatusCode)
+		}
+		return result, fmt.Errorf("peer rejected the sync: %s", result.Detail)
 	}
 	return result, nil
 }
