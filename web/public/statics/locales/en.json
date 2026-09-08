@@ -683,6 +683,7 @@
   "rapido.gateway.testConnection": "Test connection",
   "rapido.gateway.testOk": "Connected - {{name}} accepted the secret.",
   "rapido.gateway.testFailed": "Connection failed: {{detail}}",
+  "rapido.gateway.testStatus": "Crowdedness: {{crowdedness}} · {{hosts}} hosts available.",
   "rapido.gateway.loadFailed": "Could not load peers.",
   "rapido.gateway.empty": "No peers yet. Add one to start balancing traffic with another install.",
   "rapido.gateway.syncedFrom": "Synced from {{name}}",

@@ -30,4 +30,9 @@ export type GatewayTestResult = {
   ok: boolean;
   panel_name?: string;
   detail?: string;
+  // Both absent if the ping itself succeeded but the follow-up status call
+  // (sub-phase 3) didn't - see internal/httpapi/gateway.go's
+  // handleTestGatewayPeer, that failure never turns a real "ok" into "not ok".
+  crowdedness?: number;
+  host_count?: number;
 };

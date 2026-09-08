@@ -279,5 +279,15 @@ func (h *Handler) handleTestGatewayPeer(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": false, "detail": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "panel_name": result.PanelName})
+	resp := gin.H{"ok": true, "panel_name": result.PanelName}
+	// The status call is a separate, best-effort addition on top of a
+	// successful ping (sub-phase 3) - it failing shouldn't turn a
+	// genuinely successful connection test into a reported failure, so
+	// its own error just means the two extra fields stay absent rather
+	// than aborting the response.
+	if status, err := gatewayclient.Status(c.Request.Context(), peer.BaseUrl, peer.Secret); err == nil {
+		resp["crowdedness"] = status.Crowdedness
+		resp["host_count"] = len(status.Hosts)
+	}
+	c.JSON(http.StatusOK, resp)
 }

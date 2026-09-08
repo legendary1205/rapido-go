@@ -688,6 +688,7 @@
   "rapido.gateway.testConnection": "تست اتصال",
   "rapido.gateway.testOk": "متصل شد - {{name}} کلید مخفی رو پذیرفت.",
   "rapido.gateway.testFailed": "اتصال ناموفق: {{detail}}",
+  "rapido.gateway.testStatus": "شلوغی: {{crowdedness}} · {{hosts}} هاست در دسترس.",
   "rapido.gateway.loadFailed": "پنل‌ها بارگذاری نشدن.",
   "rapido.gateway.empty": "هنوز پنلی اضافه نشده. یکی اضافه کن تا بالانس ترافیک با نصب دیگه شروع بشه.",
   "rapido.gateway.syncedFrom": "همگام‌شده از {{name}}",

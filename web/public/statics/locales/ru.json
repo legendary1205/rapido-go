@@ -683,6 +683,7 @@
   "rapido.gateway.testConnection": "Проверить соединение",
   "rapido.gateway.testOk": "Подключено - {{name}} принял секрет.",
   "rapido.gateway.testFailed": "Ошибка соединения: {{detail}}",
+  "rapido.gateway.testStatus": "Загруженность: {{crowdedness}} · доступно хостов: {{hosts}}.",
   "rapido.gateway.loadFailed": "Не удалось загрузить пиров.",
   "rapido.gateway.empty": "Пиров пока нет. Добавьте одного, чтобы начать балансировку с другой установкой.",
   "rapido.gateway.syncedFrom": "Синхронизировано из {{name}}",

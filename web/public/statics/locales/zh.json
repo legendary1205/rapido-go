@@ -683,6 +683,7 @@
   "rapido.gateway.testConnection": "测试连接",
   "rapido.gateway.testOk": "已连接 - {{name}} 接受了该密钥。",
   "rapido.gateway.testFailed": "连接失败:{{detail}}",
+  "rapido.gateway.testStatus": "拥挤度:{{crowdedness}} · 可用主机 {{hosts}} 个。",
   "rapido.gateway.loadFailed": "无法加载对端列表。",
   "rapido.gateway.empty": "还没有对端。添加一个即可开始与其他安装均衡流量。",
   "rapido.gateway.syncedFrom": "同步自 {{name}}",

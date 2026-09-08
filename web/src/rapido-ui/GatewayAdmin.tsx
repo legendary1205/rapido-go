@@ -223,13 +223,20 @@ const PeerRow: FC<{ peer: GatewayPeer; onEdit: () => void }> = ({ peer, onEdit }
   const runTest = () => {
     setTestResult(null);
     testPeer.mutate(peer.id, {
-      onSuccess: (result) =>
-        setTestResult({
-          ok: result.ok,
-          text: result.ok
-            ? t("rapido.gateway.testOk", { name: result.panel_name || peer.name })
-            : t("rapido.gateway.testFailed", { detail: result.detail || "" }),
-        }),
+      onSuccess: (result) => {
+        if (!result.ok) {
+          setTestResult({ ok: false, text: t("rapido.gateway.testFailed", { detail: result.detail || "" }) });
+          return;
+        }
+        let text = t("rapido.gateway.testOk", { name: result.panel_name || peer.name });
+        // crowdedness/host_count are best-effort (sub-phase 3's status call
+        // riding along with the ping) - absent, not zero, when that second
+        // call itself failed, so only append them when actually present.
+        if (result.crowdedness !== undefined && result.host_count !== undefined) {
+          text += " " + t("rapido.gateway.testStatus", { crowdedness: result.crowdedness, hosts: result.host_count });
+        }
+        setTestResult({ ok: true, text });
+      },
       onError: (e) => setTestResult({ ok: false, text: errorText(e, t("rapido.gateway.testFailed", { detail: "" })) }),
     });
   };

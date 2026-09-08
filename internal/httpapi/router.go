@@ -169,6 +169,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// node's report_secret. See internal/httpapi/gateway.go.
 		api.GET("/internal/gateway/ping", h.requireGatewaySecret, h.handleGatewayPing)
 		api.POST("/internal/gateway/users/sync", h.requireGatewaySecret, h.handleGatewaySyncUser)
+		api.GET("/internal/gateway/status", h.requireGatewaySecret, h.handleGatewayStatus)
 	}
 
 	r.GET("/sub/:token", h.handleGetSubscription)
