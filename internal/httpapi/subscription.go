@@ -150,12 +150,14 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 		return err
 	}
 	vars := subscription.BuildVariables(toSubUserInfo(user), h.publicIP)
+	settingsByProtocol := make(map[string]proxysettings.Settings, len(proxies))
 
 	for _, p := range proxies {
 		settings, err := proxysettings.FromStored(proxysettings.ProxyType(p.Type), p.Settings)
 		if err != nil {
 			continue
 		}
+		settingsByProtocol[p.Type] = settings
 		known, err := h.store.CachedListInboundTagsByProtocol(ctx, p.Type)
 		if err != nil {
 			continue
@@ -194,6 +196,36 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 			address := remarkVars.Format(host.Address)
 			fn(p.Type, settings, remark, address, eff)
 		}
+	}
+
+	// Gateway (multi-panel load balancer) sub-phase 4: append every
+	// configured peer's cached hosts, strictly AFTER every local host above
+	// - see gatherPeerHosts's own doc comment for why this never reorders
+	// or interleaves with the admin's own local priority ordering. Reuses
+	// the exact same fn(...) callback local hosts use, so buildUserLinks/
+	// buildUserSingBoxOutbounds need no changes at all to pick these up.
+	for _, ph := range h.gatherPeerHosts(ctx, settingsByProtocol) {
+		settings, ok := settingsByProtocol[ph.host.Protocol]
+		if !ok {
+			// gatherPeerHosts already filters to protocols this user has
+			// locally, so this can't actually happen - guarded anyway
+			// since fn's settings argument must never be a zero value.
+			continue
+		}
+		remarkVars := vars
+		remarkVars["PROTOCOL"] = ph.host.Protocol
+		remarkVars["TRANSPORT"] = ph.host.Network
+		remark := "[" + ph.peerName + "] " + remarkVars.Format(ph.host.Remark)
+		address := remarkVars.Format(ph.host.Address)
+		eff := subscription.EffectiveInbound{
+			Tag: ph.host.Tag, Protocol: ph.host.Protocol, Network: ph.host.Network, HeaderType: ph.host.HeaderType,
+			Port: ph.host.Port, Address: ph.host.Address, SNI: ph.host.SNI, HostHeader: ph.host.HostHeader,
+			Path: ph.host.Path, Security: ph.host.Security, ALPN: ph.host.ALPN, Fingerprint: ph.host.Fingerprint,
+			AllowInsecure: ph.host.AllowInsecure, RealityPublicKey: ph.host.RealityPublicKey, RealityShortID: ph.host.RealityShortID,
+			MuxEnable: ph.host.MuxEnable, FragmentSetting: ph.host.FragmentSetting, NoiseSetting: ph.host.NoiseSetting,
+			RandomUserAgent: ph.host.RandomUserAgent,
+		}
+		fn(ph.host.Protocol, settings, remark, address, eff)
 	}
 	return nil
 }

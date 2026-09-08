@@ -17,29 +17,35 @@ import (
 // inbound's own value) matches that function exactly - see its comment
 // block for which fields have no inbound-level fallback at all
 // (MuxEnable, FragmentSetting, NoiseSetting, RandomUserAgent: host-only).
+// JSON tags exist for one reason: internal/httpapi/gateway_status.go
+// sends this exact struct as-is to a peer (see its own doc comment) - the
+// Gateway feature's whole point is exposing a public-safe, already-merged
+// view of a host, which is precisely what this type already is (in
+// particular: RealityPublicKey, never the private key BuildEffectiveInbound
+// derives it from). No other caller marshals this type.
 type EffectiveInbound struct {
-	Tag        string
-	Protocol   string
-	Network    string
-	HeaderType string
-	Port       int
-	Address    string
-	SNI        string
-	HostHeader string
-	Path       string
-	Security   string // none | tls | reality - resolved, never "inbound_default"
+	Tag        string `json:"tag"`
+	Protocol   string `json:"protocol"`
+	Network    string `json:"network"`
+	HeaderType string `json:"header_type"`
+	Port       int    `json:"port"`
+	Address    string `json:"address"`
+	SNI        string `json:"sni"`
+	HostHeader string `json:"host_header"`
+	Path       string `json:"path"`
+	Security   string `json:"security"` // none | tls | reality - resolved, never "inbound_default"
 
-	ALPN          string
-	Fingerprint   string
-	AllowInsecure bool
+	ALPN          string `json:"alpn"`
+	Fingerprint   string `json:"fingerprint"`
+	AllowInsecure bool   `json:"allow_insecure"`
 
-	RealityPublicKey string
-	RealityShortID   string
+	RealityPublicKey string `json:"reality_public_key"`
+	RealityShortID   string `json:"reality_short_id"`
 
-	MuxEnable       bool
-	FragmentSetting string
-	NoiseSetting    string
-	RandomUserAgent bool
+	MuxEnable       bool   `json:"mux_enable"`
+	FragmentSetting string `json:"fragment_setting"`
+	NoiseSetting    string `json:"noise_setting"`
+	RandomUserAgent bool   `json:"random_user_agent"`
 }
 
 // BuildEffectiveInbound merges one Host row onto its parent Inbound row.

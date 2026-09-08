@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/legendary1205/rapido-go/internal/subscription"
 )
 
 // computePanelCrowdedness is Gateway sub-phase 3: a live load signal for
@@ -48,27 +50,36 @@ func (h *Handler) computePanelCrowdedness(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// gatewayHostDTO is hostDTO plus what a peer actually needs to use this
-// host that GET /api/hosts's own tag-grouped response doesn't carry: which
-// inbound tag and protocol it belongs to, flattened into each entry since
-// this response isn't grouped the way the admin-facing one is.
-type gatewayHostDTO struct {
-	hostDTO
-	InboundTag string `json:"inbound_tag"`
-	Protocol   string `json:"protocol"`
+// gatewayStatusHostDTO is exactly subscription.EffectiveInbound (the same
+// merged host+inbound view forEachUserHost already builds for every LOCAL
+// host, via subscription.BuildEffectiveInbound) plus the two things that
+// view alone doesn't carry: the host's own raw remark template (never
+// pre-formatted here - remarkVars.Format uses the REQUESTING panel's own
+// user variables, not this panel's, so the template has to cross the wire
+// as-is) and its Priority (peer hosts are still ranked among themselves
+// by that, layered under the receiving panel's own live crowdedness
+// ranking - see forEachUserHost's peer-merge step).
+type gatewayStatusHostDTO struct {
+	subscription.EffectiveInbound
+	Remark   string `json:"remark"`
+	Priority int32  `json:"priority"`
 }
 
 type gatewayStatusDTO struct {
-	Crowdedness int              `json:"crowdedness"`
-	Hosts       []gatewayHostDTO `json:"hosts"`
+	Crowdedness int                    `json:"crowdedness"`
+	Hosts       []gatewayStatusHostDTO `json:"hosts"`
 }
 
 // handleGatewayStatus implements GET /api/internal/gateway/status
-// (panel-to-panel, requireGatewaySecret) - what sub-phase 4's background
-// refresh job will poll on every enabled peer. Hosts are filtered to
-// non-disabled only, same as ListHostsByInboundTag already does for
-// subscription serving - a peer has no more use for a disabled host than
-// this panel's own subscription generation does.
+// (panel-to-panel, requireGatewaySecret) - what the gatewayjob background
+// refresh loop polls on every enabled peer (sub-phase 4). Hosts are
+// filtered to non-disabled only, same as ListHostsByInboundTag already
+// does for this panel's own subscription serving. Deliberately sends the
+// already-merged EffectiveInbound, not raw host+inbound rows: it's the
+// exact same public-safe view (real Reality PUBLIC key, never the private
+// key it's derived from) forEachUserHost already builds for local hosts,
+// so no new "what's safe to expose" analysis was needed - it's the same
+// answer subscription generation already gave.
 func (h *Handler) handleGatewayStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -83,24 +94,18 @@ func (h *Handler) handleGatewayStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not list hosts: " + err.Error()})
 		return
 	}
-	inboundRows, err := h.store.Queries.ListInbounds(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not list inbounds: " + err.Error()})
-		return
-	}
-	protocolByTag := make(map[string]string, len(inboundRows))
-	for _, in := range inboundRows {
-		protocolByTag[in.Tag] = in.Protocol
-	}
 
-	hosts := make([]gatewayHostDTO, 0, len(hostRows))
+	hosts := make([]gatewayStatusHostDTO, 0, len(hostRows))
 	for _, r := range hostRows {
 		if r.IsDisabled.Valid && r.IsDisabled.Bool {
 			continue
 		}
-		hosts = append(hosts, gatewayHostDTO{
-			hostDTO: toHostDTO(r), InboundTag: r.InboundTag, Protocol: protocolByTag[r.InboundTag],
-		})
+		inbound, err := h.store.CachedGetInboundByTag(ctx, r.InboundTag)
+		if err != nil {
+			continue
+		}
+		eff := subscription.BuildEffectiveInbound(inbound, r)
+		hosts = append(hosts, gatewayStatusHostDTO{EffectiveInbound: eff, Remark: r.Remark, Priority: r.Priority})
 	}
 
 	c.JSON(http.StatusOK, gatewayStatusDTO{Crowdedness: crowdedness, Hosts: hosts})

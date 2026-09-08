@@ -28,6 +28,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/config"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/discord"
+	"github.com/legendary1205/rapido-go/internal/gatewayjob"
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
@@ -197,6 +198,11 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		// redundant DELETEs racing each other.
 		go hostmetrics.PruneLoop(ctx, queries, redisClient, logger, time.Hour)
 		go hostmetrics.PanelSelfSampleLoop(ctx, queries, hostMetricsTracker, redisClient, logger, 30*time.Second)
+		// Gateway (multi-panel load balancer) sub-phase 4: keeps every
+		// enabled peer's crowdedness/host cache warm so a real client's
+		// subscription fetch never waits on a network call to another
+		// panel - see internal/gatewayjob's own doc comment.
+		go gatewayjob.Run(ctx, queries, redisClient, logger, 2*time.Minute)
 		reviewjob.Run(ctx, queries, dispatcher, redisClient, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -

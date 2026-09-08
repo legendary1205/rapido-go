@@ -93,6 +93,16 @@ const (
 	// schema. A Redis key rather than a DB row/column, since the database
 	// itself is what's being wiped.
 	nsMaintenance = "rapido:maintenance"
+
+	// nsGatewayPeerStatus caches one peer's last-fetched GET .../gateway/status
+	// response (crowdedness + real hosts) - see internal/gatewayjob, the
+	// periodic BACKEND-only writer, and internal/httpapi/subscription.go's
+	// forEachUserHost, the reader. Deliberately a plain TTL'd cache entry, not
+	// invalidated on any write: nothing local ever changes a peer's own
+	// crowdedness/hosts, only that peer's own next refresh does, and a peer
+	// that stops refreshing (offline) should simply age out and disappear
+	// from subscription merging once its TTL lapses, not linger forever.
+	nsGatewayPeerStatus = "rapido:gateway_peer_status"
 )
 
 func AdminByUsernameKey(username string) string {
@@ -113,6 +123,10 @@ func HostKey(nodeID string) string { return fmt.Sprintf("%s:%s", nsHost, nodeID)
 func InboundCountKey(tag string) string { return fmt.Sprintf("%s:%s", nsInboundCount, tag) }
 
 func PortConnKey(port int) string { return fmt.Sprintf("%s:%d", nsPortConn, port) }
+
+func GatewayPeerStatusKey(peerID int32) string {
+	return fmt.Sprintf("%s:%d", nsGatewayPeerStatus, peerID)
+}
 
 func SettingsKey() string { return nsSettings }
 

@@ -65,7 +65,7 @@ func TestGatewayStatusReflectsRealConnectionsAndExcludesStaleNodes(t *testing.T)
 	foundOurTag := false
 	for _, hRaw := range hosts {
 		hMap := hRaw.(map[string]interface{})
-		if hMap["inbound_tag"] == "Crowdedness VLESS" {
+		if hMap["tag"] == "Crowdedness VLESS" {
 			foundOurTag = true
 			if hMap["protocol"] != "vless" {
 				t.Errorf("host protocol = %v, want vless", hMap["protocol"])
