@@ -9,7 +9,10 @@
 // dashboard itself never reads it, it always uses `subscription_url`, and
 // node connection states ("error"/"connecting"/"connected") were never real
 // user statuses to begin with, just leftover node-status values on the same
-// old union.
+// old union. `admin` is a nested object (not a flat `admin_username` string)
+// and `sub_updated_at`/`sub_last_user_agent`/`emergency_used_at` were added
+// specifically to match the real Marzban wire shape a bot like Mirza-bot
+// expects - the dashboard doesn't read any of these four fields today.
 export type Status = "active" | "disabled" | "limited" | "expired" | "on_hold";
 
 export type ProtocolType = "vmess" | "vless" | "trojan" | "shadowsocks";
@@ -38,6 +41,18 @@ export type NextPlan = {
   fire_on_either: boolean;
 };
 
+// Mirrors internal/httpapi/admin.go's adminDTO - defined locally rather than
+// imported from Admin.ts, matching this file's existing NextPlan precedent
+// of keeping each response type self-contained.
+export type UserAdmin = {
+  id: number;
+  username: string;
+  is_sudo: boolean;
+  telegram_id: number | null;
+  discord_webhook: string | null;
+  users_usage: number | null;
+};
+
 export type User = {
   id: number;
   username: string;
@@ -52,7 +67,10 @@ export type User = {
   on_hold_expire_duration: number | null;
   on_hold_timeout: string | null;
   auto_delete_in_days: number | null;
-  admin_username: string | null;
+  sub_updated_at: string | null;
+  sub_last_user_agent: string | null;
+  emergency_used_at: string | null;
+  admin: UserAdmin | null;
   // Non-null only for a Gateway replica (see internal/httpapi/gateway_sync.go) -
   // a real local user always has this null. The panel that pushed this user
   // out to us is the only one allowed to change it - see UsersAdmin.tsx's own

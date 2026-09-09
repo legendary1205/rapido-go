@@ -96,7 +96,19 @@ type userResponseDTO struct {
 	OnHoldExpireDuration   *int64     `json:"on_hold_expire_duration"`
 	OnHoldTimeout          *time.Time `json:"on_hold_timeout"`
 	AutoDeleteInDays       *int32     `json:"auto_delete_in_days"`
-	AdminUsername          *string    `json:"admin_username"`
+	// SubUpdatedAt/SubLastUserAgent/EmergencyUsedAt were already tracked in
+	// the users table (subscription.go's recordSubUserAgent,
+	// subscription_emergency.go) but never surfaced here - a Marzban-standard
+	// bot (e.g. Mirza-bot-style) reading GET /api/user/{username} expects
+	// these three fields on every UserResponse, matching app/models/user.py.
+	SubUpdatedAt     *time.Time `json:"sub_updated_at"`
+	SubLastUserAgent *string    `json:"sub_last_user_agent"`
+	EmergencyUsedAt  *time.Time `json:"emergency_used_at"`
+	// Admin is a full nested object (id/username/is_sudo/telegram_id/
+	// discord_webhook/users_usage), matching app/models/user.py:307 exactly -
+	// a bot reading resp.admin.username (the real Marzban shape) would break
+	// against the flat admin_username string this used to be.
+	Admin *adminDTO `json:"admin"`
 	// SyncedFromPanelName is non-nil only for a Gateway replica (see
 	// gateway_sync.go) - a real local user (the overwhelming majority)
 	// always has this nil. Frontend uses it to badge the user and disable
@@ -857,10 +869,10 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			distinctAdminIDs[u.AdminID.Int32] = true
 		}
 	}
-	adminUsernameByID := map[int32]string{}
+	adminByID := map[int32]generated.Admin{}
 	for id := range distinctAdminIDs {
 		if admin, err := h.store.CachedGetAdminByID(ctx, id); err == nil {
-			adminUsernameByID[id] = admin.Username
+			adminByID[id] = admin
 		}
 	}
 
@@ -876,10 +888,11 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			inboundsOut[p.Type] = subtractTags(knownByProtocol[p.Type], excluded)
 		}
 
-		var adminUsername *string
+		var admin *adminDTO
 		if u.AdminID.Valid {
-			if name, ok := adminUsernameByID[u.AdminID.Int32]; ok {
-				adminUsername = &name
+			if a, ok := adminByID[u.AdminID.Int32]; ok {
+				dto := toAdminDTO(a)
+				admin = &dto
 			}
 		}
 
@@ -903,7 +916,9 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			DataLimit: int8ToPtr(u.DataLimit), DataLimitResetStrategy: u.DataLimitResetStrategy,
 			Expire: pgInt4ToPtrInt64(u.Expire), Note: textToPtr(u.Note), CreatedAt: u.CreatedAt.Time,
 			OnHoldExpireDuration: int8ToPtr(u.OnHoldExpireDuration), OnHoldTimeout: timestamptzToPtr(u.OnHoldTimeout),
-			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), AdminUsername: adminUsername,
+			AutoDeleteInDays: pgInt4ToPtr(u.AutoDeleteInDays), Admin: admin,
+			SubUpdatedAt: timestamptzToPtr(u.SubUpdatedAt), SubLastUserAgent: textToPtr(u.SubLastUserAgent),
+			EmergencyUsedAt:     timestamptzToPtr(u.EmergencyUsedAt),
 			SyncedFromPanelName: textToPtr(u.SyncedFromPanelName),
 			Proxies:             proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
 			SubscriptionURL: subURL, OnlineAt: timestamptzToPtr(u.OnlineAt),

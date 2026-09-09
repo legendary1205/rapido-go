@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -198,6 +199,102 @@ func loginAs(t *testing.T, router http.Handler, username, password string) strin
 		t.Fatalf("decode login response: %v", err)
 	}
 	return body.AccessToken
+}
+
+// TestGetUserExposesNestedAdminAndSubscriptionMetadata proves the wire-shape
+// fix for external Marzban-standard bots (Mirza-bot and similar - see the
+// go-rewrite-gateway/PasarGuard research): GET /api/user/{username} must
+// return a full nested `admin` object (id/username/is_sudo/telegram_id/
+// discord_webhook/users_usage), not the flat `admin_username` string this
+// used to be, plus `sub_updated_at`/`sub_last_user_agent`/`emergency_used_at`
+// - all three already tracked in the users table, just never surfaced here.
+func TestGetUserExposesNestedAdminAndSubscriptionMetadata(t *testing.T) {
+	router, sudoToken := newTestRouter(t)
+	pool := testPool(t)
+	ctx := context.Background()
+
+	adminResp := doRequest(t, router, "POST", "/api/admin", sudoToken, map[string]interface{}{
+		"username": "wireshape_reseller", "password": "SomePassword123", "is_sudo": false,
+		"telegram_id": 555, "discord_webhook": "https://discord.com/api/webhooks/1/abc",
+	})
+	if adminResp.Code != http.StatusOK {
+		t.Fatalf("create admin: %d %v", adminResp.Code, adminResp.Body)
+	}
+	adminToken := loginAs(t, router, "wireshape_reseller", "SomePassword123")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", sudoToken, []map[string]interface{}{{"tag": "Wireshape VLESS", "protocol": "vless"}})
+	createResp := doRequest(t, router, "POST", "/api/user", adminToken, map[string]interface{}{
+		"username": "wireshape_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if createResp.Code != http.StatusOK {
+		t.Fatalf("create user: %d %v", createResp.Code, createResp.Body)
+	}
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE users SET sub_updated_at = now(), sub_last_user_agent = $2, emergency_used_at = now() WHERE username = $1",
+		"wireshape_user", "v2rayNG/1.8.0",
+	); err != nil {
+		t.Fatalf("backdate subscription/emergency columns: %v", err)
+	}
+
+	got := doRequest(t, router, "GET", "/api/user/wireshape_user", sudoToken, nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("get user: %d %v", got.Code, got.Body)
+	}
+
+	admin, ok := got.Body["admin"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("admin field missing or not an object: %v", got.Body["admin"])
+	}
+	if admin["username"] != "wireshape_reseller" {
+		t.Errorf("admin.username = %v, want wireshape_reseller", admin["username"])
+	}
+	if admin["is_sudo"] != false {
+		t.Errorf("admin.is_sudo = %v, want false", admin["is_sudo"])
+	}
+	if admin["telegram_id"] != float64(555) {
+		t.Errorf("admin.telegram_id = %v, want 555", admin["telegram_id"])
+	}
+	if admin["discord_webhook"] != "https://discord.com/api/webhooks/1/abc" {
+		t.Errorf("admin.discord_webhook = %v, want the created webhook URL", admin["discord_webhook"])
+	}
+	if _, hasFlatField := got.Body["admin_username"]; hasFlatField {
+		t.Errorf("admin_username still present in the response - should be fully replaced by the nested admin object, got %v", got.Body["admin_username"])
+	}
+
+	if got.Body["sub_updated_at"] == nil {
+		t.Error("sub_updated_at = nil, want a timestamp")
+	}
+	if got.Body["sub_last_user_agent"] != "v2rayNG/1.8.0" {
+		t.Errorf("sub_last_user_agent = %v, want v2rayNG/1.8.0", got.Body["sub_last_user_agent"])
+	}
+	if got.Body["emergency_used_at"] == nil {
+		t.Error("emergency_used_at = nil, want a timestamp")
+	}
+
+	// The list endpoint (GET /api/users) shares the exact same buildUserResponses
+	// path - confirm the nested admin object is present there too, not just
+	// on the single-user GET.
+	list := doRequest(t, router, "GET", "/api/users", sudoToken, nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list users: %d %v", list.Code, list.Body)
+	}
+	users := list.Body["users"].([]interface{})
+	found := false
+	for _, raw := range users {
+		u := raw.(map[string]interface{})
+		if u["username"] != "wireshape_user" {
+			continue
+		}
+		found = true
+		listAdmin, ok := u["admin"].(map[string]interface{})
+		if !ok || listAdmin["username"] != "wireshape_reseller" {
+			t.Errorf("list response admin = %v, want nested object with username wireshape_reseller", u["admin"])
+		}
+	}
+	if !found {
+		t.Fatalf("wireshape_user not found in GET /api/users")
+	}
 }
 
 func toStringSlice(v interface{}) []string {
