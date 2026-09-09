@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -294,6 +295,46 @@ func TestGetUserExposesNestedAdminAndSubscriptionMetadata(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("wireshape_user not found in GET /api/users")
+	}
+}
+
+// TestListUsersTotalIsRealCountNotPageSize is a regression test for a real
+// bug found via live stress-testing: GET /api/users reported "total" as
+// len(page) - with 222 real users in the DB, GET /api/users?limit=1 returned
+// "total":1. A paginating client (the dashboard, or an external tool like
+// Mirza-bot) computing page counts from that field would be completely
+// wrong the moment it passed an explicit limit smaller than the real total.
+func TestListUsersTotalIsRealCountNotPageSize(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Pagination VLESS", "protocol": "vless"}})
+
+	const realUserCount = 7
+	for i := 0; i < realUserCount; i++ {
+		resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+			"username": fmt.Sprintf("pagination_user_%d", i), "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+		})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("create user %d: %d %v", i, resp.Code, resp.Body)
+		}
+	}
+
+	for _, limit := range []int{1, 2, realUserCount} {
+		resp := doRequest(t, router, "GET", fmt.Sprintf("/api/users?limit=%d", limit), token, nil)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("list users (limit=%d): %d %v", limit, resp.Code, resp.Body)
+		}
+		total, ok := resp.Body["total"].(float64)
+		if !ok || int(total) != realUserCount {
+			t.Errorf("limit=%d: total = %v, want the real count %d regardless of page size", limit, resp.Body["total"], realUserCount)
+		}
+		users, _ := resp.Body["users"].([]interface{})
+		wantPageLen := limit
+		if wantPageLen > realUserCount {
+			wantPageLen = realUserCount
+		}
+		if len(users) != wantPageLen {
+			t.Errorf("limit=%d: page has %d users, want %d", limit, len(users), wantPageLen)
+		}
 	}
 }
 

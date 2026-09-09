@@ -778,17 +778,32 @@ func (h *Handler) handleListUsers(c *gin.Context) {
 			params.Limit = pgInt4FromInt(n)
 		}
 	}
-	rows, err := h.store.Queries.ListUsers(c.Request.Context(), params)
+	ctx := c.Request.Context()
+	rows, err := h.store.Queries.ListUsers(ctx, params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list users"})
 		return
 	}
-	out, err := h.buildUserResponses(c.Request.Context(), rows)
+	out, err := h.buildUserResponses(ctx, rows)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read users"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"users": out, "total": len(out)})
+	// total is the real count matching the same filters (admin_id/statuses/
+	// search), independent of limit/offset - it used to be len(out), which
+	// silently reported the current PAGE size as the total whenever a
+	// caller passed an explicit limit (confirmed live: GET /api/users?limit=1
+	// against 222 real users returned "total":1). Any paginating client -
+	// the dashboard, or a Mirza-bot-style external tool - needs a real total
+	// to compute page counts correctly.
+	total, err := h.store.Queries.CountUsers(ctx, generated.CountUsersParams{
+		AdminID: params.AdminID, Statuses: params.Statuses, Search: params.Search,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not count users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": out, "total": total})
 }
 
 // buildUserResponse assembles the full response for one user - a thin

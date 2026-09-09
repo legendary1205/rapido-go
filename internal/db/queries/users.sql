@@ -97,6 +97,16 @@ ORDER BY id
 LIMIT sqlc.narg('limit')::int OFFSET sqlc.narg('offset')::int;
 
 -- name: CountUsers :one
+-- Mirrors ListUsers' own WHERE clause exactly (admin_id/statuses/search) so
+-- a caller passing the same filters always gets a true total independent of
+-- whatever limit/offset it also passed - see handleListUsers' own comment on
+-- why this exists (it used to report len(page) as "total", silently wrong
+-- for any paginated caller).
 SELECT count(*) FROM users
 WHERE (sqlc.narg('admin_id')::int IS NULL OR admin_id = sqlc.narg('admin_id')::int)
-  AND (sqlc.narg('statuses')::text[] IS NULL OR status = ANY(sqlc.narg('statuses')::text[]));
+  AND (sqlc.narg('statuses')::text[] IS NULL OR status = ANY(sqlc.narg('statuses')::text[]))
+  AND (
+    sqlc.narg('search')::text IS NULL
+    OR username ILIKE '%' || sqlc.narg('search')::text || '%'
+    OR note ILIKE '%' || sqlc.narg('search')::text || '%'
+  );
