@@ -50,6 +50,10 @@ type NodeFormValues = {
   api_port: string;
   usage_coefficient: string;
   disabled: boolean;
+  // Create-only - see NodeWritePayload's own doc comment. Never populated
+  // from an existing node (formValuesFromNode has no source for it, the
+  // panel never stores it), so it's simply absent from the edit form.
+  panel_url: string;
 };
 
 const defaultFormValues = (): NodeFormValues => ({
@@ -59,6 +63,7 @@ const defaultFormValues = (): NodeFormValues => ({
   api_port: "62051",
   usage_coefficient: "1",
   disabled: false,
+  panel_url: "",
 });
 
 const formValuesFromNode = (n: Node): NodeFormValues => ({
@@ -68,6 +73,7 @@ const formValuesFromNode = (n: Node): NodeFormValues => ({
   api_port: String(n.api_port),
   usage_coefficient: String(n.usage_coefficient),
   disabled: n.status === "disabled",
+  panel_url: "",
 });
 
 const NodeFormModal: FC<{
@@ -97,6 +103,11 @@ const NodeFormModal: FC<{
       api_port: Number(values.api_port),
       usage_coefficient:
         values.usage_coefficient === "" ? undefined : Number(values.usage_coefficient),
+      // Update has no panel_url field at all (see NodeWritePayload's own
+      // comment) - only send it on create, and only when non-empty, so an
+      // update body never carries a stray key the backend would ignore
+      // anyway but that has no business being there.
+      ...(!isEdit && values.panel_url.trim() ? { panel_url: values.panel_url.trim() } : {}),
     };
 
     if (isEdit) {
@@ -132,6 +143,21 @@ const NodeFormModal: FC<{
           <span className="text-xs text-rapido-muted">{t("nodes.nodeAddress")}</span>
           <Input dir="ltr" value={values.address} onChange={(e) => set({ address: e.target.value })} />
         </label>
+        {/* Create-only: baked into the one-paste setup blob below, never
+            stored on the node row itself - see NodeWritePayload's comment
+            on why the edit form has no equivalent field. */}
+        {!isEdit && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-rapido-muted">{t("rapido.nodes.panelUrlField")}</span>
+            <Input
+              dir="ltr"
+              placeholder="https://panel.example.com:8001"
+              value={values.panel_url}
+              onChange={(e) => set({ panel_url: e.target.value })}
+            />
+            <span className="text-xs text-rapido-muted">{t("rapido.nodes.panelUrlHint")}</span>
+          </label>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-rapido-muted">{t("nodes.nodePort")}</span>
@@ -251,10 +277,24 @@ const NodeCreatedPanel: FC<{ result: NodeCreateResult; onClose: () => void }> = 
         {t("rapido.nodes.oneTimeWarning")}
       </div>
       <div className="flex flex-col gap-4">
-        <CopyField label={t("rapido.nodes.reportSecret")} value={result.report_secret} />
-        <CopyField label={t("nodes.certificate")} value={result.certificate} />
-        <CopyField label={t("rapido.nodes.privateKey")} value={result.key} />
-        <CopyField label={t("rapido.nodes.caCertificate")} value={result.ca_certificate} />
+        <CopyField label={t("rapido.nodes.setupBlob")} value={result.setup_blob} />
+        <p className="text-xs text-rapido-muted">{t("rapido.nodes.setupBlobHint")}</p>
+
+        {/* Native <details> - no extra state needed, and it's closed by
+            default so the one blob above stays the thing an admin actually
+            copies in the common case. Kept for a manual/scripted setup or
+            for inspecting what the blob actually contains. */}
+        <details className="rounded-lg border border-rapido-border">
+          <summary className="cursor-pointer select-none px-3 py-2 text-sm text-rapido-muted">
+            {t("rapido.nodes.showRawValues")}
+          </summary>
+          <div className="flex flex-col gap-4 border-t border-rapido-border px-3 py-3">
+            <CopyField label={t("rapido.nodes.reportSecret")} value={result.report_secret} />
+            <CopyField label={t("nodes.certificate")} value={result.certificate} />
+            <CopyField label={t("rapido.nodes.privateKey")} value={result.key} />
+            <CopyField label={t("rapido.nodes.caCertificate")} value={result.ca_certificate} />
+          </div>
+        </details>
 
         <div className="flex justify-end">
           <Button variant="primary" onClick={onClose}>

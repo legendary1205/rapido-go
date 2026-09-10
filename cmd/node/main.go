@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -55,7 +57,7 @@ func loadConfig() config {
 			intervalSeconds = n
 		}
 	}
-	return config{
+	cfg := config{
 		ListenAddr:     getEnv("NODE_LISTEN_ADDR", "0.0.0.0:62051"),
 		CertFile:       getEnv("NODE_CERT_FILE", "/etc/rapido-node/cert.pem"),
 		KeyFile:        getEnv("NODE_KEY_FILE", "/etc/rapido-node/key.pem"),
@@ -64,6 +66,82 @@ func loadConfig() config {
 		ReportSecret:   getEnv("NODE_REPORT_SECRET", ""),
 		ReportInterval: time.Duration(intervalSeconds) * time.Second,
 	}
+
+	// NODE_SETUP_BLOB is the one-paste alternative to hand-copying cert/key/
+	// ca/report_secret into three files plus two env vars - see
+	// internal/httpapi/node.go's buildNodeSetupBlob, the panel-side half of
+	// this pair. Applied on every boot (writing the same bytes back out is
+	// harmless), so leaving the env var set permanently in the node's own
+	// service config is fine - it isn't a one-shot flag. Errors here are
+	// fatal: a node started with a broken blob has no working identity at
+	// all, and failing immediately with a clear reason beats limping into
+	// the generic "load X509 key pair" failure a few lines later in main().
+	if blob := os.Getenv("NODE_SETUP_BLOB"); blob != "" {
+		if err := applyNodeSetupBlob(blob, &cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "NODE_SETUP_BLOB:", err)
+			os.Exit(1)
+		}
+	}
+
+	return cfg
+}
+
+// nodeSetupBlob mirrors internal/httpapi/node.go's own struct of the same
+// name byte-for-byte (JSON field names) - kept as a separate definition
+// rather than shared, matching this project's existing precedent for the
+// panel/node wire-contract types (inboundSpec/coreSpec etc. below) since
+// cmd/node importing internal/httpapi would be the wrong dependency
+// direction.
+type nodeSetupBlob struct {
+	Cert     string `json:"cert"`
+	Key      string `json:"key"`
+	CA       string `json:"ca"`
+	Secret   string `json:"secret"`
+	PanelURL string `json:"panel_url,omitempty"`
+}
+
+// applyNodeSetupBlob decodes one base64 setup blob, writes its cert/key/ca
+// PEMs out to cfg's own file paths (creating parent directories as needed),
+// and fills in cfg.PanelURL/ReportSecret from the blob when it carries them
+// - blob values win over whatever NODE_SETUP_BLOB's sibling env vars
+// (PANEL_URL, NODE_REPORT_SECRET) already set in cfg, since the whole point
+// is that one pasted value should be enough on its own.
+func applyNodeSetupBlob(blob string, cfg *config) error {
+	raw, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return fmt.Errorf("not valid base64: %w", err)
+	}
+	var parsed nodeSetupBlob
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return fmt.Errorf("not a valid setup blob: %w", err)
+	}
+	if parsed.Cert == "" || parsed.Key == "" || parsed.CA == "" || parsed.Secret == "" {
+		return fmt.Errorf("setup blob is missing cert/key/ca/secret")
+	}
+
+	writes := []struct {
+		path string
+		data string
+		mode os.FileMode
+	}{
+		{cfg.CertFile, parsed.Cert, 0o644},
+		{cfg.KeyFile, parsed.Key, 0o600},
+		{cfg.CAFile, parsed.CA, 0o644},
+	}
+	for _, w := range writes {
+		if err := os.MkdirAll(filepath.Dir(w.path), 0o755); err != nil {
+			return fmt.Errorf("create directory for %s: %w", w.path, err)
+		}
+		if err := os.WriteFile(w.path, []byte(w.data), w.mode); err != nil {
+			return fmt.Errorf("write %s: %w", w.path, err)
+		}
+	}
+
+	cfg.ReportSecret = parsed.Secret
+	if parsed.PanelURL != "" {
+		cfg.PanelURL = parsed.PanelURL
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {
@@ -110,6 +188,9 @@ type server struct {
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := loadConfig()
+	if os.Getenv("NODE_SETUP_BLOB") != "" {
+		logger.Info("applied NODE_SETUP_BLOB", "cert_file", cfg.CertFile, "key_file", cfg.KeyFile, "ca_file", cfg.CAFile)
+	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {

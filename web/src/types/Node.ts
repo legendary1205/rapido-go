@@ -17,13 +17,16 @@ export type Node = {
 // POST /api/node and PUT /api/node/:id both take the full field set -
 // usage_coefficient omitted means "use the default" on create (the backend
 // defaults to 1) and "keep the current value" on update (see
-// nodeUpdateRequest's own doc comment in node.go).
+// nodeUpdateRequest's own doc comment in node.go). panel_url is create-only
+// (nodeUpdateRequest has no such field) - it exists purely to be embedded in
+// the one-time setup_blob, which only POST /api/node ever returns.
 export type NodeWritePayload = {
   name: string;
   address: string;
   port: number;
   api_port: number;
   usage_coefficient?: number;
+  panel_url?: string;
 };
 
 // PUT-only: disabled omitted keeps the node's current enabled/disabled
@@ -33,12 +36,16 @@ export type NodeUpdatePayload = NodeWritePayload & {
   disabled?: boolean;
 };
 
-// The response shape of POST /api/node only. certificate/key/ca_certificate
-// and report_secret are each returned exactly this once - never retrievable
-// again through any later GET (see node.go's handleCreateNode comment) - so
-// this type should never be reused to describe cached/re-read data.
+// The response shape of POST /api/node only. setup_blob and the four raw
+// fields it's built from are each returned exactly this once - never
+// retrievable again through any later GET (see node.go's handleCreateNode
+// comment) - so this type should never be reused to describe cached/re-read
+// data. setup_blob is what the reveal panel shows by default (paste once
+// into the node's NODE_SETUP_BLOB); the raw fields stay available for a
+// manual/scripted setup, shown behind a details disclosure.
 export type NodeCreateResult = {
   node: Node;
+  setup_blob: string;
   certificate: string;
   key: string;
   ca_certificate: string;

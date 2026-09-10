@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -30,6 +32,37 @@ type nodeCreateRequest struct {
 	Port             int32    `json:"port" binding:"required"`
 	APIPort          int32    `json:"api_port" binding:"required"`
 	UsageCoefficient *float64 `json:"usage_coefficient"`
+	// PanelURL is optional and used for nothing but embedding in the setup
+	// blob below - the admin already knows how this node should reach the
+	// panel (an internal IP, a specific scheme/port), so there's no reason
+	// to guess it. Left empty, the blob just omits panel_url and the node
+	// falls back to its own PANEL_URL env var, same as before this existed.
+	PanelURL string `json:"panel_url"`
+}
+
+// nodeSetupBlob is everything cmd/node needs to trust and reach the panel,
+// bundled into one value - see handleCreateNode's own doc comment on why
+// this replaced four separately-copied fields. Field names are deliberately
+// short (not "certificate"/"report_secret") since this is the wire shape a
+// human pastes as one blob, not a browsable API response - keeping it small
+// keeps the copy-pasted text itself shorter.
+type nodeSetupBlob struct {
+	Cert     string `json:"cert"`
+	Key      string `json:"key"`
+	CA       string `json:"ca"`
+	Secret   string `json:"secret"`
+	PanelURL string `json:"panel_url,omitempty"`
+}
+
+// buildNodeSetupBlob base64-encodes a compact JSON envelope of everything a
+// node needs to bootstrap itself - see cmd/node/main.go's NODE_SETUP_BLOB
+// consumer, the other half of this pair.
+func buildNodeSetupBlob(cert, key, ca, secret, panelURL string) (string, error) {
+	raw, err := json.Marshal(nodeSetupBlob{Cert: cert, Key: key, CA: ca, Secret: secret, PanelURL: panelURL})
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
 type nodeDTO struct {
@@ -60,6 +93,15 @@ func toNodeDTO(n generated.Node) nodeDTO {
 // everything needed to bring the node online: its own cert+key and the CA
 // cert, so the node can require and verify the panel's client certificate
 // too, instead of trusting whatever connects.
+//
+// Provisioning used to mean copying four separate values (cert, key, ca,
+// report_secret) into three files plus two env vars on the node server -
+// the response now also bundles all of it into one base64 blob
+// (setup_blob) the admin pastes as a single NODE_SETUP_BLOB value; the node
+// writes its own files out and starts. Port/listen-address settings are
+// deliberately NOT part of the blob - those are ordinary node-local config
+// the admin still sets separately (NODE_LISTEN_ADDR etc.), not identity or
+// trust material.
 func (h *Handler) handleCreateNode(c *gin.Context) {
 	var req nodeCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -106,10 +148,22 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 		return
 	}
 
-	// report_secret is returned here and only here - like the private key
-	// above, it's not retrievable again through any later GET.
+	setupBlob, err := buildNodeSetupBlob(nodeCert.CertPEM, nodeCert.KeyPEM, ca.Certificate, reportSecret, req.PanelURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build the setup blob"})
+		return
+	}
+
+	// Every value below - the blob and its four raw components alike - is
+	// returned here and only here, never retrievable again through any
+	// later GET. setup_blob is what the dashboard's reveal panel shows by
+	// default (paste once into NODE_SETUP_BLOB, see cmd/node/main.go); the
+	// four raw fields stay in the response for a manual/scripted setup or
+	// for inspecting what's actually inside the blob, not because the
+	// dashboard still shows them as the primary flow.
 	c.JSON(http.StatusOK, gin.H{
 		"node":           toNodeDTO(node),
+		"setup_blob":     setupBlob,
 		"certificate":    nodeCert.CertPEM,
 		"key":            nodeCert.KeyPEM,
 		"ca_certificate": ca.Certificate,
