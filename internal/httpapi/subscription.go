@@ -38,29 +38,72 @@ func (h *Handler) handleGetSubscription(c *gin.Context) {
 		return
 	}
 
-	format := "v2ray"
-	if isSingBoxUserAgent(c.GetHeader("User-Agent")) {
-		format = "sing-box"
-	}
-	h.writeSubscription(c, user, format, true)
+	h.writeSubscription(c, user, detectSubscriptionFormat(c.GetHeader("User-Agent")), true)
 }
 
 // handleGetSubscriptionFormat implements GET /sub/:token/:format - an
 // explicit format request, bypassing User-Agent sniffing entirely. Does
 // NOT update sub_updated_at/sub_last_user_agent, matching the current
-// system's explicit-client_type route.
+// system's explicit-client_type route. Rejects an unrecognized format with
+// 404 rather than silently falling back to v2ray links - the app/routers/
+// subscription.py original enforces the same whitelist via a Path regex
+// (`sing-box|clash-meta|clash|outline|v2ray|v2ray-json`); this used to
+// accept any string here and always fall through to v2ray links with 200,
+// found via this project's own live stress-testing audit.
 func (h *Handler) handleGetSubscriptionFormat(c *gin.Context) {
 	user, ok := h.loadSubscriptionUser(c)
 	if !ok {
 		return
 	}
-	h.writeSubscription(c, user, c.Param("format"), false)
+	format := c.Param("format")
+	if !validSubscriptionFormats[format] {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Not Found"})
+		return
+	}
+	h.writeSubscription(c, user, format, false)
 }
 
-func isSingBoxUserAgent(ua string) bool {
-	ua = strings.ToLower(ua)
-	for _, needle := range []string{"sing-box", "sfa", "sfi", "sfm", "sft", "karing", "hiddifynext"} {
-		if strings.Contains(ua, needle) {
+var validSubscriptionFormats = map[string]bool{
+	"v2ray": true, "sing-box": true, "clash": true, "clash-meta": true, "outline": true, "v2ray-json": true,
+}
+
+// detectSubscriptionFormat auto-selects a format from the client's real
+// User-Agent, porting app/routers/subscription.py's own regex chain (checked
+// in this exact order - Clash Meta forks are matched before plain Clash,
+// since "ClashMetaForAndroid" etc. would otherwise match the plainer Clash
+// pattern first). Deliberately simplified in one place, documented rather
+// than silently dropped: the Python original version-gates v2rayN/v2rayNG/
+// Streisand/Happ's move to v2ray-json behind per-client USE_CUSTOM_JSON_*
+// settings and, for a narrow v2rayNG version band, reverses the link order
+// as a workaround for a bug in that specific release range - this project
+// has no equivalent of either knob yet, so those clients always get
+// v2ray-json (a strict upgrade over the v2ray-link fallback they'd otherwise
+// silently get) with no version check and no reversal.
+func detectSubscriptionFormat(userAgent string) string {
+	lower := strings.ToLower(userAgent)
+	switch {
+	case hasAnyPrefix(lower, "clash-verge", "clash-meta", "clash.meta", "flclash", "mihomo"):
+		return "clash-meta"
+	case hasAnyPrefix(lower, "clash", "stash"):
+		return "clash"
+	// Only the sing-box family's own name is a real substring match in the
+	// Python original (`.*sing[-b]?ox.*`, unanchored) - every other branch
+	// here is anchored at the start of the User-Agent, same as Python's `^`.
+	case hasAnyPrefix(lower, "sfa", "sfi", "sfm", "sft", "karing", "hiddifynext") ||
+		strings.Contains(lower, "singbox") || strings.Contains(lower, "sing-box"):
+		return "sing-box"
+	case hasAnyPrefix(lower, "ss", "ssr", "ssd", "sss", "outline", "shadowsocks", "ssconf"):
+		return "outline"
+	case hasAnyPrefix(lower, "v2rayn", "v2rayng", "streisand", "happ", "ktor-client"):
+		return "v2ray-json"
+	default:
+		return "v2ray"
+	}
+}
+
+func hasAnyPrefix(lowerUserAgent string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(lowerUserAgent, p) {
 			return true
 		}
 	}
@@ -96,16 +139,30 @@ func (h *Handler) loadSubscriptionUser(c *gin.Context) (generated.User, bool) {
 
 // writeSubscription builds every link/config for the user's proxies+hosts
 // and renders it in the requested format, setting the SIP-subscription
-// response headers real client apps read for usage/expiry display.
+// response headers real client apps read for usage/expiry display. Content
+// types match app/routers/subscription.py's own client_config table
+// (text/yaml for the two Clash formats, application/json for sing-box/
+// outline/v2ray-json, text/plain base64 for v2ray links - the one format
+// that isn't already a structured document).
 func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format string, recordUserAgent bool) {
 	ctx := c.Request.Context()
 
+	var raw []byte
 	var links []string
-	var singboxOutbounds []map[string]any
 	var err error
-	if format == "sing-box" {
-		singboxOutbounds, err = h.buildUserSingBoxOutbounds(ctx, user)
-	} else {
+	switch format {
+	case "sing-box":
+		var outbounds []map[string]any
+		if outbounds, err = h.buildUserSingBoxOutbounds(ctx, user); err == nil {
+			raw, err = subscription.SingBoxConfig(outbounds)
+		}
+	case "clash", "clash-meta":
+		raw, err = h.buildUserClashConfig(ctx, user, format == "clash-meta")
+	case "outline":
+		raw, err = h.buildUserOutlineConfig(ctx, user)
+	case "v2ray-json":
+		raw, err = h.buildUserV2rayJSONConfig(ctx, user)
+	default: // v2ray
 		links, err = h.buildUserLinks(ctx, user)
 	}
 	if err != nil {
@@ -119,14 +176,11 @@ func (h *Handler) writeSubscription(c *gin.Context, user generated.User, format 
 	}
 
 	switch format {
-	case "sing-box":
-		raw, err := subscription.SingBoxConfig(singboxOutbounds)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build sing-box config"})
-			return
-		}
+	case "sing-box", "outline", "v2ray-json":
 		c.Data(http.StatusOK, "application/json", raw)
-	default:
+	case "clash", "clash-meta":
+		c.Data(http.StatusOK, "text/yaml", raw)
+	default: // v2ray
 		c.String(http.StatusOK, base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n"))))
 	}
 }
@@ -254,6 +308,50 @@ func (h *Handler) buildUserSingBoxOutbounds(ctx context.Context, user generated.
 		}
 	})
 	return outbounds, err
+}
+
+func (h *Handler) buildUserClashConfig(ctx context.Context, user generated.User, isMeta bool) ([]byte, error) {
+	var proxies []map[string]any
+	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
+		node, err := subscription.ClashProxy(remark, address, eff, settings, isMeta)
+		if err == nil && node != nil {
+			proxies = append(proxies, node)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return subscription.ClashConfig(proxies)
+}
+
+func (h *Handler) buildUserOutlineConfig(ctx context.Context, user generated.User) ([]byte, error) {
+	var servers []any
+	index := 0
+	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
+		server, err := subscription.OutlineServer(subscription.OutlineServerID(index), remark, address, eff, settings)
+		if err == nil && server != nil {
+			servers = append(servers, server)
+			index++
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return subscription.OutlineConfig(servers)
+}
+
+func (h *Handler) buildUserV2rayJSONConfig(ctx context.Context, user generated.User) ([]byte, error) {
+	var configs []map[string]any
+	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
+		cfg, err := subscription.V2rayJSONConfig(remark, address, eff, settings)
+		if err == nil && cfg != nil {
+			configs = append(configs, cfg)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return subscription.V2rayJSONArray(configs)
 }
 
 func (h *Handler) setSubscriptionHeaders(c *gin.Context, user generated.User) {
