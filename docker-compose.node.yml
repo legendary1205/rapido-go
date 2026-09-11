@@ -1,6 +1,12 @@
-# Rapido-Go node agent, pre-built image. Copy this file (and
-# .env.node.example as .env) to the node server, fill in NODE_SETUP_BLOB
-# from the panel's Add Node screen, then:
+# Rapido-Go node agent, pre-built image.
+#
+# Driven automatically by rapido-go-node.sh (bash <(curl -fsSL
+# https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh)
+# install) - that's the recommended path, see the README.
+#
+# To run this file by hand instead: copy it (and .env.node.example as
+# .env) to the node server, fill in NODE_SETUP_BLOB from the panel's Add
+# Node screen, then:
 #
 #   docker compose -f docker-compose.node.yml --env-file .env up -d
 #
@@ -12,19 +18,25 @@ services:
     image: ${RAPIDO_NODE_IMAGE:-ghcr.io/legendary1205/rapido-go-node}:${RAPIDO_NODE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "${NODE_PORT:-62051}:62051"
+      - "${LISTEN_PORT:-62051}:62051"
     environment:
       NODE_LISTEN_ADDR: 0.0.0.0:62051
       # Only needed on the very first `up` - the container writes
-      # cert/key/ca into the named volume below and never reads this
-      # again afterward. Required for a genuinely fresh volume (the node
+      # cert/key/ca into the volume below and never reads this again
+      # afterward. Required for a genuinely fresh volume (the node
       # process itself refuses to start with no blob AND no existing
       # on-disk cert - a clear error in its own logs either way); safe to
       # blank out in .env on a later `up` once the volume already has
       # certs in it.
       NODE_SETUP_BLOB: ${NODE_SETUP_BLOB:-}
     volumes:
-      - node_certs:/etc/rapido-node
+      # A plain identifier (no "/") names a Docker-managed volume (the
+      # standalone/manual path, declared below); an absolute path bind-
+      # mounts a real host directory instead - which is what
+      # rapido-go-node.sh sets this to ($DATA_DIR/certs), so its own
+      # "already provisioned?" file check can see cert.pem directly on
+      # the host filesystem without reaching into Docker's volume store.
+      - ${RAPIDO_GO_NODE_CERTS_DIR:-node_certs}:/etc/rapido-node
 
 volumes:
   node_certs:

@@ -1,0 +1,12 @@
+# Copy to Caddyfile next to docker-compose.prod.yml, replace the domain
+# with your real one (must match RAPIDO_DOMAIN in .env), then
+# `docker compose -f docker-compose.prod.yml --env-file .env up -d`.
+#
+# If you're using rapido-go.sh (the recommended path - see the README),
+# it generates this file for you and you can ignore this example - Caddy
+# handles obtaining and renewing the certificate on its own from here,
+# nothing further to do.
+
+panel.example.com {
+	reverse_proxy panel:8000
+}

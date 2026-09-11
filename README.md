@@ -52,231 +52,1213 @@ A node is never dialed directly by the panel; it always calls out (usage push, c
 
 ### Quick install
 
-Docker only - no `git clone`, no shell script to inspect and run, no local build toolchain. Both the panel and the node ship as pre-built images, published automatically to GHCR (`ghcr.io`) by [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) on every push to `master`. Installing means: copy two small files onto the server, fill in a couple of values, `docker compose up -d`.
-
-> **The images are private** (same visibility as this repository). Before the first `docker compose up`, authenticate once: `echo <a GitHub token with read:packages scope> | docker login ghcr.io -u <your-github-username> --password-stdin`.
+One command per server - the script fetches everything else itself (Docker, the source, a pre-built image), so there's no manual `git clone` or `docker compose` invocation to get right.
 
 #### 1. Install the panel
 
-On the server that will run the panel:
-
-1. Create a directory, e.g. `mkdir rapido-panel && cd rapido-panel`.
-2. Save [`docker-compose.prod.yml`](docker-compose.prod.yml) there as `docker-compose.yml` (copy its contents from the repo - the full file is also below).
-3. Save [`.env.prod.example`](.env.prod.example) there as `.env` and fill in `POSTGRES_PASSWORD` and `SUDO_PASSWORD` at minimum.
-4. `docker compose up -d`
-
-That's it - Postgres, Redis, database migrations, and both the `api` and `backend` roles come up together. The `SUDO_USERNAME`/`SUDO_PASSWORD` you set in `.env` is the **bootstrap login** - see below.
-
-<details>
-<summary><code>docker-compose.yml</code> (click to expand)</summary>
-
-```yaml
-# Full Rapido-Go panel stack, pre-built images only - no git, no local
-# build, no shell script. Copy this file (and .env.prod.example as .env)
-# to the server, fill in .env, then:
-#
-#   docker compose -f docker-compose.prod.yml --env-file .env up -d
-#
-# This is separate from the root docker-compose.yml on purpose: that one
-# is for local development (just Postgres+Redis, so `go run ./cmd/panel`
-# can run against them with your own code) - mixing pre-built panel/backend
-# containers into that file would fight a locally-run dev process for the
-# same ports.
-#
-# Images are published privately to ghcr.io by .github/workflows/
-# docker-publish.yml on every push to master - `docker login ghcr.io`
-# with a token that has at least `read:packages` scope before pulling,
-# same as any other private GitHub Container Registry image.
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: rapido
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rapido}
-      POSTGRES_DB: rapido
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rapido"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # Applies pending migrations and exits - panel/backend wait for this to
-  # finish successfully before they start, so a fresh `up -d` always comes
-  # up against an up-to-date schema with no separate manual step.
-  migrate:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    entrypoint: ["goose", "-dir", "/app/internal/db/migrations", "postgres"]
-    command: ["postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable", "up"]
-    restart: "no"
-
-  panel:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
-    restart: unless-stopped
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-    ports:
-      - "${PANEL_PORT:-8000}:8000"
-    environment:
-      ROLE: api
-      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
-      REDIS_ADDR: redis:6379
-      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
-      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
-      PUBLIC_IP: ${PUBLIC_IP:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
-
-  backend:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
-    restart: unless-stopped
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-    # No published port - this role is not meant to receive traffic
-    # directly, only the "api" role above is (see the README's
-    # architecture section on why there are two roles at all).
-    environment:
-      ROLE: backend
-      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
-      REDIS_ADDR: redis:6379
-      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
-      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
-      PUBLIC_IP: ${PUBLIC_IP:-}
-
-volumes:
-  postgres_data:
-  redis_data:
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
 ```
 
-</details>
+Installs Docker if it isn't already, asks for the domain you'll run the dashboard on (must already point at this server - [Caddy](https://caddyserver.com/) uses it to request a real Let's Encrypt certificate automatically, no manual certbot dance), generates `.env`, pulls the pre-built image from GHCR, brings up Postgres + Redis + migrations + both the `api` and `backend` roles, and installs itself system-wide as the `rapido-go` command for later management.
+
+At the end it prints a one-time **bootstrap login** - see below.
+
+> **The repository and its images are private.** If you don't already have access configured, pass a GitHub token for this one command (it's saved into `.env`, chmod 600, for later `rapido-go update` calls - never written into the script itself or into `.git/config`):
+> ```bash
+> RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope> \
+>   bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+> ```
 
 <details>
-<summary><code>.env</code> (click to expand)</summary>
+<summary><code>rapido-go.sh</code> (click to expand)</summary>
 
 ```bash
-# Copy this file to .env next to docker-compose.prod.yml and fill it in,
-# then: docker compose -f docker-compose.prod.yml --env-file .env up -d
+#!/usr/bin/env bash
+#
+#  ██████   █████  ██████  ██ ██████   ██████       ██████   ██████
+#  ██   ██ ██   ██ ██   ██ ██ ██   ██ ██    ██      ██       ██    ██
+#  ██████  ███████ ██████  ██ ██   ██ ██    ██ ████ ██   ███ ██    ██
+#  ██   ██ ██   ██ ██      ██ ██   ██ ██    ██      ██    ██ ██    ██
+#  ██   ██ ██   ██ ██      ██ ██████   ██████        ██████   ██████
+#
+#  Rapido-Go - installer and management CLI for the panel.
+#
+#  Install:
+#    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+#
+#  After installing, the command is available system-wide as `rapido-go`.
+#
+#  This script only ever touches Rapido-Go itself - its source, its .env,
+#  its Caddyfile and its containers. It never contains, prompts for or
+#  generates any third-party integration secret; those belong in .env on
+#  the operator's own machine.
+#
+set -euo pipefail
 
-# A real password for the Postgres container - the "rapido" default only
-# exists for local development, change it for anything reachable from the
-# internet.
-POSTGRES_PASSWORD=change-me
+RAPIDO_GO_VERSION="1.0.0"
 
-# The one-time bootstrap admin login (checked in-memory before the admins
+# ─────────────────────────────────────────────────────────────────────────────
+# Private repository / private registry access
+#
+# LEAVE THIS EMPTY in any copy of this script you publish, share, or commit.
+# A token written here is readable by everyone who can read the file and by
+# everyone who runs it - publishing it is the same as publishing the token.
+#
+# If Rapido-Go's repository is private, pass the token in for the duration of
+# a single command instead, so it never lands on disk:
+#
+#     RAPIDO_REPO_TOKEN=github_pat_xxx bash rapido-go.sh install
+#
+# The same token also authenticates the `ghcr.io` image pull (a fine-grained
+# token with read-only "Contents" on this repo already carries read:packages
+# on its own images) - no separate registry credential to manage.
+#
+# If you do choose to paste one into your own private copy, use a
+# fine-grained token limited to this one repository, and rotate it the
+# moment the file leaves your machine.
+# ─────────────────────────────────────────────────────────────────────────────
+RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
+
+# If the token was not passed in, take the one the install saved. Without
+# this every `rapido-go update` on a private repository stops at a git
+# username prompt, and an update that cannot run unattended is an update
+# that does not happen.
+load_saved_token() {
+    [ -n "$RAPIDO_REPO_TOKEN" ] && return
+    [ -f "$APP_DIR/.env" ] || return
+    RAPIDO_REPO_TOKEN="$(grep -E '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" 2>/dev/null \
+        | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+}
+
+save_token() {
+    [ -n "$RAPIDO_REPO_TOKEN" ] || return
+    [ -f "$APP_DIR/.env" ] || return
+    grep -qE '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" && return
+    printf '\n# Used to fetch updates from the private repository and pull\n# private images from ghcr.io.\nRAPIDO_REPO_TOKEN="%s"\n' \
+        "$RAPIDO_REPO_TOKEN" >> "$APP_DIR/.env"
+    chmod 600 "$APP_DIR/.env"
+}
+
+REPO_OWNER="${RAPIDO_REPO_OWNER:-legendary1205}"
+REPO_NAME="${RAPIDO_REPO_NAME:-rapido-go}"
+REPO_BRANCH="${RAPIDO_REPO_BRANCH:-master}"
+
+APP_DIR="${RAPIDO_GO_APP_DIR:-/opt/rapido-go}"
+DATA_DIR="${RAPIDO_GO_DATA_DIR:-/var/lib/rapido-go}"
+COMPOSE_PROJECT="${RAPIDO_GO_COMPOSE_PROJECT:-rapido-go}"
+BIN_PATH="/usr/local/bin/rapido-go"
+
+PANEL_IMAGE="ghcr.io/${REPO_OWNER}/rapido-go-panel"
+
+# ── output ───────────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    C_RESET='\033[0m'; C_DIM='\033[2m'; C_BOLD='\033[1m'
+    C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'; C_CYAN='\033[0;36m'
+else
+    C_RESET=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''
+fi
+
+log()  { printf "${C_CYAN}▶${C_RESET} %s\n" "$*"; }
+ok()   { printf "${C_GREEN}✔${C_RESET} %s\n" "$*"; }
+warn() { printf "${C_YELLOW}!${C_RESET} %s\n" "$*"; }
+err()  { printf "${C_RED}✘ %s${C_RESET}\n" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+banner() {
+    printf "${C_CYAN}${C_BOLD}"
+    cat <<'ART'
+   ___             _     _         ___
+  / _ \__ _ _ __  (_) __| | ___   / __|___
+ / /_)/ _` | '_ \ | |/ _` |/ _ \ | (_ / _ \
+/ ___/ (_| | |_) || | (_| | (_) | \___\___/
+\/    \__,_| .__/ |_|\__,_|\___/
+           |_|
+ART
+    printf "${C_RESET}${C_DIM}  v%s${C_RESET}\n\n" "$RAPIDO_GO_VERSION"
+}
+
+require_root() { [ "$(id -u)" = "0" ] || die "This command must be run as root."; }
+require_installed() { [ -d "$APP_DIR" ] || die "Rapido-Go is not installed at $APP_DIR. Run: rapido-go install"; }
+
+# ── prerequisites ────────────────────────────────────────────────────────────
+pkg_install() {
+    if   command -v apt-get >/dev/null 2>&1; then apt-get update -y >/dev/null && apt-get install -y "$@" >/dev/null
+    elif command -v dnf     >/dev/null 2>&1; then dnf install -y "$@" >/dev/null
+    elif command -v yum     >/dev/null 2>&1; then yum install -y "$@" >/dev/null
+    else die "No supported package manager found (need apt-get, dnf or yum)."
+    fi
+}
+
+ensure_prereqs() {
+    local missing=()
+    for c in curl git openssl; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
+    if [ ${#missing[@]} -gt 0 ]; then
+        log "Installing prerequisites: ${missing[*]}"
+        pkg_install "${missing[@]}"
+    fi
+    ok "Prerequisites present."
+}
+
+# `docker compose version` answers from the client alone, so it reports
+# success even when the daemon is dead - `docker info` is the one that
+# actually talks to it.
+docker_ready() {
+    command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 \
+        && docker compose version >/dev/null 2>&1
+}
+
+ensure_docker() {
+    if docker_ready; then
+        ok "Docker is installed and running."
+        return
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        log "Docker is installed but not responding - trying to start it..."
+        systemctl start docker >/dev/null 2>&1 || true
+        sleep 3
+        if docker_ready; then
+            ok "Docker started."
+            return
+        fi
+        err "The Docker daemon is not running, and would not start."
+        err ""
+        err "  systemctl status docker --no-pager -l"
+        err "  journalctl -u docker -n 30 --no-pager"
+        exit 1
+    fi
+
+    log "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh >/dev/null
+    systemctl enable --now docker >/dev/null 2>&1 || true
+    sleep 3
+    docker_ready || die "Docker installed but the daemon is not responding. Check: journalctl -u docker -n 30"
+    ok "Docker installed and running."
+}
+
+# GHCR images stay private by default even though the pull itself is a
+# plain `docker pull` - the same token that clones the source also has
+# read:packages on it, so log in once here rather than making the operator
+# manage a second credential.
+ensure_registry_login() {
+    load_saved_token
+    [ -n "$RAPIDO_REPO_TOKEN" ] || return 0
+    echo "$RAPIDO_REPO_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin >/dev/null 2>&1 \
+        && ok "Logged in to ghcr.io." \
+        || warn "Could not log in to ghcr.io with the given token - continuing (the image may still be reachable)."
+}
+
+# ── source ───────────────────────────────────────────────────────────────────
+repo_url() {
+    if [ -n "$RAPIDO_REPO_TOKEN" ]; then
+        printf 'https://%s@github.com/%s/%s.git' "$RAPIDO_REPO_TOKEN" "$REPO_OWNER" "$REPO_NAME"
+    else
+        printf 'https://github.com/%s/%s.git' "$REPO_OWNER" "$REPO_NAME"
+    fi
+}
+
+# Keeps the token out of .git/config, out of `git remote -v`, and out of any
+# later `git fetch` a different operator on this box might run.
+scrub_remote() {
+    git -C "$APP_DIR" remote set-url origin \
+        "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" 2>/dev/null || true
+}
+
+fetch_source() {
+    load_saved_token
+    if [ -d "$APP_DIR/.git" ]; then
+        log "Updating source in $APP_DIR..."
+        git -C "$APP_DIR" remote set-url origin "$(repo_url)"
+        git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
+            || { scrub_remote; die "Could not fetch the repository. If it is private, run: RAPIDO_REPO_TOKEN=<token> rapido-go update"; }
+        git -C "$APP_DIR" reset --hard "origin/$REPO_BRANCH" >/dev/null
+        scrub_remote
+    else
+        log "Downloading Rapido-Go into $APP_DIR..."
+        mkdir -p "$(dirname "$APP_DIR")"
+        git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" \
+            "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
+            || die "Could not clone the repository. If it is private, set RAPIDO_REPO_TOKEN."
+        scrub_remote
+    fi
+    ok "Source ready ($(git -C "$APP_DIR" rev-parse --short HEAD))."
+}
+
+# ── configuration ────────────────────────────────────────────────────────────
+random_secret() { openssl rand -hex 16; }
+
+# The panel domain matters more than it looks: it is what goes into every
+# subscriber's subscription link. Without it the panel has no TLS in front
+# of it at all - the Go binary itself has no built-in HTTPS listener - and
+# Caddy (below) has nothing to request a certificate for.
+_clean_host() { printf '%s' "$1" | tr -d ' ' | sed -e 's#^https\?://##' -e 's#/.*$##' -e 's#:.*$##'; }
+_valid_host() { printf '%s' "$1" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; }
+
+prompt_domain() {
+    if [ -f "$APP_DIR/.env" ] && [ -z "${RAPIDO_DOMAIN:-}" ]; then
+        local from_env
+        from_env="$(grep -E '^RAPIDO_DOMAIN=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+        if [ -n "$from_env" ]; then
+            RAPIDO_DOMAIN="$from_env"
+            ok "Using the domain already in $APP_DIR/.env: $RAPIDO_DOMAIN"
+            return
+        fi
+    fi
+
+    printf "\n${C_BOLD}Panel domain${C_RESET}\n"
+    printf "${C_DIM}  The name you will open the dashboard on, e.g. panel.example.com\n"
+    printf "  It must already point at this server - Caddy requests a real\n"
+    printf "  certificate for it and that check is done by connecting to the\n"
+    printf "  name over the internet.${C_RESET}\n\n"
+    while [ -z "${RAPIDO_DOMAIN:-}" ]; do
+        printf "  Panel domain: "
+        read -r RAPIDO_DOMAIN || RAPIDO_DOMAIN=""
+        RAPIDO_DOMAIN="$(_clean_host "$RAPIDO_DOMAIN")"
+        if [ -z "$RAPIDO_DOMAIN" ]; then
+            warn "  A domain is required - Rapido-Go does not install on a bare IP."
+        elif ! _valid_host "$RAPIDO_DOMAIN"; then
+            warn "  '$RAPIDO_DOMAIN' does not look like a hostname."
+            RAPIDO_DOMAIN=""
+        fi
+    done
+    ok "Panel domain: $RAPIDO_DOMAIN"
+}
+
+# Caddy handles the certificate itself (request + renewal, zero ongoing
+# maintenance) - this just writes the one file that tells it what to do,
+# same idea as generate_env below but for Caddy's config instead of the
+# panel's.
+write_caddyfile() {
+    cat > "$APP_DIR/Caddyfile" <<EOF
+${RAPIDO_DOMAIN} {
+	reverse_proxy panel:8000
+}
+EOF
+    ok "Caddyfile written for $RAPIDO_DOMAIN."
+}
+
+# Sizes to nothing machine-specific today (Postgres/Redis use their own
+# image defaults), but kept as its own step - same shape as the Python
+# installer's sizing pass - so a future tuning knob has one obvious place
+# to land instead of being bolted onto generate_env directly.
+size_for_machine() {
+    local cores ram_mb
+    cores="$(nproc 2>/dev/null || echo 2)"
+    ram_mb="$(free -m 2>/dev/null | awk '/Mem:/{print $2}')"
+    [ -n "$ram_mb" ] || ram_mb=2048
+    log "This machine: ${cores} cores, ${ram_mb}MB RAM"
+}
+
+generate_env() {
+    local env_file="$APP_DIR/.env"
+    if [ -f "$env_file" ]; then
+        warn "$env_file already exists - leaving it untouched."
+        return
+    fi
+    size_for_machine
+    local db_pass sudo_pass ip
+    db_pass="$(random_secret)"
+    sudo_pass="$(random_secret)"
+    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+    mkdir -p "$DATA_DIR"
+
+    cat > "$env_file" <<EOF
+# Generated by the Rapido-Go installer on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Edit with: rapido-go edit-env      (restart afterwards: rapido-go restart)
+
+# ── domain ──────────────────────────────────────────────────────────────────
+RAPIDO_DOMAIN="${RAPIDO_DOMAIN}"
+
+# ── database ────────────────────────────────────────────────────────────────
+POSTGRES_PASSWORD="${db_pass}"
+
+# ── first admin ─────────────────────────────────────────────────────────────
+# This is the one-time bootstrap login (checked in-memory before the admins
 # table is ever queried, so there is always a way in from an empty
-# database - see the README's "First login" section). Log in with this
-# once, create a real sudo admin from the dashboard, then consider
-# rotating this value or removing it from .env afterward.
-SUDO_USERNAME=admin
-SUDO_PASSWORD=change-me
+# database). Log in once, create a real sudo admin from the Admins page,
+# then rotate this value if you want the break-glass login to stop working.
+SUDO_USERNAME="admin"
+SUDO_PASSWORD="${sudo_pass}"
 
-# This server's public IP - feeds the {SERVER_IP} subscription remark
-# placeholder. Leave blank if you don't use that placeholder.
-PUBLIC_IP=
+# ── what customers get ──────────────────────────────────────────────────────
+# The prefix every subscription link is built from. Change it here if the
+# domain changes - existing links are rebuilt from it on the next fetch.
+XRAY_SUBSCRIPTION_URL_PREFIX="https://${RAPIDO_DOMAIN}"
+# Feeds the {SERVER_IP} placeholder in subscription remarks, if you use it.
+PUBLIC_IP="${ip}"
 
-# Port the dashboard/API is published on (host side).
-PANEL_PORT=8000
+# ── CORS ────────────────────────────────────────────────────────────────────
+ALLOWED_ORIGINS="*"
+EOF
+    chmod 600 "$env_file"
+    ADMIN_PASSWORD="$sudo_pass"
+    ok "Configuration written to $env_file"
+}
 
-# Comma-separated CORS allow-list. "*" is fine to start; lock this down
-# for a real deployment.
-ALLOWED_ORIGINS=*
+# The image is published by CI, so a normal install pulls it instead of
+# compiling one. Building locally means Go + Node + sqlc/goose install:
+# several minutes of CPU on a small VPS, paid on every install and every
+# update to produce a byte-identical result - so it stays the fallback,
+# not the default. See docker/Dockerfile.panel.
+obtain_image() {
+    if [ "${RAPIDO_BUILD_LOCALLY:-}" = "1" ]; then
+        log "RAPIDO_BUILD_LOCALLY=1, building from source..."
+    else
+        log "Fetching the Rapido-Go panel image..."
+        if docker pull "${PANEL_IMAGE}:latest" 2>&1 | tail -2; then
+            ok "Image ready."
+            return 0
+        fi
+        warn "Could not pull the prebuilt image; building it here instead."
+    fi
+
+    log "Building the image (this takes a few minutes)..."
+    ( cd "$APP_DIR" && docker build -f docker/Dockerfile.panel -t "${PANEL_IMAGE}:latest" . )
+    docker image inspect "${PANEL_IMAGE}:latest" >/dev/null 2>&1 \
+        || die "The image was not built - see the output above."
+    ok "Image built."
+}
+
+install_command() {
+    local src="$APP_DIR/rapido-go.sh"
+    [ -f "$src" ] || src="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [ -n "$src" ] && [ -f "$src" ] || return 0
+    # `install` errors with "are the same file" when the CLI is run as
+    # /usr/local/bin/rapido-go and that is also the source - under `set -e`
+    # that would abort an update before it rebuilt anything.
+    if [ "$(readlink -f "$src")" = "$(readlink -f "$BIN_PATH" 2>/dev/null || echo /nonexistent)" ]; then
+        return 0
+    fi
+    if install -m 755 "$src" "$BIN_PATH" 2>/dev/null; then
+        ok "Installed the 'rapido-go' command at $BIN_PATH"
+    else
+        warn "Could not update $BIN_PATH - continuing."
+    fi
+}
+
+# ── compose ──────────────────────────────────────────────────────────────────
+compose_file() { echo "docker-compose.prod.yml"; }
+
+compose() {
+    require_installed
+    (cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" --env-file .env "$@")
+}
+
+wait_healthy() {
+    # Caddy needs a moment to get its certificate on a fresh domain before
+    # https:// answers - poll plain HTTP on the panel's own compose network
+    # first (proves the app itself is up), then the public https:// URL.
+    log "Waiting for the panel to come up..."
+    local i
+    for i in $(seq 1 60); do
+        compose exec -T panel wget -q -O /dev/null http://127.0.0.1:8000/dashboard/ 2>/dev/null \
+            && { ok "Panel is answering internally (${i}s)."; break; }
+        sleep 1
+        [ "$i" -eq 60 ] && { warn "The panel did not answer internally within 60s. Check: rapido-go logs panel"; return 0; }
+    done
+
+    log "Waiting for https://${RAPIDO_DOMAIN}/dashboard/ (Caddy obtaining a certificate)..."
+    for i in $(seq 1 90); do
+        curl -fsS --max-time 3 -o /dev/null "https://${RAPIDO_DOMAIN}/dashboard/" 2>/dev/null \
+            && { ok "Panel is up at https://${RAPIDO_DOMAIN}/dashboard/ (${i}s)."; return 0; }
+        sleep 1
+    done
+    warn "https://${RAPIDO_DOMAIN} did not answer within 90s."
+    printf "${C_DIM}  Usually the domain does not point here yet, or inbound port 80/443\n"
+    printf "  is blocked - Caddy needs both to obtain a certificate.\n"
+    printf "  Check: rapido-go logs caddy${C_RESET}\n"
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+verify_stack() {
+    local want got missing=""
+    want="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" config --services 2>/dev/null)"
+    got="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" --env-file .env ps --services --filter status=running 2>/dev/null)"
+    for svc in $want; do
+        [ "$svc" = "migrate" ] && continue # exits 0 on purpose once done
+        printf '%s\n' "$got" | grep -qx "$svc" || missing="$missing $svc"
+    done
+    if [ -n "$missing" ]; then
+        err "These services are not running:$missing"
+        compose ps
+        return 1
+    fi
+    ok "All services running."
+}
+
+follow_logs() {
+    [ -t 1 ] || return 0
+    [ "${RAPIDO_NO_FOLLOW:-0}" = "1" ] && return 0
+    printf "\n${C_DIM}  Following the log - Ctrl-C leaves it running.${C_RESET}\n\n"
+    compose logs -f --tail "${RAPIDO_LOG_TAIL:-60}"
+}
+
+cmd_install() {
+    require_root
+    banner
+    ensure_prereqs
+    ensure_docker
+    fetch_source
+    prompt_domain
+    generate_env
+    write_caddyfile
+    save_token
+    install_command
+    ensure_registry_login
+    obtain_image
+    log "Starting Rapido-Go..."
+    compose up -d
+    wait_healthy
+    verify_stack || die "The stack did not come up cleanly - see the output above."
+
+    printf "\n${C_GREEN}${C_BOLD}Rapido-Go is installed.${C_RESET}\n\n"
+    printf "  Panel    ${C_BOLD}https://%s/dashboard/${C_RESET}\n" "$RAPIDO_DOMAIN"
+    if [ -n "${ADMIN_PASSWORD:-}" ]; then
+        printf "  Username ${C_BOLD}admin${C_RESET}\n"
+        printf "  Password ${C_BOLD}%s${C_RESET}\n" "$ADMIN_PASSWORD"
+        printf "\n${C_YELLOW}  Save that password now - it is not shown again. Log in once,\n"
+        printf "  create a real sudo admin, then rotate this one if you want.${C_RESET}\n"
+    fi
+    printf "\n  ${C_DIM}Manage it with: rapido-go status | logs | restart | update | backup${C_RESET}\n"
+    follow_logs
+}
+
+cmd_up()      { compose up -d && ok "Started."; }
+cmd_down()    { compose down && ok "Stopped."; }
+# `compose restart` does NOT re-read env_file - it restarts the container
+# with the configuration it was created with, so editing .env and running
+# `restart` would silently change nothing. `panel_services` deliberately
+# excludes postgres/redis/caddy: recreating those on every restart/update
+# is a needless minute of downtime and a needless risk to the state they
+# hold, for a step whose real purpose is picking up an edited .env, which
+# only panel/backend read.
+panel_services() { echo "panel backend"; }
+
+restart_panel() {
+    compose up -d
+    # shellcheck disable=SC2046
+    compose up -d --force-recreate $(panel_services)
+}
+
+cmd_restart() { restart_panel && verify_stack && ok "Restarted."; follow_logs; }
+cmd_status()  { compose ps; }
+cmd_logs()    { compose logs -f --tail "${RAPIDO_LOG_TAIL:-200}" ${1:+"$1"}; }
+
+cmd_update() {
+    require_root
+    require_installed
+    log "Backing up the database first..."
+    cmd_backup >/dev/null || warn "Backup failed - continuing anyway."
+    fetch_source
+    install_command
+    ensure_registry_login
+    obtain_image
+    compose up -d  # re-applies migrations via the migrate service, then recreates whatever image tag changed
+    restart_panel
+    wait_healthy
+    docker image prune -f >/dev/null 2>&1 || true
+    ls -1t "$DATA_DIR"/backup-*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+    verify_stack || die "The stack did not come back cleanly after the update."
+    ok "Updated."
+    follow_logs
+}
+
+cmd_backup() {
+    require_installed
+    local dest="${1:-$DATA_DIR/backup-$(date +%Y%m%d-%H%M%S).sql.gz}"
+    mkdir -p "$(dirname "$dest")"
+    log "Dumping the database to $dest..."
+    compose exec -T postgres sh -c 'exec pg_dump -U rapido rapido' | gzip > "$dest"
+    [ -s "$dest" ] || { rm -f "$dest"; die "Backup produced an empty file - nothing was written."; }
+    ok "Backup written: $dest ($(du -h "$dest" | cut -f1))"
+}
+
+cmd_restore() {
+    require_root
+    require_installed
+    local src="${1:-}"
+    [ -n "$src" ] || die "Usage: rapido-go restore <backup.sql.gz>"
+    [ -f "$src" ] || die "No such file: $src"
+    warn "This REPLACES the current database with the contents of $src."
+    printf "Type 'yes' to continue: "
+    local answer; read -r answer
+    [ "$answer" = "yes" ] || die "Aborted."
+    # Panel/backend hold open connections that would fight a restore.
+    compose stop panel backend
+    gunzip -c "$src" | compose exec -T postgres sh -c \
+        'exec psql -U rapido -d rapido -v ON_ERROR_STOP=1'
+    compose up -d panel backend
+    ok "Restored from $src"
+}
+
+cmd_edit_env() {
+    require_installed
+    local before after
+    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    "${EDITOR:-nano}" "$APP_DIR/.env"
+    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    if [ "$before" != "$after" ]; then
+        printf "\n"
+        warn "Configuration changed. Apply it now? [Y/n] "
+        local answer; read -r answer
+        case "${answer:-y}" in
+            [Nn]*) warn "Not applied. Run 'rapido-go restart' when ready." ;;
+            *) cmd_restart ;;
+        esac
+    fi
+}
+
+cmd_uninstall() {
+    require_root
+    require_installed
+    warn "This stops and removes Rapido-Go's containers and its source at $APP_DIR."
+    warn "Your data in $DATA_DIR (database backups) is KEPT."
+    printf "Type 'yes' to continue: "
+    local answer; read -r answer
+    [ "$answer" = "yes" ] || die "Aborted."
+    compose down --remove-orphans --volumes || true
+    rm -rf "$APP_DIR"
+    rm -f "$BIN_PATH"
+    ok "Rapido-Go removed. Backups left in $DATA_DIR"
+}
+
+cmd_version() {
+    printf "rapido-go %s\n" "$RAPIDO_GO_VERSION"
+    [ -d "$APP_DIR/.git" ] && printf "source    %s\n" "$(git -C "$APP_DIR" rev-parse --short HEAD)"
+    return 0
+}
+
+usage() {
+    banner
+    cat <<EOF
+${C_BOLD}Rapido-Go${C_RESET} - a self-hosted proxy panel: users, resellers, nodes and
+subscriptions, with per-user traffic accounting.
+
+${C_BOLD}USAGE${C_RESET}
+  rapido-go <command> [arguments]
+
+${C_BOLD}SETUP${C_RESET}
+  install                  Install Docker if needed, fetch, configure and start
+  update                   Back up, fetch the latest source, pull/rebuild and restart
+  uninstall                Remove the containers and source (backups are kept)
+
+${C_BOLD}RUNNING${C_RESET}
+  up | down | restart      Start, stop or restart the stack
+  status                   Show what is running
+  logs [service]           Follow the logs of everything, or one service
+
+${C_BOLD}DATA${C_RESET}
+  backup [file]            Dump the database to a .sql.gz file
+  restore <file>           Replace the database from a dump (asks first)
+
+${C_BOLD}ADMIN${C_RESET}
+  edit-env                 Open .env in \$EDITOR
+  version                  Show the installed version
+
+${C_BOLD}ENVIRONMENT${C_RESET}
+  RAPIDO_GO_APP_DIR         Where the source lives          (default: /opt/rapido-go)
+  RAPIDO_GO_DATA_DIR        Where backups live               (default: /var/lib/rapido-go)
+  RAPIDO_DOMAIN             Panel domain, to skip the prompt
+  RAPIDO_NO_FOLLOW=1        Do not tail the log after install/restart
+  RAPIDO_REPO_TOKEN         GitHub token, if the repo is private
+  RAPIDO_REPO_BRANCH        Branch to install from           (default: master)
+  RAPIDO_BUILD_LOCALLY=1    Build the image here instead of pulling from ghcr.io
+
+${C_BOLD}EXAMPLES${C_RESET}
+  rapido-go install
+  RAPIDO_DOMAIN=panel.example.com rapido-go install
+  rapido-go logs panel
+  rapido-go backup /root/rapido-go-\$(date +%F).sql.gz
+
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+    [ $# -gt 0 ] && shift || true
+    case "$cmd" in
+        install)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) RAPIDO_DOMAIN="${2:-}"; shift 2 ;;
+                    *) die "Unknown option for install: $1" ;;
+                esac
+            done
+            cmd_install
+            ;;
+        up)        cmd_up ;;
+        down)      cmd_down ;;
+        restart)   cmd_restart ;;
+        status)    cmd_status ;;
+        logs)      cmd_logs "${1:-}" ;;
+        backup)    cmd_backup "${1:-}" ;;
+        restore)   cmd_restore "${1:-}" ;;
+        update)    cmd_update ;;
+        edit-env)  cmd_edit_env ;;
+        uninstall) cmd_uninstall ;;
+        version|-v|--version) cmd_version ;;
+        ""|help|-h|--help) usage ;;
+        *) err "Unknown command: $cmd"; echo; usage; exit 1 ;;
+    esac
+}
+
+main "$@"
 ```
 
 </details>
 
 #### 2. First login
 
-`SUDO_USERNAME`/`SUDO_PASSWORD` from `.env` is a **bootstrap login** - not a database row, checked in-memory before the `admins` table is ever queried, specifically so there's always a way in even from a completely empty database. Use it once to:
+The install prints a **bootstrap login** (`SUDO_USERNAME`/`SUDO_PASSWORD`, saved into `.env`). This is not a database row - it's checked in-memory before the `admins` table is ever queried, specifically so there's always a way in even from a completely empty database. Use it once to:
 
-1. Log in at `http://<server>:8000/dashboard/`.
+1. Log in at `https://<your-domain>/dashboard/`.
 2. Create a real sudo admin from the **Admins** page.
-3. Optionally rotate `SUDO_PASSWORD` in `.env` and `docker compose up -d` again if you don't want the break-glass login to keep working with its original value.
+3. Optionally rotate `SUDO_PASSWORD` with `rapido-go edit-env` if you don't want the break-glass login to keep working with its original value.
 
 #### 3. Add and install a node
 
 1. In the dashboard, go to **Nodes → Add Node**, give it a name and address, save.
 2. The one-time reveal panel shows a single **setup_blob** value (base64) - this bundles the node's certificate, private key, the panel's CA, and its report secret together. Copy it now; it is never shown again.
 3. On the node server:
-   1. Create a directory, e.g. `mkdir rapido-node && cd rapido-node`.
-   2. Save [`docker-compose.node.yml`](docker-compose.node.yml) there as `docker-compose.yml`.
-   3. Save [`.env.node.example`](.env.node.example) there as `.env`, paste the setup_blob into `NODE_SETUP_BLOB`.
-   4. `docker compose up -d`
-
-<details>
-<summary><code>docker-compose.yml</code> (node, click to expand)</summary>
-
-```yaml
-# Rapido-Go node agent, pre-built image. Copy this file (and
-# .env.node.example as .env) to the node server, fill in NODE_SETUP_BLOB
-# from the panel's Add Node screen, then:
-#
-#   docker compose -f docker-compose.node.yml --env-file .env up -d
-#
-# `docker login ghcr.io` first if the image is private - see
-# docker-compose.prod.yml's own top-of-file comment.
-
-services:
-  node:
-    image: ${RAPIDO_NODE_IMAGE:-ghcr.io/legendary1205/rapido-go-node}:${RAPIDO_NODE_TAG:-latest}
-    restart: unless-stopped
-    ports:
-      - "${NODE_PORT:-62051}:62051"
-    environment:
-      NODE_LISTEN_ADDR: 0.0.0.0:62051
-      # Only needed on the very first `up` - the container writes
-      # cert/key/ca into the named volume below and never reads this
-      # again afterward. Required for a genuinely fresh volume (the node
-      # process itself refuses to start with no blob AND no existing
-      # on-disk cert - a clear error in its own logs either way); safe to
-      # blank out in .env on a later `up` once the volume already has
-      # certs in it.
-      NODE_SETUP_BLOB: ${NODE_SETUP_BLOB:-}
-    volumes:
-      - node_certs:/etc/rapido-node
-
-volumes:
-  node_certs:
-```
-
-</details>
-
-<details>
-<summary><code>.env</code> (node, click to expand)</summary>
 
 ```bash
-# Copy this file to .env next to docker-compose.node.yml and fill it in,
-# then: docker compose -f docker-compose.node.yml --env-file .env up -d
+bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+# paste the setup_blob when prompted, then pick a listen port (default 62051)
+```
 
-# Paste the setup_blob shown once when you create this node in the panel's
-# dashboard (Nodes -> Add Node -> the one-time reveal panel). Only needed
-# for the very first `up` against a fresh volume - see docker-compose.node.yml's
-# own comment.
-NODE_SETUP_BLOB=
+or fully non-interactively:
 
-# Host port to publish the node's control API on.
-NODE_PORT=62051
+```bash
+NODE_SETUP_BLOB='<paste the blob here>' \
+  bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+```
+
+<details>
+<summary><code>rapido-go-node.sh</code> (click to expand)</summary>
+
+```bash
+#!/usr/bin/env bash
+#
+#  Rapido-Go Node - installer and management CLI.
+#
+#  Install:
+#    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+#
+#  Afterwards the command is available system-wide as `rapido-go-node`.
+#
+set -euo pipefail
+
+RAPIDO_GO_NODE_VERSION="1.0.0"
+
+# See the note in rapido-go.sh: leave empty in any copy you publish, and
+# pass the token for one command instead -
+# RAPIDO_REPO_TOKEN=xxx bash rapido-go-node.sh install
+RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
+
+load_saved_token() {
+    [ -n "$RAPIDO_REPO_TOKEN" ] && return
+    [ -f "$APP_DIR/.env" ] || return
+    RAPIDO_REPO_TOKEN="$(grep -E '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" 2>/dev/null \
+        | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+}
+
+save_token() {
+    [ -n "$RAPIDO_REPO_TOKEN" ] || return
+    [ -f "$APP_DIR/.env" ] || return
+    grep -qE '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" && return
+    printf '\n# Used to fetch updates from the private repository and pull\n# private images from ghcr.io.\nRAPIDO_REPO_TOKEN="%s"\n' \
+        "$RAPIDO_REPO_TOKEN" >> "$APP_DIR/.env"
+    chmod 600 "$APP_DIR/.env"
+}
+
+REPO_OWNER="${RAPIDO_REPO_OWNER:-legendary1205}"
+REPO_NAME="${RAPIDO_REPO_NAME:-rapido-go}"
+REPO_BRANCH="${RAPIDO_REPO_BRANCH:-master}"
+
+APP_DIR="${RAPIDO_GO_NODE_APP_DIR:-/opt/rapido-go-node}"
+DATA_DIR="${RAPIDO_GO_NODE_DATA_DIR:-/var/lib/rapido-go-node}"
+COMPOSE_PROJECT="${RAPIDO_GO_NODE_COMPOSE_PROJECT:-rapido-go-node}"
+BIN_PATH="/usr/local/bin/rapido-go-node"
+
+NODE_IMAGE="ghcr.io/${REPO_OWNER}/rapido-go-node"
+LISTEN_PORT="${LISTEN_PORT:-62051}"
+
+if [ -t 1 ]; then
+    C_RESET='\033[0m'; C_DIM='\033[2m'; C_BOLD='\033[1m'
+    C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'; C_CYAN='\033[0;36m'
+else
+    C_RESET=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''
+fi
+
+log()  { printf "${C_CYAN}▶${C_RESET} %s\n" "$*"; }
+ok()   { printf "${C_GREEN}✔${C_RESET} %s\n" "$*"; }
+warn() { printf "${C_YELLOW}!${C_RESET} %s\n" "$*"; }
+err()  { printf "${C_RED}✘ %s${C_RESET}\n" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+banner() {
+    printf "${C_CYAN}${C_BOLD}"
+    cat <<'ART'
+   ___             _     _         ___       _  _         _
+  / _ \__ _ _ __  (_) __| | ___   / __|___  | \| |___  __| |___
+ / /_)/ _` | '_ \ | |/ _` |/ _ \ | (_ / _ \ | .` / _ \/ _` / -_)
+/ ___/ (_| | |_) || | (_| | (_) | \___\___/ |_|\_\___/\__,_\___|
+\/    \__,_| .__/ |_|\__,_|\___/
+           |_|
+ART
+    printf "${C_RESET}${C_DIM}  v%s${C_RESET}\n\n" "$RAPIDO_GO_NODE_VERSION"
+}
+
+require_root() { [ "$(id -u)" = "0" ] || die "This command must be run as root."; }
+require_installed() { [ -d "$APP_DIR" ] || die "Not installed at $APP_DIR. Run: rapido-go-node install"; }
+
+pkg_install() {
+    if   command -v apt-get >/dev/null 2>&1; then apt-get update -y >/dev/null && apt-get install -y "$@" >/dev/null
+    elif command -v dnf     >/dev/null 2>&1; then dnf install -y "$@" >/dev/null
+    elif command -v yum     >/dev/null 2>&1; then yum install -y "$@" >/dev/null
+    else die "No supported package manager found (need apt-get, dnf or yum)."
+    fi
+}
+
+ensure_prereqs() {
+    local missing=()
+    for c in curl git nano; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
+    [ ${#missing[@]} -gt 0 ] && { log "Installing: ${missing[*]}"; pkg_install "${missing[@]}"; }
+    ok "Prerequisites present."
+}
+
+docker_ready() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
+
+ensure_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        ok "docker compose present."
+        return
+    fi
+    log "Installing the docker compose plugin..."
+    pkg_install docker-compose-plugin 2>/dev/null || true
+    docker compose version >/dev/null 2>&1 \
+        || die "Could not install the docker compose plugin. Install it and run this again."
+    ok "docker compose installed."
+}
+
+install_docker_engine() {
+    log "Installing Docker..."
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh \
+        || die "Could not download the Docker installer. Check this server's internet access."
+    sh /tmp/get-docker.sh >/dev/null 2>&1 || warn "The Docker installer reported a problem - checking anyway."
+    rm -f /tmp/get-docker.sh
+    systemctl enable --now containerd >/dev/null 2>&1 || true
+    systemctl enable --now docker >/dev/null 2>&1 || true
+    sleep 4
+}
+
+docker_diagnosis() {
+    err "Docker is still not responding. What the system says:"
+    echo
+    if systemctl list-unit-files 2>/dev/null | grep -q '^docker\.service'; then
+        systemctl status docker --no-pager -l 2>&1 | head -12 | sed 's/^/    /'
+        echo
+        journalctl -u docker -n 15 --no-pager 2>&1 | tail -12 | sed 's/^/    /'
+    else
+        echo "    There is no docker.service unit on this system."
+        echo "    docker binary : $(command -v docker || echo none)"
+    fi
+    echo
+    err "Fix that and run the installer again."
+    exit 1
+}
+
+ensure_docker() {
+    if docker_ready; then
+        ok "Docker is installed and running."
+        return
+    fi
+    if ! systemctl list-unit-files 2>/dev/null | grep -q '^docker\.service'; then
+        command -v docker >/dev/null 2>&1 && warn "The docker command is present but the engine is not installed."
+        install_docker_engine
+        docker_ready && { ok "Docker installed and running."; return; }
+        docker_diagnosis
+    fi
+    log "Docker is installed but not responding - trying to start it..."
+    systemctl start containerd >/dev/null 2>&1 || true
+    systemctl start docker.socket >/dev/null 2>&1 || true
+    systemctl start docker >/dev/null 2>&1 || true
+    sleep 4
+    docker_ready && { ok "Docker started."; return; }
+    warn "It would not start - repairing the installation..."
+    install_docker_engine
+    docker_ready && { ok "Docker repaired and running."; return; }
+    docker_diagnosis
+}
+
+ensure_registry_login() {
+    load_saved_token
+    [ -n "$RAPIDO_REPO_TOKEN" ] || return 0
+    echo "$RAPIDO_REPO_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin >/dev/null 2>&1 \
+        && ok "Logged in to ghcr.io." \
+        || warn "Could not log in to ghcr.io with the given token - continuing."
+}
+
+repo_url() {
+    if [ -n "$RAPIDO_REPO_TOKEN" ]; then
+        printf 'https://%s@github.com/%s/%s.git' "$RAPIDO_REPO_TOKEN" "$REPO_OWNER" "$REPO_NAME"
+    else
+        printf 'https://github.com/%s/%s.git' "$REPO_OWNER" "$REPO_NAME"
+    fi
+}
+
+scrub_remote() {
+    git -C "$APP_DIR" remote set-url origin \
+        "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" 2>/dev/null || true
+}
+
+fetch_source() {
+    load_saved_token
+    if [ -d "$APP_DIR/.git" ]; then
+        log "Updating source..."
+        git -C "$APP_DIR" remote set-url origin "$(repo_url)"
+        git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
+            || { scrub_remote; die "Could not fetch. If the repo is private, set RAPIDO_REPO_TOKEN."; }
+        git -C "$APP_DIR" reset --hard "origin/$REPO_BRANCH" >/dev/null
+        scrub_remote
+    else
+        log "Downloading Rapido-Go into $APP_DIR..."
+        mkdir -p "$(dirname "$APP_DIR")"
+        git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
+            || die "Could not clone. If the repo is private, set RAPIDO_REPO_TOKEN."
+        scrub_remote
+    fi
+    ok "Source ready ($(git -C "$APP_DIR" rev-parse --short HEAD))."
+}
+
+# The node's own control API is its only listening port - unlike the
+# Python-era node (a separate panel-facing port plus a second Xray gRPC
+# port), rapido-go embeds sing-box directly, so there is just the one.
+port_in_use() { ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
+
+prompt_port() {
+    if [ -f "$APP_DIR/.env" ] && [ -z "${RAPIDO_GO_NODE_PORT_SET:-}" ]; then
+        local from_env
+        from_env="$(grep -E '^LISTEN_PORT=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+        [ -n "$from_env" ] && { LISTEN_PORT="$from_env"; ok "Using the port already in .env: $LISTEN_PORT"; return; }
+    fi
+    printf "\n${C_BOLD}Port${C_RESET}\n"
+    printf "${C_DIM}  Must be reachable from the panel server. Press Enter to accept\n"
+    printf "  the default.${C_RESET}\n\n"
+    while true; do
+        printf "  Listen port [%s]: " "$LISTEN_PORT"
+        local value; read -r value || value=""
+        value="${value:-$LISTEN_PORT}"
+        if ! printf '%s' "$value" | grep -qE '^[0-9]+$' || [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+            warn "  Ports are numbers between 1 and 65535."; continue
+        fi
+        if port_in_use "$value"; then
+            warn "  Something is already listening on $value."; continue
+        fi
+        LISTEN_PORT="$value"
+        break
+    done
+    ok "Listen port: $LISTEN_PORT"
+}
+
+# The one value from the panel's Nodes -> Add Node -> one-time reveal panel
+# - bundles this node's certificate, private key, the panel's CA and its
+# report secret together (see internal/httpapi/node.go's buildNodeSetupBlob
+# on the panel side, cmd/node/main.go's applyNodeSetupBlob on this side).
+# Only needed once: the node writes it to disk on first boot and never
+# reads the env var again after that, so re-running this against a volume
+# that already has cert.pem in it is a no-op here, same idea as
+# docker-compose.node.yml's own version of this check.
+prompt_setup_blob() {
+    if [ -f "$DATA_DIR/certs/cert.pem" ] && [ -z "${NODE_SETUP_BLOB:-}" ]; then
+        ok "This node is already provisioned (certs present in $DATA_DIR/certs) - skipping."
+        return
+    fi
+    if [ -n "${NODE_SETUP_BLOB:-}" ]; then
+        return
+    fi
+    printf "\n${C_BOLD}Paste the setup_blob${C_RESET}\n"
+    printf "${C_DIM}  Panel -> Nodes -> Add Node -> the one-time reveal panel. It is\n"
+    printf "  never shown again after this.${C_RESET}\n\n"
+    printf "  setup_blob: "
+    read -r NODE_SETUP_BLOB || NODE_SETUP_BLOB=""
+    [ -n "$NODE_SETUP_BLOB" ] || die "No setup_blob given - nothing to provision this node with."
+}
+
+generate_env() {
+    local env_file="$APP_DIR/.env"
+    if [ -f "$env_file" ]; then
+        warn ".env already exists - leaving it untouched (port/blob values above still apply to this run)."
+        return
+    fi
+    mkdir -p "$DATA_DIR/certs"
+    cat > "$env_file" <<EOF
+# Generated by the Rapido-Go Node installer on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+LISTEN_PORT=${LISTEN_PORT}
+NODE_SETUP_BLOB="${NODE_SETUP_BLOB:-}"
+# Bind-mounts the real host directory instead of an opaque Docker volume,
+# so this script's own "already provisioned?" check (prompt_setup_blob)
+# can see cert.pem directly - see docker-compose.node.yml's own comment.
+RAPIDO_GO_NODE_CERTS_DIR="${DATA_DIR}/certs"
+EOF
+    chmod 600 "$env_file"
+    ok "Configuration written to $env_file"
+}
+
+install_command() {
+    local src="$APP_DIR/rapido-go-node.sh"
+    [ -f "$src" ] || src="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [ -n "$src" ] && [ -f "$src" ] || return 0
+    if [ "$(readlink -f "$src")" = "$(readlink -f "$BIN_PATH" 2>/dev/null || echo /nonexistent)" ]; then
+        return 0
+    fi
+    if install -m 755 "$src" "$BIN_PATH" 2>/dev/null; then
+        ok "Installed the 'rapido-go-node' command at $BIN_PATH"
+    else
+        warn "Could not update $BIN_PATH - continuing."
+    fi
+}
+
+compose() {
+    require_installed
+    (cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f docker-compose.node.yml --env-file .env "$@")
+}
+
+open_firewall() {
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "${LISTEN_PORT}/tcp" >/dev/null 2>&1 || true
+        ok "Opened port ${LISTEN_PORT} in ufw."
+    fi
+}
+
+obtain_image() {
+    if [ "${RAPIDO_BUILD_LOCALLY:-}" = "1" ]; then
+        log "RAPIDO_BUILD_LOCALLY=1, building from source..."
+    else
+        log "Fetching the Rapido-Go node image..."
+        if docker pull "${NODE_IMAGE}:latest" 2>&1 | tail -2; then
+            ok "Image ready."
+            return 0
+        fi
+        warn "Could not pull the prebuilt image; building it here instead."
+    fi
+    log "Building the image (this takes a few minutes)..."
+    ( cd "$APP_DIR" && docker build -f docker/Dockerfile.node -t "${NODE_IMAGE}:latest" . )
+    docker image inspect "${NODE_IMAGE}:latest" >/dev/null 2>&1 \
+        || die "The image was not built - see the output above."
+    ok "Image built."
+}
+
+follow_logs() {
+    [ -t 1 ] || return 0
+    [ "${RAPIDO_NO_FOLLOW:-0}" = "1" ] && return 0
+    printf "\n${C_DIM}  Following the log - Ctrl-C leaves the node running.${C_RESET}\n\n"
+    compose logs -f --tail "${RAPIDO_LOG_TAIL:-40}"
+}
+
+cmd_install() {
+    require_root
+    banner
+    ensure_prereqs
+    ensure_docker
+    ensure_compose
+    fetch_source
+    prompt_port
+    prompt_setup_blob
+    generate_env
+    save_token
+    install_command
+    open_firewall
+    ensure_registry_login
+    obtain_image
+    log "Starting..."
+    compose up -d
+    sleep 5
+
+    if ! compose ps --services --filter status=running 2>/dev/null | grep -q .; then
+        err "The container is not running."
+        compose logs --tail 30
+        exit 1
+    fi
+
+    local ip
+    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+    printf "\n${C_GREEN}${C_BOLD}Rapido-Go Node is running.${C_RESET}\n\n"
+    printf "  If you have not already added it in the panel:\n"
+    printf "    Nodes -> Add Node -> Address ${C_BOLD}%s${C_RESET}, Port ${C_BOLD}%s${C_RESET}\n\n" "$ip" "$LISTEN_PORT"
+    printf "  ${C_DIM}This port must be reachable from the panel server. Check the\n"
+    printf "  panel's Nodes page - status flips to \"Connected\" once this\n"
+    printf "  node's first report arrives (a few seconds).${C_RESET}\n"
+    follow_logs
+}
+
+cmd_up()      { compose up -d && ok "Started."; }
+cmd_down()    { compose down && ok "Stopped."; }
+cmd_restart() { compose up -d --force-recreate && ok "Restarted."; }
+cmd_status()  { compose ps; }
+
+# WireGuard exits are not part of the node itself - the node just binds
+# outbounds to whatever interfaces exist via bind_interface. Bringing them
+# up by hand fails the same way on every fresh server, so this does it
+# correctly:
+#   * `DNS =` in a Mullvad-style config makes wg-quick shell out to
+#     resolvconf, which fails hard (and deletes the interface it just
+#     created) on a host where that is the systemd-resolved shim and the
+#     service is not running - and the line does nothing for these tunnels
+#     anyway, since the node picks an exit by binding to the interface, not
+#     through the system resolver.
+#   * without PersistentKeepalive a tunnel only re-handshakes when traffic
+#     happens to flow, so a relay that goes away stays "up" and silent.
+#   * wg-quick@ is not enabled by default, so a reboot leaves every exit
+#     down.
+cmd_tunnels() {
+    require_root
+    local confs
+    confs=$(ls /etc/wireguard/*.conf 2>/dev/null) || true
+    [ -n "$confs" ] || die "No tunnel configs in /etc/wireguard."
+
+    command -v wg >/dev/null 2>&1 || { log "Installing wireguard-tools..."; pkg_install wireguard-tools; }
+
+    local n
+    for f in $confs; do
+        n=$(basename "$f" .conf)
+        if grep -qE '^DNS' "$f" && ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+            cp "$f" "${f}.bak-$(date +%Y%m%d_%H%M%S)"
+            sed -i 's/^DNS/#DNS/' "$f"
+            warn "$n: commented out DNS (systemd-resolved is not running here)"
+        fi
+        grep -q PersistentKeepalive "$f" || printf 'PersistentKeepalive = 25\n' >> "$f"
+        if ip link show "$n" >/dev/null 2>&1; then
+            ok "$n: already up"
+        elif wg-quick up "$n" >/tmp/wg_$n.log 2>&1; then
+            ok "$n: up"
+        else
+            err "$n: failed"
+            tail -4 "/tmp/wg_$n.log" | sed 's/^/      /'
+            continue
+        fi
+        systemctl enable "wg-quick@$n" >/dev/null 2>&1 || true
+    done
+
+    printf "\n${C_BOLD}Handshakes${C_RESET}\n"
+    local now; now=$(date +%s)
+    wg show all dump 2>/dev/null | awk -v now="$now" 'NF>=9 {
+        age = ($6 > 0) ? now - $6 : -1
+        printf "  %-14s %-24s %s\n", $1, $4, (age < 0 ? "NEVER" : age "s ago")
+    }'
+
+    printf "\n${C_BOLD}Where each one comes out${C_RESET}\n"
+    for f in $confs; do
+        n=$(basename "$f" .conf)
+        printf "  %-14s " "$n"
+        out=$(curl -fsS --max-time 20 --interface "$n" https://api.ipify.org 2>&1)
+        case "$out" in
+            *[0-9].[0-9]*) printf "%s\n" "$out" ;;
+            *) printf "${C_YELLOW}no answer${C_RESET}\n" ;;
+        esac
+    done
+    printf "\n${C_DIM}  A tunnel that never handshakes usually means the relay is gone.${C_RESET}\n\n"
+}
+
+cmd_logs() { compose logs -f --tail "${RAPIDO_LOG_TAIL:-200}"; }
+
+cmd_update() {
+    require_root
+    require_installed
+    fetch_source
+    install_command
+    ensure_registry_login
+    obtain_image
+    compose up -d --force-recreate
+    ok "Updated."
+}
+
+cmd_edit_env() {
+    require_installed
+    local before after
+    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    "${EDITOR:-nano}" "$APP_DIR/.env"
+    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    if [ "$before" != "$after" ]; then
+        printf "\n"
+        warn "Configuration changed. Apply it now? [Y/n] "
+        local answer; read -r answer
+        case "${answer:-y}" in
+            [Nn]*) warn "Not applied. Run 'rapido-go-node restart' when ready." ;;
+            *) cmd_restart ;;
+        esac
+    fi
+}
+
+cmd_uninstall() {
+    require_root
+    require_installed
+    warn "This removes the container and the source at $APP_DIR."
+    warn "Certificates in $DATA_DIR are KEPT - deleting them would force you to"
+    warn "re-add this node in the panel."
+    printf "Type 'yes' to continue: "
+    local answer; read -r answer
+    [ "$answer" = "yes" ] || die "Aborted."
+    compose down --remove-orphans || true
+    rm -rf "$APP_DIR"
+    rm -f "$BIN_PATH"
+    ok "Removed. Certificates left in $DATA_DIR"
+}
+
+usage() {
+    banner
+    cat <<EOF
+${C_BOLD}Rapido-Go Node${C_RESET} - runs sing-box on a remote server under a Rapido-Go
+panel's control.
+
+${C_BOLD}USAGE${C_RESET}
+  rapido-go-node <command>
+
+${C_BOLD}SETUP${C_RESET}
+  install                  Install Docker if needed, fetch, configure and start
+  update                   Fetch the latest source, pull/rebuild and restart
+  uninstall                Remove the container and source (certificates kept)
+
+${C_BOLD}RUNNING${C_RESET}
+  up | down | restart      Start, stop or restart
+  status                   Show what is running
+  tunnels                  Bring up /etc/wireguard tunnels, correctly and at boot
+  logs                     Follow the logs
+
+${C_BOLD}OTHER${C_RESET}
+  edit-env                 Open .env in \$EDITOR
+
+${C_BOLD}ENVIRONMENT${C_RESET}
+  LISTEN_PORT               Node control port          (default: 62051)
+  NODE_SETUP_BLOB           The one-time blob from the panel's Add Node screen
+  RAPIDO_REPO_TOKEN         GitHub token, if the repo is private
+  RAPIDO_BUILD_LOCALLY=1    Build the image here instead of pulling from ghcr.io
+
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+    [ $# -gt 0 ] && shift || true
+    case "$cmd" in
+        install)   cmd_install ;;
+        up)        cmd_up ;;
+        down)      cmd_down ;;
+        restart)   cmd_restart ;;
+        status)    cmd_status ;;
+        tunnels)   cmd_tunnels ;;
+        logs)      cmd_logs ;;
+        update)    cmd_update ;;
+        edit-env)  cmd_edit_env ;;
+        uninstall) cmd_uninstall ;;
+        version|-v|--version) printf "rapido-go-node %s\n" "$RAPIDO_GO_NODE_VERSION" ;;
+        ""|help|-h|--help) usage ;;
+        *) err "Unknown command: $cmd"; echo; usage; exit 1 ;;
+    esac
+}
+
+main "$@"
 ```
 
 </details>
@@ -284,9 +1266,16 @@ NODE_PORT=62051
 4. Back in the dashboard, the node's status flips to **Connected** once its first push arrives (a few seconds).
 5. Create an inbound (e.g. VLESS) and a host under **Hosts** - the node picks up the new config on its next poll (also a few seconds), no restart needed.
 
-#### Upgrading
+#### Updating
 
-Pull the newer image and recreate: `docker compose pull && docker compose up -d` (panel) or the same against `docker-compose.node.yml` (node) - the `migrate` service re-applies any new migrations automatically before `panel`/`backend` start.
+```bash
+rapido-go update        # panel: backs up the DB, fetches, pulls the newer image, restarts
+rapido-go-node update    # node
+```
+
+#### Manual install (advanced)
+
+Both CLIs are thin wrappers around plain Docker Compose files - if you'd rather not run a curl-piped script, `git clone` (or download) the repo yourself and drive [`docker-compose.prod.yml`](docker-compose.prod.yml) / [`docker-compose.node.yml`](docker-compose.node.yml) directly, using [`.env.prod.example`](.env.prod.example) / [`.env.node.example`](.env.node.example) and [`Caddyfile.example`](Caddyfile.example) as templates. Everything the CLI scripts do is visible in the two files above - there's nothing they do that isn't also just `docker compose up -d` under the hood.
 
 ### Configuration reference
 
@@ -366,7 +1355,8 @@ internal/*settings, telegram, discord, kirbot, report/  integrations
 web/                  the dashboard (React/Vite/Tailwind)
 docker/                Dockerfile.panel, Dockerfile.node
 docker-compose.yml     local dev only (Postgres+Redis)
-docker-compose.prod.yml, docker-compose.node.yml   production images, see Quick install
+docker-compose.prod.yml, docker-compose.node.yml   production images, driven by the scripts below
+rapido-go.sh, rapido-go-node.sh   curl-piped installer/management CLIs, see Quick install
 .github/workflows/     CI - builds and publishes both images to GHCR
 ```
 
@@ -428,45 +1418,67 @@ Rapido-Go یک بازنویسی کامل و از صفر یک پنل VPN ری‌�
 
 ### نصب سریع
 
-فقط داکر - نه `git clone`ای، نه اسکریپتی که لازم باشه بررسی و اجراش کنید، نه ابزار build محلی. هم پنل هم نود به‌صورت ایمیج آماده منتشر می‌شن، خودکار به‌وسیله‌ی [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) روی هر push به `master` توی GHCR (`ghcr.io`) ساخته و push می‌شن. نصب یعنی: دو تا فایل کوچیک رو روی سرور کپی کنید، چند مقدار پر کنید، `docker compose up -d`.
-
-> **ایمیج‌ها خصوصی‌ان** (همون سطح دسترسی این ریپو). قبل از اولین `docker compose up`، یک‌بار احراز هویت کنید: `echo <یک توکن گیت‌هاب با اسکوپ read:packages> | docker login ghcr.io -u <یوزرنیم گیت‌هابتون> --password-stdin`.
+یک دستور برای هر سرور - بقیه‌ش (داکر، سورس، ایمیج آماده) رو خود اسکریپت می‌گیره؛ نه `git clone` دستی لازمه نه دستور `docker compose` زدن.
 
 #### ۱. نصب پنل
 
-روی سروری که قراره پنل روش اجرا بشه:
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+```
 
-۱. یک پوشه بسازید، مثلاً `mkdir rapido-panel && cd rapido-panel`.
-۲. محتوای [`docker-compose.prod.yml`](docker-compose.prod.yml) رو اونجا با اسم `docker-compose.yml` ذخیره کنید (محتوای کامل فایل توی بخش انگلیسی بالا هم هست).
-۳. محتوای [`.env.prod.example`](.env.prod.example) رو اونجا با اسم `.env` ذخیره کنید و حداقل `POSTGRES_PASSWORD` و `SUDO_PASSWORD` رو پر کنید.
-۴. `docker compose up -d`
+اگه داکر نصب نباشه نصبش می‌کنه، دامنه‌ای که قراره داشبورد روش بالا بیاد رو می‌پرسه (باید از قبل به همین سرور اشاره کنه - [Caddy](https://caddyserver.com/) با همون دامنه یک گواهی واقعی Let's Encrypt خودکار می‌گیره، بدون نیاز به کار دستی با certbot)، `.env` رو می‌سازه، ایمیج آماده رو از GHCR می‌گیره، Postgres + Redis + migration + هر دو نقش `api` و `backend` رو بالا میاره، و خودش رو هم به‌صورت سراسری با اسم `rapido-go` نصب می‌کنه تا بعداً برای مدیریت ازش استفاده کنید.
 
-همین. Postgres، Redis، migration های دیتابیس، و هر دو نقش `api` و `backend` با هم بالا میان. مقدار `SUDO_USERNAME`/`SUDO_PASSWORD` که توی `.env` گذاشتید، همون **لاگین بوت‌استرپ** هست - در ادامه توضیح داده شده.
+در آخر یک **لاگین بوت‌استرپ** یک‌باره چاپ می‌کنه - در ادامه توضیح داده شده.
+
+> **ریپو و ایمیج‌هاش خصوصی‌ان.** اگه از قبل دسترسی تنظیم نکردید، یک توکن گیت‌هاب فقط برای همین یک دستور بدید (توی `.env` با دسترسی chmod 600 ذخیره می‌شه تا برای `rapido-go update` بعدی هم کار کنه - نه توی خود اسکریپت نوشته می‌شه نه توی `.git/config`):
+> ```bash
+> RAPIDO_REPO_TOKEN=<توکنی با اسکوپ repo + read:packages> \
+>   bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+> ```
+
+محتوای کامل `rapido-go.sh` توی بخش انگلیسی بالا (Quick install) قابل مشاهده‌ست.
 
 #### ۲. اولین ورود
 
-`SUDO_USERNAME`/`SUDO_PASSWORD` توی `.env` یک **لاگین بوت‌استرپ** هست - نه یک ردیف واقعی توی دیتابیس، قبل از اینکه اصلاً جدول `admins` کوئری بشه در حافظه چک می‌شه، دقیقاً به همین دلیل که همیشه یک راه ورود وجود داشته باشه حتی از یک دیتابیس کاملاً خالی. یک‌بار ازش استفاده کنید تا:
+نصب یک **لاگین بوت‌استرپ** (`SUDO_USERNAME`/`SUDO_PASSWORD`، ذخیره‌شده توی `.env`) چاپ می‌کنه. این یک ردیف واقعی توی دیتابیس نیست - قبل از اینکه اصلاً جدول `admins` کوئری بشه در حافظه چک می‌شه، دقیقاً به همین دلیل که همیشه یک راه ورود وجود داشته باشه حتی از یک دیتابیس کاملاً خالی. یک‌بار ازش استفاده کنید تا:
 
-1. توی `http://<آدرس-سرور>:8000/dashboard/` لاگین کنید.
+1. توی `https://<دامنه‌تون>/dashboard/` لاگین کنید.
 2. از صفحه‌ی **Admins** یک ادمین سودوی واقعی بسازید.
-3. اختیاری: `SUDO_PASSWORD` رو توی `.env` عوض کنید و دوباره `docker compose up -d` بزنید، اگه نمی‌خواید این لاگین اضطراری با مقدار اولیه‌ش همچنان فعال بمونه.
+3. اختیاری: با `rapido-go edit-env` مقدار `SUDO_PASSWORD` رو عوض کنید، اگه نمی‌خواید این لاگین اضطراری با مقدار اولیه‌ش همچنان فعال بمونه.
 
 #### ۳. افزودن و نصب نود
 
 ۱. توی داشبورد، به **Nodes → Add Node** برید، یک اسم و آدرس بدید و ذخیره کنید.
 ۲. پنل نمایش یک‌باره یک مقدار **setup_blob** (به‌صورت base64) رو نشون می‌ده - این مقدار گواهی نود، کلید خصوصی، CA پنل، و سکرت گزارش‌دهی رو همه با هم بسته‌بندی می‌کنه. همین الان کپی‌ش کنید؛ دیگه هیچ‌وقت نشون داده نمی‌شه.
 ۳. روی سرور نود:
-   ۱. یک پوشه بسازید، مثلاً `mkdir rapido-node && cd rapido-node`.
-   ۲. محتوای [`docker-compose.node.yml`](docker-compose.node.yml) رو اونجا با اسم `docker-compose.yml` ذخیره کنید.
-   ۳. محتوای [`.env.node.example`](.env.node.example) رو اونجا با اسم `.env` ذخیره کنید، و setup_blob رو توی `NODE_SETUP_BLOB` پیست کنید.
-   ۴. `docker compose up -d`
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+# موقع پرسیدن setup_blob پیستش کنید، بعد یک پورت گوش‌دادن انتخاب کنید (پیش‌فرض ۶۲۰۵۱)
+```
+
+یا کاملاً غیرتعاملی:
+
+```bash
+NODE_SETUP_BLOB='<اینجا blob رو پیست کنید>' \
+  bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+```
+
+محتوای کامل `rapido-go-node.sh` هم توی بخش انگلیسی بالا قابل مشاهده‌ست.
 
 ۴. توی داشبورد، وضعیت نود بعد از اولین push (چند ثانیه) به **Connected** تغییر می‌کنه.
 ۵. یک inbound بسازید (مثلاً VLESS) و یک host زیر **Hosts** - نود توی pull بعدیش (چند ثانیه‌ی دیگه) پیکربندی جدید رو می‌گیره، بدون نیاز به ری‌استارت.
 
 #### آپدیت
 
-ایمیج جدید رو pull کنید و دوباره بسازید: `docker compose pull && docker compose up -d` (پنل) یا همین دستور روی `docker-compose.node.yml` (نود) - سرویس `migrate` هر migration جدیدی رو خودکار قبل از بالا اومدن `panel`/`backend` اعمال می‌کنه.
+```bash
+rapido-go update        # پنل: اول از دیتابیس بکاپ می‌گیره، سورس رو می‌گیره، ایمیج جدید رو pull می‌کنه، ری‌استارت می‌کنه
+rapido-go-node update    # نود
+```
+
+#### نصب دستی (پیشرفته)
+
+هر دو اسکریپت فقط یک لایه‌ی نازک روی فایل‌های Docker Compose معمولی‌ان - اگه ترجیح می‌دید اسکریپت curl-pipe اجرا نکنید، خودتون ریپو رو `git clone` (یا دانلود) کنید و مستقیم [`docker-compose.prod.yml`](docker-compose.prod.yml) / [`docker-compose.node.yml`](docker-compose.node.yml) رو با کمک [`.env.prod.example`](.env.prod.example) / [`.env.node.example`](.env.node.example) و [`Caddyfile.example`](Caddyfile.example) به‌عنوان قالب اجرا کنید. هر کاری که این دو اسکریپت می‌کنن توی همون دو فایل بالا قابل دیدنه - کاری نمی‌کنن که در نهایت همون `docker compose up -d` نباشه.
 
 ### مرجع پیکربندی
 
@@ -546,7 +1558,8 @@ internal/*settings, telegram, discord, kirbot, report/  یکپارچه‌ساز�
 web/                  داشبورد (React/Vite/Tailwind)
 docker/                Dockerfile.panel, Dockerfile.node
 docker-compose.yml     فقط برای توسعه‌ی محلی (Postgres+Redis)
-docker-compose.prod.yml, docker-compose.node.yml   ایمیج‌های پروداکشن، ببینید نصب سریع
+docker-compose.prod.yml, docker-compose.node.yml   ایمیج‌های پروداکشن، به‌وسیله‌ی اسکریپت‌های زیر اجرا می‌شن
+rapido-go.sh, rapido-go-node.sh   اسکریپت‌های نصب/مدیریت با curl-pipe، ببینید نصب سریع
 .github/workflows/     CI - هر دو ایمیج رو می‌سازه و توی GHCR منتشر می‌کنه
 ```
 

@@ -1,19 +1,21 @@
-# Full Rapido-Go panel stack, pre-built images only - no git, no local
-# build, no shell script. Copy this file (and .env.prod.example as .env)
-# to the server, fill in .env, then:
+# Full Rapido-Go panel stack, pre-built images only. Not meant to be run by
+# hand - see rapido-go.sh (bash <(curl -fsSL
+# https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh)
+# install), which clones this file down alongside the rest of the source,
+# writes .env and Caddyfile, and drives this with `docker compose -f
+# docker-compose.prod.yml --env-file .env up -d`.
 #
-#   docker compose -f docker-compose.prod.yml --env-file .env up -d
-#
-# This is separate from the root docker-compose.yml on purpose: that one
-# is for local development (just Postgres+Redis, so `go run ./cmd/panel`
-# can run against them with your own code) - mixing pre-built panel/backend
-# containers into that file would fight a locally-run dev process for the
-# same ports.
+# This is separate from the root docker-compose.yml on purpose: that one is
+# for local development (just Postgres+Redis, so `go run ./cmd/panel` can
+# run against them with your own code) - mixing these pre-built panel/
+# backend/caddy containers into that file would fight a locally-run dev
+# process for the same ports.
 #
 # Images are published privately to ghcr.io by .github/workflows/
-# docker-publish.yml on every push to master - `docker login ghcr.io`
-# with a token that has at least `read:packages` scope before pulling,
-# same as any other private GitHub Container Registry image.
+# docker-publish.yml on every push to master - rapido-go.sh runs
+# `docker login ghcr.io` for you if RAPIDO_REPO_TOKEN is set (the same
+# token used to clone the private source, since a token with read access
+# to the repo also has read:packages on its own images by default).
 
 services:
   postgres:
@@ -62,8 +64,11 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-    ports:
-      - "${PANEL_PORT:-8000}:8000"
+    # No published port here - only caddy (below) is reachable from outside,
+    # same reasoning as the Python-era panel's own single-entrypoint design:
+    # one place terminates TLS, everything else is only reachable through it.
+    expose:
+      - "8000"
     environment:
       ROLE: api
       DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
@@ -71,6 +76,7 @@ services:
       SUDO_USERNAME: ${SUDO_USERNAME:-admin}
       SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
       PUBLIC_IP: ${PUBLIC_IP:-}
+      XRAY_SUBSCRIPTION_URL_PREFIX: ${XRAY_SUBSCRIPTION_URL_PREFIX:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
 
   backend:
@@ -81,9 +87,9 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-    # No published port - this role is not meant to receive traffic
-    # directly, only the "api" role above is (see the README's
-    # architecture section on why there are two roles at all).
+    # No published port at all - this role is not meant to receive traffic
+    # directly, only the "api" role (fronted by caddy) is (see the README's
+    # architecture section on why there are two roles to begin with).
     environment:
       ROLE: backend
       DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
@@ -92,6 +98,29 @@ services:
       SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
       PUBLIC_IP: ${PUBLIC_IP:-}
 
+  # The panel binary itself has no built-in TLS (no reverse-proxy-free
+  # HTTPS listener like the Python-era panel's UVICORN_SSL_CERTFILE/
+  # UVICORN_SSL_KEYFILE) - Caddy in front of it is what makes "give it a
+  # domain, get a working https:// URL" true, the same promise rapido.sh
+  # makes for the Python panel (there via a manual certbot dance; here via
+  # Caddy's own built-in automatic HTTPS, zero certbot orchestration
+  # needed - rapido-go.sh only ever writes the Caddyfile, Caddy does the
+  # rest, including renewal).
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - panel
+
 volumes:
   postgres_data:
   redis_data:
+  caddy_data:
+  caddy_config:
