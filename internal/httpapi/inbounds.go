@@ -112,35 +112,46 @@ func (h *Handler) handleListInboundsDetailed(c *gin.Context) {
 }
 
 // handleDeleteInbound implements DELETE /api/inbounds/:tag (sudo only).
-// Cascades to that inbound's hosts/exclusions/template-associations at the
-// DB level (see DeleteInboundByTag's own doc comment) - nothing here needs
-// to clean those up itself, only the caches that would otherwise keep
-// serving the deleted tag until their TTL.
 func (h *Handler) handleDeleteInbound(c *gin.Context) {
 	tag := c.Param("tag")
 	ctx := c.Request.Context()
 
-	inbound, err := h.store.Queries.GetInboundByTag(ctx, tag)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "Inbound not found"})
-		return
-	}
-	if err := h.store.Queries.DeleteInboundByTag(ctx, tag); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete inbound"})
-		return
-	}
-	if err := h.store.InvalidateInbound(ctx, tag, inbound.Protocol, nil); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate inbound cache"})
-		return
-	}
-	if err := h.store.InvalidateHosts(ctx, tag); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate host cache"})
+	if err := h.deleteInboundByTag(ctx, tag); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"detail": "Inbound not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"detail": "Inbound removed successfully"})
+}
+
+// deleteInboundByTag is the real work behind DELETE /api/inbounds/:tag:
+// remove the row (cascades to that inbound's hosts/exclusions/template-
+// associations at the DB level, see DeleteInboundByTag's own doc comment)
+// and invalidate the caches that would otherwise keep serving it until
+// their TTL. Deliberately does NOT invalidate the node-config cache itself
+// - callers that delete several tags in one pass (handleUpdateXrayConfig)
+// only need to pay that one cost once, after the whole batch, not per tag.
+func (h *Handler) deleteInboundByTag(ctx context.Context, tag string) error {
+	inbound, err := h.store.Queries.GetInboundByTag(ctx, tag)
+	if err != nil {
+		return err
+	}
+	if err := h.store.Queries.DeleteInboundByTag(ctx, tag); err != nil {
+		return fmt.Errorf("could not delete inbound %s: %w", tag, err)
+	}
+	if err := h.store.InvalidateInbound(ctx, tag, inbound.Protocol, nil); err != nil {
+		return fmt.Errorf("could not invalidate inbound cache for %s: %w", tag, err)
+	}
+	if err := h.store.InvalidateHosts(ctx, tag); err != nil {
+		return fmt.Errorf("could not invalidate host cache for %s: %w", tag, err)
+	}
+	return nil
 }
 
 type inboundSyncEntry struct {

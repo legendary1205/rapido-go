@@ -132,6 +132,8 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 		api.GET("/settings/core-config", requireSudo, h.handleGetCoreConfig)
 		api.PUT("/settings/core-config", requireSudo, h.handleUpdateCoreConfig)
+		api.GET("/settings/xray-config", requireSudo, h.handleGetXrayConfig)
+		api.PUT("/settings/xray-config", requireSudo, h.handleUpdateXrayConfig)
 
 		api.GET("/settings/backup", requireSudo, h.handleListBackups)
 		api.POST("/settings/backup", requireSudo, h.handleCreateBackup)

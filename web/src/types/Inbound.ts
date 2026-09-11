@@ -5,23 +5,22 @@
 // key fact #3, this makes inbound selection simpler than before: there is no
 // per-inbound metadata to display, only tags to check off. Still used as-is
 // by InboundsPicker.tsx (Users/User Templates forms) and by the KirBot
-// filtering logic server-side - InboundsAdmin.tsx's own management page uses
-// the richer Inbound/InboundCreatePayload shapes below instead, from the
-// separate GET /api/inbounds/detail endpoint.
+// filtering logic server-side - the richer Inbound/InboundSyncEntry shapes
+// below are what the merged Xray Config page (rapido-ui/XrayConfigAdmin.tsx,
+// via types/XrayConfig.ts) works with instead.
 export type InboundsByProtocol = Record<string, string[]>;
 
 export type InboundNetwork = "tcp" | "ws" | "grpc" | "kcp" | "quic" | "splithttp" | "xhttp";
 export type InboundSecurity = "none" | "tls" | "reality";
 
 // Mirrors internal/httpapi/inbounds.go's inboundDetailDTO - the full-fidelity
-// shape GET /api/inbounds/detail returns, as opposed to the plain tag list
-// above. reality_* fields are only meaningful (and only ever set) when
-// security is "reality"; tls_* only when security is "tls" - a real
-// customer-facing certificate/key pair, NOT the panel's own node-mTLS CA.
-// An inbound with security "tls" and no tls_certificate/tls_key yet is
-// valid but stays out of automatic node sync (see
-// ListAutoSyncInbounds's own doc comment) - InboundsAdmin.tsx surfaces
-// this with a warning rather than letting it look silently broken.
+// shape the merged xray-config document carries its inbounds in, as opposed
+// to the plain tag list above. reality_* fields are only meaningful (and
+// only ever set) when security is "reality"; tls_* only when security is
+// "tls" - a real customer-facing certificate/key pair, NOT the panel's own
+// node-mTLS CA. An inbound with security "tls" and no tls_certificate/
+// tls_key yet is valid but stays out of automatic node sync (see
+// ListAutoSyncInbounds's own doc comment).
 export type Inbound = {
   tag: string;
   protocol: string;

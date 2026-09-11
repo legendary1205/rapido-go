@@ -14,7 +14,6 @@ import {
   ChartBarIcon,
   Cog6ToothIcon,
   CircleStackIcon,
-  Squares2X2Icon,
   ArrowsRightLeftIcon,
 } from "@heroicons/react/24/outline";
 import { ReactComponent as Logo } from "assets/logo.svg";
@@ -44,20 +43,22 @@ const NavLink: FC<{ href: string; active?: boolean; icon: FC<{ className?: strin
   </Link>
 );
 
-// This phase's whole page list. Core Config (the sing-box engine's own
-// settings - log level, sniffing, outbounds, routing rules, DNS) is a
-// genuinely new, structured page, not a port of the old dashboard's raw-JSON
-// CoreSettings.tsx - that shape doesn't exist here at all since the engine
-// changed from Xray to sing-box. Nodes and Monitoring used to be the "still
-// missing" page too (node-side reporting hadn't landed yet); both now have
-// real Go-backed pages (internal/httpapi/node.go,
-// internal/httpapi/monitoring.go), same as Core Config now has
-// internal/httpapi/coreconfig.go.
+// This phase's whole page list. "coreConfig" (the nav key/route stayed
+// this name for stability, see CoreConfigPage.tsx's own comment) is the
+// merged Xray/sing-box config page - log level, sniffing, outbounds,
+// routing rules, DNS, AND inbounds all as one JSON document, plus the
+// Hosts admin embedded directly below it - not a port of the old
+// dashboard's raw-JSON CoreSettings.tsx (that shape doesn't exist here at
+// all, the engine changed from Xray to sing-box) and no longer split
+// across a separate "Inbounds" nav item either (see
+// rapido-ui/XrayConfigAdmin.tsx). Nodes and Monitoring used to be the
+// "still missing" pages too (node-side reporting hadn't landed yet); both
+// now have real Go-backed pages (internal/httpapi/node.go,
+// internal/httpapi/monitoring.go).
 export type RapidoNavKey =
   | "overview"
   | "users"
   | "tickets"
-  | "inbounds"
   | "hosts"
   | "coreConfig"
   | "nodes"
@@ -81,18 +82,13 @@ const NAV_ITEMS: {
   // requireSudo - a reseller answers their own customers' tickets, and the
   // backend already scopes the list to the users they own.
   { key: "tickets", href: "/tickets/", labelKey: "rapido.tickets.nav", icon: TicketIcon },
-  {
-    key: "inbounds",
-    href: "/inbounds/",
-    labelKey: "rapido.inbounds.nav",
-    icon: Squares2X2Icon,
-    sudoOnly: true,
-  },
   { key: "hosts", href: "/hosts/", labelKey: "rapido.hosts.nav", icon: GlobeAltIcon, sudoOnly: true },
   {
+    // Formerly two nav items (Inbounds, Core Config) - merged into one, see
+    // rapido-ui/XrayConfigAdmin.tsx's own doc comment.
     key: "coreConfig",
     href: "/core-config/",
-    labelKey: "rapido.coreConfig.nav",
+    labelKey: "rapido.xrayConfig.nav",
     icon: Cog6ToothIcon,
     sudoOnly: true,
   },
