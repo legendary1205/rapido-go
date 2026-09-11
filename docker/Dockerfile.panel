@@ -1,0 +1,52 @@
+# Rapido-Go panel image - builds the dashboard and the panel binary (plus
+# goose, for the docker-compose "migrate" service to reuse this same image
+# rather than needing a second one), then a small runtime layer with none
+# of the build toolchain in it.
+#
+# Built and pushed automatically by .github/workflows/docker-publish.yml -
+# not meant to be built by hand on a target server; see the root
+# docker-compose.prod.yml, which just pulls ghcr.io/<owner>/rapido-go-panel.
+
+# --- dashboard -------------------------------------------------------------
+FROM node:18-alpine AS dashboard
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# --- goose (migration tool) - its own stage, unrelated to this module's
+# go.mod/go.sum, since it's a standalone CLI tool, not an import of the
+# project's own code -----------------------------------------------------------
+FROM golang:1.27-alpine AS goose
+RUN CGO_ENABLED=0 go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
+
+# --- sqlc (query code generator) - same reasoning as goose above -----------------
+FROM golang:1.27-alpine AS sqlc
+RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+
+# --- go binary -----------------------------------------------------------------
+# internal/db/generated/ is gitignored (sqlc-generated, regenerated from
+# internal/db/queries/*.sql - see sqlc.yaml) rather than committed, so it
+# has to be generated here before `go build` can see those packages at all.
+FROM golang:1.27-alpine AS gobuild
+WORKDIR /src
+COPY --from=sqlc /go/bin/sqlc /usr/local/bin/sqlc
+COPY go.mod go.sum ./
+RUN go mod download
+COPY sqlc.yaml ./
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN sqlc generate
+RUN CGO_ENABLED=0 go build -o /out/panel ./cmd/panel
+
+# --- runtime -------------------------------------------------------------------
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=gobuild /out/panel ./panel
+COPY --from=goose /go/bin/goose /usr/local/bin/goose
+COPY internal/db/migrations ./internal/db/migrations
+COPY --from=dashboard /src/web/dist ./web/dist
+EXPOSE 8000 8001
+ENTRYPOINT ["./panel"]

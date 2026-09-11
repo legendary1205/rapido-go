@@ -1,0 +1,17 @@
+# Rapido-Go node agent image. Built and pushed automatically by
+# .github/workflows/docker-publish.yml - see docker-compose.node.yml, which
+# just pulls ghcr.io/<owner>/rapido-go-node.
+
+FROM golang:1.27-alpine AS gobuild
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN CGO_ENABLED=0 go build -o /out/rapido-node ./cmd/node
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=gobuild /out/rapido-node /usr/local/bin/rapido-node
+EXPOSE 62051
+ENTRYPOINT ["/usr/local/bin/rapido-node"]

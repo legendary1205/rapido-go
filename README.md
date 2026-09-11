@@ -52,408 +52,241 @@ A node is never dialed directly by the panel; it always calls out (usage push, c
 
 ### Quick install
 
-Both installers target a fresh **Ubuntu/Debian** server, run as root, and build the project from source (there is no binary release yet). They are safe to re-run - a second run rebuilds and restarts the service, doubling as an upgrade path.
+Docker only - no `git clone`, no shell script to inspect and run, no local build toolchain. Both the panel and the node ship as pre-built images, published automatically to GHCR (`ghcr.io`) by [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) on every push to `master`. Installing means: copy two small files onto the server, fill in a couple of values, `docker compose up -d`.
 
-> **This repository is private.** `git clone https://github.com/legendary1205/rapido-go.git` on a fresh server needs credentials - either run the clone step over SSH with a deploy key already added to the server (`git@github.com:legendary1205/rapido-go.git`), or authenticate the HTTPS clone with a personal access token first (`git clone https://<token>@github.com/legendary1205/rapido-go.git`). The install scripts themselves don't handle authentication - that has to be in place before you run them.
+> **The images are private** (same visibility as this repository). Before the first `docker compose up`, authenticate once: `echo <a GitHub token with read:packages scope> | docker login ghcr.io -u <your-github-username> --password-stdin`.
 
 #### 1. Install the panel
 
-On the server that will run the panel (PostgreSQL + Redis included, via Docker Compose):
+On the server that will run the panel:
 
-```bash
-git clone https://github.com/legendary1205/rapido-go.git
-cd rapido-go
-sudo ./scripts/install-panel.sh
-```
+1. Create a directory, e.g. `mkdir rapido-panel && cd rapido-panel`.
+2. Save [`docker-compose.prod.yml`](docker-compose.prod.yml) there as `docker-compose.yml` (copy its contents from the repo - the full file is also below).
+3. Save [`.env.prod.example`](.env.prod.example) there as `.env` and fill in `POSTGRES_PASSWORD` and `SUDO_PASSWORD` at minimum.
+4. `docker compose up -d`
 
-This installs Docker, Go, Node.js (only needed to build the dashboard), starts Postgres/Redis, applies database migrations, builds the panel binary and the dashboard, and installs two systemd services: `rapido-go-panel` (api role, port 8000) and `rapido-go-backend` (backend role, port 8001, internal only).
-
-At the end it prints a one-time **bootstrap login** - see below.
+That's it - Postgres, Redis, database migrations, and both the `api` and `backend` roles come up together. The `SUDO_USERNAME`/`SUDO_PASSWORD` you set in `.env` is the **bootstrap login** - see below.
 
 <details>
-<summary>What the script does, step by step (click to expand)</summary>
+<summary><code>docker-compose.yml</code> (click to expand)</summary>
 
-```bash
-#!/usr/bin/env bash
-# Rapido-Go panel installer - Ubuntu/Debian, run as root.
-# Sets up Postgres+Redis (Docker Compose), builds the panel from source,
-# applies migrations, builds the dashboard, and installs two systemd
-# services (api role + backend role), matching the exact process shape
-# this project runs everywhere else: one stateless "api" replica-shaped
-# process and one "backend" singleton that owns background jobs/node
-# reporting (see cmd/panel/main.go's own top-of-file doc comment).
+```yaml
+# Full Rapido-Go panel stack, pre-built images only - no git, no local
+# build, no shell script. Copy this file (and .env.prod.example as .env)
+# to the server, fill in .env, then:
 #
-# Usage:
-#   sudo ./scripts/install-panel.sh
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
 #
-# Re-running is safe: Docker Compose, goose, and this script's own steps
-# are all idempotent - a second run just confirms everything's already in
-# place and restarts the services with whatever changed.
+# This is separate from the root docker-compose.yml on purpose: that one
+# is for local development (just Postgres+Redis, so `go run ./cmd/panel`
+# can run against them with your own code) - mixing pre-built panel/backend
+# containers into that file would fight a locally-run dev process for the
+# same ports.
+#
+# Images are published privately to ghcr.io by .github/workflows/
+# docker-publish.yml on every push to master - `docker login ghcr.io`
+# with a token that has at least `read:packages` scope before pulling,
+# same as any other private GitHub Container Registry image.
 
-set -euo pipefail
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rapido
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rapido}
+      POSTGRES_DB: rapido
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rapido"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/rapido-go}"
-REPO_URL="${REPO_URL:-https://github.com/legendary1205/rapido-go.git}"
-GO_VERSION="1.27.0"
-NODE_MAJOR="18"
-DB_URL="postgres://rapido:rapido@127.0.0.1:5432/rapido?sslmode=disable"
-REDIS_ADDR="127.0.0.1:6379"
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-log() { echo -e "\033[1;36m==>\033[0m $*"; }
-die() { echo -e "\033[1;31mERROR:\033[0m $*" >&2; exit 1; }
+  # Applies pending migrations and exits - panel/backend wait for this to
+  # finish successfully before they start, so a fresh `up -d` always comes
+  # up against an up-to-date schema with no separate manual step.
+  migrate:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["goose", "-dir", "/app/internal/db/migrations", "postgres"]
+    command: ["postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable", "up"]
+    restart: "no"
 
-[ "$(id -u)" -eq 0 ] || die "run this script as root (sudo ./install-panel.sh)"
+  panel:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "${PANEL_PORT:-8000}:8000"
+    environment:
+      ROLE: api
+      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
+      REDIS_ADDR: redis:6379
+      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
+      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
 
-# --- 1. OS packages -----------------------------------------------------
-log "Installing base packages (docker, git, curl, build tools)..."
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl git gnupg build-essential >/dev/null
+  backend:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # No published port - this role is not meant to receive traffic
+    # directly, only the "api" role above is (see the README's
+    # architecture section on why there are two roles at all).
+    environment:
+      ROLE: backend
+      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
+      REDIS_ADDR: redis:6379
+      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
+      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
+      PUBLIC_IP: ${PUBLIC_IP:-}
 
-if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-  log "Installing Docker Engine + Compose plugin..."
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
-  . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
-  systemctl enable --now docker >/dev/null
-fi
-
-# --- 2. Go toolchain ------------------------------------------------------
-if ! command -v go >/dev/null 2>&1 || [ "$(go env GOVERSION 2>/dev/null)" != "go${GO_VERSION}" ]; then
-  log "Installing Go ${GO_VERSION}..."
-  ARCH=$(dpkg --print-architecture)
-  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz
-  rm -rf /usr/local/go
-  tar -C /usr/local -xzf /tmp/go.tar.gz
-  rm /tmp/go.tar.gz
-  ln -sf /usr/local/go/bin/go /usr/local/bin/go
-  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-fi
-export PATH="/usr/local/go/bin:$PATH"
-
-# --- 3. Node.js (for building the dashboard) -------------------------------
-if ! command -v node >/dev/null 2>&1; then
-  log "Installing Node.js ${NODE_MAJOR}.x..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null
-  apt-get install -y -qq nodejs >/dev/null
-fi
-
-# --- 4. Fetch source --------------------------------------------------------
-if [ ! -d "$INSTALL_DIR/.git" ]; then
-  log "Cloning rapido-go into $INSTALL_DIR..."
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-else
-  log "Updating existing checkout at $INSTALL_DIR..."
-  git -C "$INSTALL_DIR" pull --ff-only
-fi
-cd "$INSTALL_DIR"
-
-# --- 5. Postgres + Redis (Docker Compose) -----------------------------------
-log "Starting Postgres + Redis..."
-docker compose up -d
-log "Waiting for Postgres to accept connections..."
-for i in $(seq 1 30); do
-  docker compose exec -T postgres pg_isready -U rapido >/dev/null 2>&1 && break
-  sleep 1
-  [ "$i" -eq 30 ] && die "Postgres did not become ready in time"
-done
-
-# --- 6. Migrations -----------------------------------------------------------
-if ! command -v goose >/dev/null 2>&1; then
-  log "Installing goose (migration tool)..."
-  go install github.com/pressly/goose/v3/cmd/goose@latest
-  export PATH="$(go env GOPATH)/bin:$PATH"
-fi
-log "Applying database migrations..."
-goose -dir internal/db/migrations postgres "$DB_URL" up
-
-# --- 7. Build the panel binary ------------------------------------------------
-log "Building the panel binary..."
-go build -o "$INSTALL_DIR/panel" ./cmd/panel
-
-# --- 8. Build the dashboard ----------------------------------------------------
-log "Building the dashboard (this can take a minute)..."
-( cd web && npm ci --silent && npm run build --silent )
-
-# --- 9. Bootstrap sudo admin credentials ----------------------------------------
-# There is no way to create the first admin except this env-var "break-glass"
-# login (internal/httpapi/admin.go's handleLogin checks it before ever
-# touching the admins table) - generate one if the operator didn't set
-# RAPIDO_SUDO_USERNAME/RAPIDO_SUDO_PASSWORD themselves.
-SUDO_USERNAME="${RAPIDO_SUDO_USERNAME:-admin}"
-if [ -z "${RAPIDO_SUDO_PASSWORD:-}" ]; then
-  SUDO_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
-else
-  SUDO_PASSWORD="$RAPIDO_SUDO_PASSWORD"
-fi
-
-mkdir -p "$INSTALL_DIR/db_backups"
-
-# --- 10. systemd units -----------------------------------------------------------
-log "Installing systemd services..."
-PUBLIC_IP="${RAPIDO_PUBLIC_IP:-$(curl -fsSL -4 ifconfig.me || echo "")}"
-
-cat > /etc/systemd/system/rapido-go-panel.service <<EOF
-[Unit]
-Description=Rapido Go Panel (api role)
-After=network.target docker.service
-
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/panel
-Restart=on-failure
-Environment=ROLE=api
-Environment=UVICORN_HOST=0.0.0.0
-Environment=UVICORN_PORT=8000
-Environment=DATABASE_URL=$DB_URL
-Environment=REDIS_ADDR=$REDIS_ADDR
-Environment=SUDO_USERNAME=$SUDO_USERNAME
-Environment=SUDO_PASSWORD=$SUDO_PASSWORD
-Environment=DASHBOARD_DIR=$INSTALL_DIR/web/dist
-Environment=BACKUP_DIR=$INSTALL_DIR/db_backups
-Environment=PUBLIC_IP=$PUBLIC_IP
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat > /etc/systemd/system/rapido-go-backend.service <<EOF
-[Unit]
-Description=Rapido Go Panel (backend role - background jobs singleton)
-After=network.target docker.service
-
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/panel
-Restart=on-failure
-Environment=ROLE=backend
-Environment=UVICORN_HOST=0.0.0.0
-Environment=UVICORN_PORT=8001
-Environment=DATABASE_URL=$DB_URL
-Environment=REDIS_ADDR=$REDIS_ADDR
-Environment=SUDO_USERNAME=$SUDO_USERNAME
-Environment=SUDO_PASSWORD=$SUDO_PASSWORD
-Environment=DASHBOARD_DIR=$INSTALL_DIR/web/dist
-Environment=BACKUP_DIR=$INSTALL_DIR/db_backups
-Environment=PUBLIC_IP=$PUBLIC_IP
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable rapido-go-panel rapido-go-backend
-# restart, not just "enable --now": a re-run of this script rebuilds the
-# binary/dashboard above, and enable --now is a no-op for a service that's
-# already active - restart is what actually makes a re-run double as an
-# upgrade mechanism, not just a first-install one.
-systemctl restart rapido-go-panel rapido-go-backend
-
-# --- 11. Health check -----------------------------------------------------------
-log "Waiting for the panel to come up..."
-for i in $(seq 1 15); do
-  curl -fsS -o /dev/null http://127.0.0.1:8000/dashboard/ 2>/dev/null && break
-  sleep 1
-  [ "$i" -eq 15 ] && die "panel did not respond on :8000 - check: journalctl -u rapido-go-panel -n 50"
-done
-
-echo
-echo "=========================================================="
-echo " Rapido-Go panel installed."
-echo "=========================================================="
-echo " Dashboard:      http://$PUBLIC_IP:8000/dashboard/"
-echo " Bootstrap login: $SUDO_USERNAME / $SUDO_PASSWORD"
-echo
-echo " This login is an env-var \"break-glass\" account, not a real"
-echo " admin row in the database - log in with it once, create a"
-echo " real sudo admin from the Admins page, then either leave the"
-echo " break-glass login as an emergency fallback or clear"
-echo " SUDO_PASSWORD in both systemd unit files if you don't want it."
-echo "=========================================================="
+volumes:
+  postgres_data:
+  redis_data:
 ```
 
 </details>
 
-Full script: [`scripts/install-panel.sh`](scripts/install-panel.sh).
+<details>
+<summary><code>.env</code> (click to expand)</summary>
+
+```bash
+# Copy this file to .env next to docker-compose.prod.yml and fill it in,
+# then: docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+# A real password for the Postgres container - the "rapido" default only
+# exists for local development, change it for anything reachable from the
+# internet.
+POSTGRES_PASSWORD=change-me
+
+# The one-time bootstrap admin login (checked in-memory before the admins
+# table is ever queried, so there is always a way in from an empty
+# database - see the README's "First login" section). Log in with this
+# once, create a real sudo admin from the dashboard, then consider
+# rotating this value or removing it from .env afterward.
+SUDO_USERNAME=admin
+SUDO_PASSWORD=change-me
+
+# This server's public IP - feeds the {SERVER_IP} subscription remark
+# placeholder. Leave blank if you don't use that placeholder.
+PUBLIC_IP=
+
+# Port the dashboard/API is published on (host side).
+PANEL_PORT=8000
+
+# Comma-separated CORS allow-list. "*" is fine to start; lock this down
+# for a real deployment.
+ALLOWED_ORIGINS=*
+```
+
+</details>
 
 #### 2. First login
 
-The install script prints a **bootstrap login** (`SUDO_USERNAME`/`SUDO_PASSWORD`, set as plain systemd `Environment=` lines). This is not a database row - it's checked in-memory before the `admins` table is ever queried, specifically so there's always a way in even from a completely empty database. Use it once to:
+`SUDO_USERNAME`/`SUDO_PASSWORD` from `.env` is a **bootstrap login** - not a database row, checked in-memory before the `admins` table is ever queried, specifically so there's always a way in even from a completely empty database. Use it once to:
 
 1. Log in at `http://<server>:8000/dashboard/`.
 2. Create a real sudo admin from the **Admins** page.
-3. Optionally clear `SUDO_PASSWORD` in both `/etc/systemd/system/rapido-go-panel.service` and `rapido-go-backend.service` (then `systemctl daemon-reload && systemctl restart rapido-go-panel rapido-go-backend`) if you don't want the break-glass login to keep working.
+3. Optionally rotate `SUDO_PASSWORD` in `.env` and `docker compose up -d` again if you don't want the break-glass login to keep working with its original value.
 
 #### 3. Add and install a node
 
 1. In the dashboard, go to **Nodes → Add Node**, give it a name and address, save.
 2. The one-time reveal panel shows a single **setup_blob** value (base64) - this bundles the node's certificate, private key, the panel's CA, and its report secret together. Copy it now; it is never shown again.
 3. On the node server:
-
-```bash
-git clone https://github.com/legendary1205/rapido-go.git
-cd rapido-go
-sudo ./scripts/install-node.sh
-# paste the setup_blob when prompted, then pick a listen port (default 0.0.0.0:62051)
-```
-
-or fully non-interactively:
-
-```bash
-sudo NODE_SETUP_BLOB='<paste the blob here>' ./scripts/install-node.sh
-```
+   1. Create a directory, e.g. `mkdir rapido-node && cd rapido-node`.
+   2. Save [`docker-compose.node.yml`](docker-compose.node.yml) there as `docker-compose.yml`.
+   3. Save [`.env.node.example`](.env.node.example) there as `.env`, paste the setup_blob into `NODE_SETUP_BLOB`.
+   4. `docker compose up -d`
 
 <details>
-<summary>What the script does, step by step (click to expand)</summary>
+<summary><code>docker-compose.yml</code> (node, click to expand)</summary>
 
-```bash
-#!/usr/bin/env bash
-# Rapido-Go node installer - Ubuntu/Debian, run as root.
-# Builds the node agent from source and installs it as a systemd service,
-# provisioned from ONE pasted value (setup_blob) - the base64 bundle the
-# panel's "Add Node" screen returns, containing this node's cert/key, the
-# panel's CA, and its report secret together. No separate cert files, no
-# hand-editing multiple env vars: paste the blob, pick a port, done.
+```yaml
+# Rapido-Go node agent, pre-built image. Copy this file (and
+# .env.node.example as .env) to the node server, fill in NODE_SETUP_BLOB
+# from the panel's Add Node screen, then:
 #
-# Usage:
-#   sudo ./scripts/install-node.sh
-#   (it will prompt you to paste the setup_blob)
+#   docker compose -f docker-compose.node.yml --env-file .env up -d
 #
-# or non-interactively:
-#   sudo NODE_SETUP_BLOB='<blob from the panel>' ./scripts/install-node.sh
+# `docker login ghcr.io` first if the image is private - see
+# docker-compose.prod.yml's own top-of-file comment.
 
-set -euo pipefail
+services:
+  node:
+    image: ${RAPIDO_NODE_IMAGE:-ghcr.io/legendary1205/rapido-go-node}:${RAPIDO_NODE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${NODE_PORT:-62051}:62051"
+    environment:
+      NODE_LISTEN_ADDR: 0.0.0.0:62051
+      # Only needed on the very first `up` - the container writes
+      # cert/key/ca into the named volume below and never reads this
+      # again afterward. Required for a genuinely fresh volume (the node
+      # process itself refuses to start with no blob AND no existing
+      # on-disk cert - a clear error in its own logs either way); safe to
+      # blank out in .env on a later `up` once the volume already has
+      # certs in it.
+      NODE_SETUP_BLOB: ${NODE_SETUP_BLOB:-}
+    volumes:
+      - node_certs:/etc/rapido-node
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/rapido-node}"
-REPO_URL="${REPO_URL:-https://github.com/legendary1205/rapido-go.git}"
-GO_VERSION="1.27.0"
-
-log() { echo -e "\033[1;36m==>\033[0m $*"; }
-die() { echo -e "\033[1;31mERROR:\033[0m $*" >&2; exit 1; }
-
-[ "$(id -u)" -eq 0 ] || die "run this script as root (sudo ./install-node.sh)"
-
-# --- 1. setup_blob ------------------------------------------------------------
-# A setup_blob is only shown ONCE by the panel, at node-creation time - if
-# this box was already provisioned by a previous run of this script (its
-# cert/key/ca already on disk) and NODE_SETUP_BLOB isn't explicitly given
-# again, skip straight to rebuilding/restarting: re-pasting isn't possible
-# (the operator likely doesn't have it anymore) and isn't needed either,
-# since the node binary falls back to the existing on-disk files.
-ALREADY_PROVISIONED=false
-if [ -f /etc/rapido-node/cert.pem ] && [ -z "${NODE_SETUP_BLOB:-}" ]; then
-  ALREADY_PROVISIONED=true
-  log "Existing cert/key/ca found at /etc/rapido-node/ - treating this as an upgrade, not a fresh provision. Set NODE_SETUP_BLOB to force re-provisioning."
-elif [ -z "${NODE_SETUP_BLOB:-}" ]; then
-  if [ -t 0 ]; then
-    echo "Paste the setup_blob shown when you created this node in the Rapido"
-    echo "dashboard (Nodes -> Add Node -> the one-time reveal panel), then"
-    echo "press Enter:"
-    read -r NODE_SETUP_BLOB
-  fi
-  [ -n "${NODE_SETUP_BLOB:-}" ] || die "no setup_blob given and none already provisioned - nothing to provision this node with. Re-run with NODE_SETUP_BLOB='<blob>' set."
-fi
-
-if [ -t 0 ]; then
-  read -rp "Listen address for this node [0.0.0.0:62051]: " LISTEN_ADDR
-fi
-LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:62051}"
-
-# --- 2. OS packages -----------------------------------------------------------
-log "Installing base packages..."
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl git build-essential >/dev/null
-
-# --- 3. Go toolchain -----------------------------------------------------------
-if ! command -v go >/dev/null 2>&1 || [ "$(go env GOVERSION 2>/dev/null)" != "go${GO_VERSION}" ]; then
-  log "Installing Go ${GO_VERSION}..."
-  ARCH=$(dpkg --print-architecture)
-  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz
-  rm -rf /usr/local/go
-  tar -C /usr/local -xzf /tmp/go.tar.gz
-  rm /tmp/go.tar.gz
-  ln -sf /usr/local/go/bin/go /usr/local/bin/go
-fi
-export PATH="/usr/local/go/bin:$PATH"
-
-# --- 4. Fetch source ------------------------------------------------------------
-if [ ! -d "$INSTALL_DIR/.git" ]; then
-  log "Cloning rapido-go into $INSTALL_DIR..."
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-else
-  log "Updating existing checkout at $INSTALL_DIR..."
-  git -C "$INSTALL_DIR" pull --ff-only
-fi
-cd "$INSTALL_DIR"
-
-# --- 5. Build the node binary -----------------------------------------------------
-log "Building the node binary..."
-go build -o /usr/local/bin/rapido-node ./cmd/node
-
-# --- 6. systemd unit ---------------------------------------------------------------
-log "Installing the systemd service..."
-SETUP_BLOB_LINE=""
-if [ "$ALREADY_PROVISIONED" = false ]; then
-  SETUP_BLOB_LINE="Environment=NODE_SETUP_BLOB=$NODE_SETUP_BLOB"
-fi
-cat > /etc/systemd/system/rapido-node.service <<EOF
-[Unit]
-Description=Rapido Go Node Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/rapido-node
-Restart=on-failure
-Environment=NODE_LISTEN_ADDR=$LISTEN_ADDR
-$SETUP_BLOB_LINE
-
-[Install]
-WantedBy=multi-user.target
-EOF
-# NODE_SETUP_BLOB (when present at all) is only ever needed on the very
-# first boot - it writes cert/key/ca to /etc/rapido-node/ and is never read
-# again - but the unit file is kept root-only regardless, same as any other
-# secret-bearing unit on this box.
-chmod 600 /etc/systemd/system/rapido-node.service
-
-systemctl daemon-reload
-systemctl enable rapido-node
-# restart, not just "enable --now": a re-run rebuilds the binary above, and
-# enable --now is a no-op for a service that's already active.
-systemctl restart rapido-node
-
-# --- 7. Health check -----------------------------------------------------------------
-log "Checking the node started..."
-sleep 2
-if ! systemctl is-active --quiet rapido-node; then
-  echo
-  journalctl -u rapido-node -n 30 --no-pager
-  die "rapido-node failed to start - see the log above"
-fi
-
-echo
-echo "=========================================================="
-echo " Rapido-Go node installed and running on $LISTEN_ADDR"
-echo " Certificate/key/CA written to: /etc/rapido-node/"
-echo " (override with NODE_CERT_FILE/NODE_KEY_FILE/NODE_CA_FILE"
-echo " env vars in the unit file if you need a different path)"
-echo " Check status any time with: systemctl status rapido-node"
-echo "=========================================================="
+volumes:
+  node_certs:
 ```
 
 </details>
 
-Full script: [`scripts/install-node.sh`](scripts/install-node.sh).
+<details>
+<summary><code>.env</code> (node, click to expand)</summary>
+
+```bash
+# Copy this file to .env next to docker-compose.node.yml and fill it in,
+# then: docker compose -f docker-compose.node.yml --env-file .env up -d
+
+# Paste the setup_blob shown once when you create this node in the panel's
+# dashboard (Nodes -> Add Node -> the one-time reveal panel). Only needed
+# for the very first `up` against a fresh volume - see docker-compose.node.yml's
+# own comment.
+NODE_SETUP_BLOB=
+
+# Host port to publish the node's control API on.
+NODE_PORT=62051
+```
+
+</details>
 
 4. Back in the dashboard, the node's status flips to **Connected** once its first push arrives (a few seconds).
 5. Create an inbound (e.g. VLESS) and a host under **Hosts** - the node picks up the new config on its next poll (also a few seconds), no restart needed.
+
+#### Upgrading
+
+Pull the newer image and recreate: `docker compose pull && docker compose up -d` (panel) or the same against `docker-compose.node.yml` (node) - the `migrate` service re-applies any new migrations automatically before `panel`/`backend` start.
 
 ### Configuration reference
 
@@ -531,7 +364,10 @@ internal/reviewjob/   background user status/expiry state machine
 internal/hostmetrics/ CPU/mem/disk/network sampling (panel self + nodes)
 internal/*settings, telegram, discord, kirbot, report/  integrations
 web/                  the dashboard (React/Vite/Tailwind)
-scripts/               install-panel.sh, install-node.sh
+docker/                Dockerfile.panel, Dockerfile.node
+docker-compose.yml     local dev only (Postgres+Redis)
+docker-compose.prod.yml, docker-compose.node.yml   production images, see Quick install
+.github/workflows/     CI - builds and publishes both images to GHCR
 ```
 
 ### Subscription formats
@@ -592,57 +428,45 @@ Rapido-Go یک بازنویسی کامل و از صفر یک پنل VPN ری‌�
 
 ### نصب سریع
 
-هر دو اسکریپت نصب برای یک سرور تازه‌ی **اوبونتو/دبیان** طراحی شدن، به‌عنوان root اجرا می‌شن، و پروژه رو از سورس می‌سازن (فعلاً باینری آماده‌ای منتشر نشده). اجرای دوباره‌شون بی‌خطره - هر بار دوباره build و restart می‌کنن، یعنی برای آپدیت هم قابل استفاده‌ان.
+فقط داکر - نه `git clone`ای، نه اسکریپتی که لازم باشه بررسی و اجراش کنید، نه ابزار build محلی. هم پنل هم نود به‌صورت ایمیج آماده منتشر می‌شن، خودکار به‌وسیله‌ی [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) روی هر push به `master` توی GHCR (`ghcr.io`) ساخته و push می‌شن. نصب یعنی: دو تا فایل کوچیک رو روی سرور کپی کنید، چند مقدار پر کنید، `docker compose up -d`.
 
-> **این ریپو خصوصیه.** اجرای `git clone https://github.com/legendary1205/rapido-go.git` روی یک سرور تازه به احراز هویت نیاز داره - یا clone رو از طریق SSH با یک deploy key از قبل اضافه‌شده به سرور انجام بدید (`git@github.com:legendary1205/rapido-go.git`)، یا clone روی HTTPS رو با یک personal access token احراز هویت کنید (`git clone https://<token>@github.com/legendary1205/rapido-go.git`). خود اسکریپت‌های نصب احراز هویت رو مدیریت نمی‌کنن - باید قبل از اجرای اون‌ها آماده باشه.
+> **ایمیج‌ها خصوصی‌ان** (همون سطح دسترسی این ریپو). قبل از اولین `docker compose up`، یک‌بار احراز هویت کنید: `echo <یک توکن گیت‌هاب با اسکوپ read:packages> | docker login ghcr.io -u <یوزرنیم گیت‌هابتون> --password-stdin`.
 
 #### ۱. نصب پنل
 
-روی سروری که قراره پنل روش اجرا بشه (Postgres + Redis هم از طریق Docker Compose نصب می‌شن):
+روی سروری که قراره پنل روش اجرا بشه:
 
-```bash
-git clone https://github.com/legendary1205/rapido-go.git
-cd rapido-go
-sudo ./scripts/install-panel.sh
-```
+۱. یک پوشه بسازید، مثلاً `mkdir rapido-panel && cd rapido-panel`.
+۲. محتوای [`docker-compose.prod.yml`](docker-compose.prod.yml) رو اونجا با اسم `docker-compose.yml` ذخیره کنید (محتوای کامل فایل توی بخش انگلیسی بالا هم هست).
+۳. محتوای [`.env.prod.example`](.env.prod.example) رو اونجا با اسم `.env` ذخیره کنید و حداقل `POSTGRES_PASSWORD` و `SUDO_PASSWORD` رو پر کنید.
+۴. `docker compose up -d`
 
-این اسکریپت Docker، Go، Node.js (فقط برای build داشبورد لازمه)، Postgres/Redis رو نصب و اجرا می‌کنه، migration های دیتابیس رو اعمال می‌کنه، باینری پنل و داشبورد رو می‌سازه، و دو سرویس systemd نصب می‌کنه: `rapido-go-panel` (نقش api، پورت ۸۰۰۰) و `rapido-go-backend` (نقش backend، پورت ۸۰۰۱، فقط داخلی).
-
-در پایان یک **لاگین بوت‌استرپ یک‌بار مصرف** چاپ می‌کنه - در ادامه توضیح داده شده.
-
-محتوای کامل اسکریپت: [`scripts/install-panel.sh`](scripts/install-panel.sh) (همون فایلی که در بخش انگلیسی بالا هم به‌طور کامل نشون داده شده).
+همین. Postgres، Redis، migration های دیتابیس، و هر دو نقش `api` و `backend` با هم بالا میان. مقدار `SUDO_USERNAME`/`SUDO_PASSWORD` که توی `.env` گذاشتید، همون **لاگین بوت‌استرپ** هست - در ادامه توضیح داده شده.
 
 #### ۲. اولین ورود
 
-اسکریپت نصب یک **لاگین بوت‌استرپ** چاپ می‌کنه (`SUDO_USERNAME`/`SUDO_PASSWORD`، به‌صورت خط‌های ساده‌ی `Environment=` در systemd). این یک ردیف واقعی توی دیتابیس نیست - قبل از اینکه اصلاً جدول `admins` کوئری بشه، در حافظه چک می‌شه، دقیقاً به همین دلیل که همیشه یک راه ورود وجود داشته باشه حتی از یک دیتابیس کاملاً خالی. یک‌بار ازش استفاده کنید تا:
+`SUDO_USERNAME`/`SUDO_PASSWORD` توی `.env` یک **لاگین بوت‌استرپ** هست - نه یک ردیف واقعی توی دیتابیس، قبل از اینکه اصلاً جدول `admins` کوئری بشه در حافظه چک می‌شه، دقیقاً به همین دلیل که همیشه یک راه ورود وجود داشته باشه حتی از یک دیتابیس کاملاً خالی. یک‌بار ازش استفاده کنید تا:
 
 1. توی `http://<آدرس-سرور>:8000/dashboard/` لاگین کنید.
 2. از صفحه‌ی **Admins** یک ادمین سودوی واقعی بسازید.
-3. اختیاری: `SUDO_PASSWORD` رو توی هر دو فایل `/etc/systemd/system/rapido-go-panel.service` و `rapido-go-backend.service` خالی کنید (بعد `systemctl daemon-reload && systemctl restart rapido-go-panel rapido-go-backend`) اگه نمی‌خواید این لاگین اضطراری همچنان فعال بمونه.
+3. اختیاری: `SUDO_PASSWORD` رو توی `.env` عوض کنید و دوباره `docker compose up -d` بزنید، اگه نمی‌خواید این لاگین اضطراری با مقدار اولیه‌ش همچنان فعال بمونه.
 
 #### ۳. افزودن و نصب نود
 
 ۱. توی داشبورد، به **Nodes → Add Node** برید، یک اسم و آدرس بدید و ذخیره کنید.
 ۲. پنل نمایش یک‌باره یک مقدار **setup_blob** (به‌صورت base64) رو نشون می‌ده - این مقدار گواهی نود، کلید خصوصی، CA پنل، و سکرت گزارش‌دهی رو همه با هم بسته‌بندی می‌کنه. همین الان کپی‌ش کنید؛ دیگه هیچ‌وقت نشون داده نمی‌شه.
 ۳. روی سرور نود:
-
-```bash
-git clone https://github.com/legendary1205/rapido-go.git
-cd rapido-go
-sudo ./scripts/install-node.sh
-# وقتی خواست، setup_blob رو پیست کنید، بعد یک پورت گوش‌دادن انتخاب کنید (پیش‌فرض 0.0.0.0:62051)
-```
-
-یا کاملاً بدون تعامل:
-
-```bash
-sudo NODE_SETUP_BLOB='<اینجا blob رو پیست کنید>' ./scripts/install-node.sh
-```
-
-محتوای کامل اسکریپت: [`scripts/install-node.sh`](scripts/install-node.sh) (همون فایلی که در بخش انگلیسی بالا هم به‌طور کامل نشون داده شده).
+   ۱. یک پوشه بسازید، مثلاً `mkdir rapido-node && cd rapido-node`.
+   ۲. محتوای [`docker-compose.node.yml`](docker-compose.node.yml) رو اونجا با اسم `docker-compose.yml` ذخیره کنید.
+   ۳. محتوای [`.env.node.example`](.env.node.example) رو اونجا با اسم `.env` ذخیره کنید، و setup_blob رو توی `NODE_SETUP_BLOB` پیست کنید.
+   ۴. `docker compose up -d`
 
 ۴. توی داشبورد، وضعیت نود بعد از اولین push (چند ثانیه) به **Connected** تغییر می‌کنه.
 ۵. یک inbound بسازید (مثلاً VLESS) و یک host زیر **Hosts** - نود توی pull بعدیش (چند ثانیه‌ی دیگه) پیکربندی جدید رو می‌گیره، بدون نیاز به ری‌استارت.
+
+#### آپدیت
+
+ایمیج جدید رو pull کنید و دوباره بسازید: `docker compose pull && docker compose up -d` (پنل) یا همین دستور روی `docker-compose.node.yml` (نود) - سرویس `migrate` هر migration جدیدی رو خودکار قبل از بالا اومدن `panel`/`backend` اعمال می‌کنه.
 
 ### مرجع پیکربندی
 
@@ -720,7 +544,10 @@ internal/reviewjob/   ماشین‌حالت پس‌زمینه‌ی وضعیت/ا
 internal/hostmetrics/ نمونه‌برداری CPU/حافظه/دیسک/شبکه (خود پنل و نودها)
 internal/*settings, telegram, discord, kirbot, report/  یکپارچه‌سازی‌ها
 web/                  داشبورد (React/Vite/Tailwind)
-scripts/               install-panel.sh, install-node.sh
+docker/                Dockerfile.panel, Dockerfile.node
+docker-compose.yml     فقط برای توسعه‌ی محلی (Postgres+Redis)
+docker-compose.prod.yml, docker-compose.node.yml   ایمیج‌های پروداکشن، ببینید نصب سریع
+.github/workflows/     CI - هر دو ایمیج رو می‌سازه و توی GHCR منتشر می‌کنه
 ```
 
 ### فرمت‌های سابسکریپشن

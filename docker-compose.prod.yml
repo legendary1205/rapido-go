@@ -1,0 +1,97 @@
+# Full Rapido-Go panel stack, pre-built images only - no git, no local
+# build, no shell script. Copy this file (and .env.prod.example as .env)
+# to the server, fill in .env, then:
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# This is separate from the root docker-compose.yml on purpose: that one
+# is for local development (just Postgres+Redis, so `go run ./cmd/panel`
+# can run against them with your own code) - mixing pre-built panel/backend
+# containers into that file would fight a locally-run dev process for the
+# same ports.
+#
+# Images are published privately to ghcr.io by .github/workflows/
+# docker-publish.yml on every push to master - `docker login ghcr.io`
+# with a token that has at least `read:packages` scope before pulling,
+# same as any other private GitHub Container Registry image.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rapido
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rapido}
+      POSTGRES_DB: rapido
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rapido"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Applies pending migrations and exits - panel/backend wait for this to
+  # finish successfully before they start, so a fresh `up -d` always comes
+  # up against an up-to-date schema with no separate manual step.
+  migrate:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["goose", "-dir", "/app/internal/db/migrations", "postgres"]
+    command: ["postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable", "up"]
+    restart: "no"
+
+  panel:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "${PANEL_PORT:-8000}:8000"
+    environment:
+      ROLE: api
+      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
+      REDIS_ADDR: redis:6379
+      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
+      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+
+  backend:
+    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # No published port - this role is not meant to receive traffic
+    # directly, only the "api" role above is (see the README's
+    # architecture section on why there are two roles at all).
+    environment:
+      ROLE: backend
+      DATABASE_URL: postgres://rapido:${POSTGRES_PASSWORD:-rapido}@postgres:5432/rapido?sslmode=disable
+      REDIS_ADDR: redis:6379
+      SUDO_USERNAME: ${SUDO_USERNAME:-admin}
+      SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+
+volumes:
+  postgres_data:
+  redis_data:

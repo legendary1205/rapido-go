@@ -1,0 +1,30 @@
+# Rapido-Go node agent, pre-built image. Copy this file (and
+# .env.node.example as .env) to the node server, fill in NODE_SETUP_BLOB
+# from the panel's Add Node screen, then:
+#
+#   docker compose -f docker-compose.node.yml --env-file .env up -d
+#
+# `docker login ghcr.io` first if the image is private - see
+# docker-compose.prod.yml's own top-of-file comment.
+
+services:
+  node:
+    image: ${RAPIDO_NODE_IMAGE:-ghcr.io/legendary1205/rapido-go-node}:${RAPIDO_NODE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${NODE_PORT:-62051}:62051"
+    environment:
+      NODE_LISTEN_ADDR: 0.0.0.0:62051
+      # Only needed on the very first `up` - the container writes
+      # cert/key/ca into the named volume below and never reads this
+      # again afterward. Required for a genuinely fresh volume (the node
+      # process itself refuses to start with no blob AND no existing
+      # on-disk cert - a clear error in its own logs either way); safe to
+      # blank out in .env on a later `up` once the volume already has
+      # certs in it.
+      NODE_SETUP_BLOB: ${NODE_SETUP_BLOB:-}
+    volumes:
+      - node_certs:/etc/rapido-node
+
+volumes:
+  node_certs:
