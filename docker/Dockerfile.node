@@ -2,12 +2,25 @@
 # .github/workflows/docker-publish.yml - see docker-compose.node.yml, which
 # just pulls ghcr.io/<owner>/rapido-go-node.
 
+# sqlc (query code generator) - cmd/node doesn't touch the database itself,
+# but it imports internal/hostmetrics for its own health sampling, and that
+# package's jobs.go (used by the PANEL's background loops, compiled as part
+# of the same package regardless) imports internal/db/generated - gitignored,
+# not committed (see sqlc.yaml), so `go build ./cmd/node` fails outright
+# without this even though node never calls anything DB-related itself.
+# Found by actually running this Dockerfile in CI, not assumed correct.
+FROM golang:1.27-alpine AS sqlc
+RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+
 FROM golang:1.27-alpine AS gobuild
 WORKDIR /src
+COPY --from=sqlc /go/bin/sqlc /usr/local/bin/sqlc
 COPY go.mod go.sum ./
 RUN go mod download
+COPY sqlc.yaml ./
 COPY cmd/ cmd/
 COPY internal/ internal/
+RUN sqlc generate
 RUN CGO_ENABLED=0 go build -o /out/rapido-node ./cmd/node
 
 FROM alpine:3.20
