@@ -116,16 +116,6 @@ func (s *Store) InvalidateInbound(ctx context.Context, tag, protocol string, old
 	return s.Cache.Del(ctx, keys...)
 }
 
-func (s *Store) CachedListHostsByInboundTag(ctx context.Context, tag string) ([]generated.Host, error) {
-	return cache.GetOrSet(ctx, s.Cache, cache.InboundHostsKey(tag), inboundCacheTTL, func(ctx context.Context) ([]generated.Host, error) {
-		return s.Queries.ListHostsByInboundTag(ctx, tag)
-	})
-}
-
-func (s *Store) InvalidateHosts(ctx context.Context, tag string) error {
-	return s.Cache.Del(ctx, cache.InboundHostsKey(tag))
-}
-
 func (s *Store) CachedListExcludedInboundTags(ctx context.Context, proxyID int32) ([]string, error) {
 	return cache.GetOrSet(ctx, s.Cache, cache.ExcludedInboundTagsKey(proxyID), excludedInboundsCacheTTL, func(ctx context.Context) ([]string, error) {
 		return s.Queries.ListExcludedInboundTags(ctx, proxyID)

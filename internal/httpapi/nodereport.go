@@ -83,6 +83,15 @@ func (h *Handler) handleNodeReport(c *gin.Context) {
 		var nodeUplink, nodeDownlink int64
 		adminDeltas := make(map[int32]int64)
 
+		// Collect every user's delta first, then apply the whole batch in a
+		// handful of set-based statements instead of one round trip per user
+		// - a real node's report of a few hundred active users used to cost
+		// a few hundred sequential UPDATE/UPSERT calls each (confirmed via a
+		// 30k-user/10-node load test: ~7s per report, this loop being
+		// virtually the entire cost). See BulkIncrementUserUsage's own doc
+		// comment.
+		userIDs := make([]int32, 0, len(rows))
+		userDeltas := make([]int64, 0, len(rows))
 		for _, row := range rows {
 			usage, ok := byUsername[row.Username]
 			if !ok {
@@ -92,18 +101,8 @@ func (h *Handler) handleNodeReport(c *gin.Context) {
 			if delta <= 0 {
 				continue
 			}
-			if err := h.store.Queries.IncrementUserUsage(ctx, generated.IncrementUserUsageParams{
-				ID: row.ID, UsedTraffic: delta,
-			}); err != nil {
-				h.logger.Error("node report: increment user usage", "error", err, "user_id", row.ID)
-				continue
-			}
-			if err := h.store.Queries.UpsertNodeUserUsage(ctx, generated.UpsertNodeUserUsageParams{
-				CreatedAt: hourBucket, UserID: pgInt4FromInt(int(row.ID)), NodeID: pgInt4FromInt(int(nodeID)),
-				UsedTraffic: pgInt8FromInt64(delta),
-			}); err != nil {
-				h.logger.Error("node report: upsert node_user_usage", "error", err)
-			}
+			userIDs = append(userIDs, row.ID)
+			userDeltas = append(userDeltas, delta)
 			if row.AdminID.Valid {
 				adminDeltas[row.AdminID.Int32] += delta
 			}
@@ -111,11 +110,30 @@ func (h *Handler) handleNodeReport(c *gin.Context) {
 			nodeDownlink += usage.Downlink
 		}
 
-		for adminID, delta := range adminDeltas {
-			if err := h.store.Queries.IncrementAdminUsage(ctx, generated.IncrementAdminUsageParams{
-				ID: adminID, UsersUsage: delta,
+		if len(userIDs) > 0 {
+			if err := h.store.Queries.BulkIncrementUserUsage(ctx, generated.BulkIncrementUserUsageParams{
+				Ids: userIDs, Deltas: userDeltas,
 			}); err != nil {
-				h.logger.Error("node report: increment admin usage", "error", err, "admin_id", adminID)
+				h.logger.Error("node report: bulk increment user usage", "error", err)
+			}
+			if err := h.store.Queries.BulkUpsertNodeUserUsage(ctx, generated.BulkUpsertNodeUserUsageParams{
+				CreatedAt: hourBucket, NodeID: nodeID, UserIds: userIDs, Deltas: userDeltas,
+			}); err != nil {
+				h.logger.Error("node report: bulk upsert node_user_usage", "error", err)
+			}
+		}
+
+		if len(adminDeltas) > 0 {
+			adminIDs := make([]int32, 0, len(adminDeltas))
+			adminDeltaValues := make([]int64, 0, len(adminDeltas))
+			for adminID, delta := range adminDeltas {
+				adminIDs = append(adminIDs, adminID)
+				adminDeltaValues = append(adminDeltaValues, delta)
+			}
+			if err := h.store.Queries.BulkIncrementAdminUsage(ctx, generated.BulkIncrementAdminUsageParams{
+				Ids: adminIDs, Deltas: adminDeltaValues,
+			}); err != nil {
+				h.logger.Error("node report: bulk increment admin usage", "error", err)
 			}
 		}
 

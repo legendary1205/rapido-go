@@ -6,15 +6,18 @@
 -- belongs to, this ordering is purely display/subscription sequence.
 SELECT * FROM hosts ORDER BY priority, id;
 
--- name: ListHostsByInboundTag :many
+-- name: ListHostsByInboundTags :many
 -- Excludes disabled hosts - matches the current system's global exclusion
 -- in app/xray/__init__.py's hosts DictStorage builder (a disabled host
 -- never appears in subscription output for any format, not a per-format
--- decision). Ordered by priority (see migration 00008) - forEachUserHost
--- (internal/httpapi/subscription.go) gathers results from every included
--- tag and re-sorts the combined set by this same (priority, id) pair, so
--- the admin's global cross-tag order actually reaches subscription output.
-SELECT * FROM hosts WHERE inbound_tag = $1 AND (is_disabled IS NULL OR is_disabled = false) ORDER BY priority, id;
+-- decision). Ordered by priority (see migration 00008), globally across
+-- every tag in the array - forEachUserHost (internal/httpapi/
+-- subscription.go) needs every included tag's hosts interleaved by this
+-- one cross-tag order, not grouped per tag, so the admin's global priority
+-- actually reaches subscription output. Takes the whole tag set in one
+-- call rather than one round trip per tag - see that function's own doc
+-- comment on the N+1 this replaced.
+SELECT * FROM hosts WHERE inbound_tag = ANY(sqlc.arg('tags')::text[]) AND (is_disabled IS NULL OR is_disabled = false) ORDER BY priority, id;
 
 -- name: DeleteHostsByInboundTag :exec
 DELETE FROM hosts WHERE inbound_tag = $1;

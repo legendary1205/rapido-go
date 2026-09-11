@@ -76,10 +76,15 @@ func TestAdminCacheInvalidatedOnPasswordReset(t *testing.T) {
 	}
 }
 
-// TestSubscriptionReflectsHostReplaceAfterInvalidation proves
-// CachedListHostsByInboundTag is invalidated on PUT /api/hosts - not just
-// left to the 6-hour safety-net TTL, which would otherwise keep serving a
-// user's already-warmed subscription the pre-replace host indefinitely.
+// TestSubscriptionReflectsHostReplaceAfterInvalidation proves a subscription
+// fetch always reflects the current hosts row, immediately after PUT
+// /api/hosts replaces it. Hosts used to be served through a per-tag Redis
+// cache here (CachedListHostsByInboundTag, invalidated on write) - removed
+// as dead weight once forEachUserHost switched to one bulk, always-fresh
+// ListHostsByInboundTags query per proxy (see that function's own doc
+// comment on the N+1 it replaced), so there is no cache left to go stale in
+// the first place. Kept as a regression test for the observable behavior
+// either way.
 func TestSubscriptionReflectsHostReplaceAfterInvalidation(t *testing.T) {
 	router, token := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{

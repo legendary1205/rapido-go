@@ -26,6 +26,14 @@ RETURNING *, (xmax = 0) AS inserted;
 -- name: GetInboundByTag :one
 SELECT * FROM inbounds WHERE tag = $1;
 
+-- name: ListInboundsByTags :many
+-- Bulk form of GetInboundByTag - forEachUserHost used to call the single-tag
+-- version once per host (every host needs its own inbound's transport/TLS
+-- shape), which duplicates work across hosts sharing the same tag and costs
+-- one round trip per host. The caller builds a tag->Inbound map from this
+-- once per proxy instead.
+SELECT * FROM inbounds WHERE tag = ANY(sqlc.arg('tags')::text[]);
+
 -- name: ListInbounds :many
 SELECT * FROM inbounds ORDER BY protocol, tag;
 

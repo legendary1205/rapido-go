@@ -217,10 +217,22 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 // and persisting one on first boot - equivalent to app/utils/jwt.py's
 // get_secret_key, which lazily creates the "jwt" table's one row the same
 // way via the SQLAlchemy column default.
+//
+// The stored column is hex - hex.DecodeString recovers the original random
+// bytes. A real bug here (found via an external tool minting a subscription
+// token independently and getting a signature mismatch, then confirmed by
+// direct instrumentation): this used to return []byte(existing.SecretKey)/
+// []byte(created.SecretKey), i.e. the hex STRING's raw ASCII bytes (64 of
+// them) rather than the 32 bytes hex.EncodeToString below actually encoded.
+// Harmless in practice up to now - every process derives the same wrong
+// value from the same DB row deterministically, so any two processes still
+// agree with each other - but it meant the effective key was never the
+// documented 32 bytes, and nothing outside this process could ever
+// correctly reconstruct a valid signature from the stored value.
 func ensureJWTSecret(ctx context.Context, q *generated.Queries) ([]byte, error) {
 	existing, err := q.GetJWTSecret(ctx)
 	if err == nil {
-		return []byte(existing.SecretKey), nil
+		return hex.DecodeString(existing.SecretKey)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
@@ -231,11 +243,10 @@ func ensureJWTSecret(ctx context.Context, q *generated.Queries) ([]byte, error) 
 		return nil, err
 	}
 	secretHex := hex.EncodeToString(raw)
-	created, err := q.CreateJWTSecret(ctx, secretHex)
-	if err != nil {
+	if _, err := q.CreateJWTSecret(ctx, secretHex); err != nil {
 		return nil, err
 	}
-	return []byte(created.SecretKey), nil
+	return raw, nil
 }
 
 // ensureTLS returns the singleton tls row, generating the Rapido-branded

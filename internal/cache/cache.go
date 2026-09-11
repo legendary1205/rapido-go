@@ -74,7 +74,6 @@ const (
 	nsAdminByID          = "rapido:admin:by_id"
 	nsInbound            = "rapido:inbound"
 	nsInboundTagsByProto = "rapido:inbound_tags"
-	nsInboundHosts       = "rapido:inbound_hosts"
 	nsExcludedInbounds   = "rapido:excluded_inbounds"
 
 	// nsNodeConfig caches the fully-computed node-config payload (see
@@ -113,7 +112,6 @@ func InboundByTagKey(tag string) string { return fmt.Sprintf("%s:%s", nsInbound,
 func InboundTagsByProtocolKey(protocol string) string {
 	return fmt.Sprintf("%s:%s", nsInboundTagsByProto, protocol)
 }
-func InboundHostsKey(tag string) string { return fmt.Sprintf("%s:%s", nsInboundHosts, tag) }
 func ExcludedInboundTagsKey(proxyID int32) string {
 	return fmt.Sprintf("%s:%d", nsExcludedInbounds, proxyID)
 }

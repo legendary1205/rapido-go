@@ -148,9 +148,6 @@ func (h *Handler) deleteInboundByTag(ctx context.Context, tag string) error {
 	if err := h.store.InvalidateInbound(ctx, tag, inbound.Protocol, nil); err != nil {
 		return fmt.Errorf("could not invalidate inbound cache for %s: %w", tag, err)
 	}
-	if err := h.store.InvalidateHosts(ctx, tag); err != nil {
-		return fmt.Errorf("could not invalidate host cache for %s: %w", tag, err)
-	}
 	return nil
 }
 
@@ -268,9 +265,7 @@ func (e *inboundValidationError) Error() string { return e.msg }
 
 // createDefaultHost mirrors add_default_host in the current
 // crud.get_or_create_inbound: every inbound gets one default ProxyHost the
-// first time it's registered. No InvalidateHosts call needed: this only
-// ever runs for a tag that handleSyncInbounds just inserted for the first
-// time, so no CachedListHostsByInboundTag entry for it can exist yet.
+// first time it's registered.
 //
 // Placed at the end of the existing global priority order (see migration
 // 00008 and GetMaxHostPriority's own doc comment) rather than left at the

@@ -135,10 +135,6 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 			}
 			out[tag] = append(out[tag], toHostDTO(created))
 		}
-		if err := h.store.InvalidateHosts(ctx, tag); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate host cache for " + tag})
-			return
-		}
 	}
 	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)

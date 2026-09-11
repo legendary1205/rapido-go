@@ -73,7 +73,7 @@ type gatewayStatusDTO struct {
 // handleGatewayStatus implements GET /api/internal/gateway/status
 // (panel-to-panel, requireGatewaySecret) - what the gatewayjob background
 // refresh loop polls on every enabled peer (sub-phase 4). Hosts are
-// filtered to non-disabled only, same as ListHostsByInboundTag already
+// filtered to non-disabled only, same as ListHostsByInboundTags already
 // does for this panel's own subscription serving. Deliberately sends the
 // already-merged EffectiveInbound, not raw host+inbound rows: it's the
 // exact same public-safe view (real Reality PUBLIC key, never the private

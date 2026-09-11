@@ -132,9 +132,6 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 			return
 		}
 		nextPriority++
-		if err := h.store.InvalidateHosts(ctx, in.Tag); err != nil {
-			h.logger.Warn("invalidate host cache after xray import", "tag", in.Tag, "error", err)
-		}
 	}
 
 	merged, err := h.mergeCoreConfigForImport(ctx, parsed)

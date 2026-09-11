@@ -49,6 +49,56 @@ func TestSubscriptionV2rayLinks(t *testing.T) {
 	}
 }
 
+// TestSubscriptionOrdersHostsAcrossMultipleInboundTagsByPriority is the
+// real regression test for forEachUserHost's bulk-query rewrite
+// (ListHostsByInboundTags/ListInboundsByTags replacing a per-tag/per-host
+// cache loop plus a Go-side sort.Slice - confirmed via a 30k-user load test
+// to be the dominant cost of a single-user GET or subscription fetch,
+// ~140ms). The old code gathered hosts across every included tag and
+// explicitly re-sorted the combined set by (priority, id); the new bulk
+// query does that ordering in SQL instead - this proves a lower-priority
+// host on an alphabetically-LATER tag still sorts before a higher-priority
+// number... only lower priority values come first, so this places tag B's
+// host ahead of tag A's despite tag A sorting first alphabetically.
+func TestSubscriptionOrdersHostsAcrossMultipleInboundTagsByPriority(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "A Tag", "protocol": "vless", "network": "tcp", "security": "none"},
+		{"tag": "B Tag", "protocol": "vless", "network": "tcp", "security": "none"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"A Tag": []map[string]interface{}{{"remark": "HostA", "address": "1.1.1.1", "port": 443, "security": "none", "priority": 2}},
+		"B Tag": []map[string]interface{}{{"remark": "HostB", "address": "2.2.2.2", "port": 443, "security": "none", "priority": 1}},
+	})
+	resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "priority_order_user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if resp.Code != 200 {
+		t.Fatalf("create user: %d %v", resp.Code, resp.Body)
+	}
+
+	subToken := subscription.CreateToken("priority_order_user", []byte(testSubSecret))
+	subResp := doRequest(t, router, "GET", "/sub/"+subToken, "", nil)
+	if subResp.Code != 200 {
+		t.Fatalf("get subscription: %d body=%s", subResp.Code, subResp.Raw)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(subResp.Raw))
+	if err != nil {
+		t.Fatalf("subscription body is not valid base64: %v", err)
+	}
+	links := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+	if len(links) != 2 {
+		t.Fatalf("expected exactly 2 links, got %d: %q", len(links), links)
+	}
+	if !strings.Contains(links[0], "2.2.2.2") {
+		t.Errorf("first link = %q, want HostB (priority 1) first despite tag A sorting alphabetically first", links[0])
+	}
+	if !strings.Contains(links[1], "1.1.1.1") {
+		t.Errorf("second link = %q, want HostA (priority 2) second", links[1])
+	}
+}
+
 func TestSubscriptionRejectsRevokedToken(t *testing.T) {
 	router, token := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "VLESS TCP", "protocol": "vless"}})

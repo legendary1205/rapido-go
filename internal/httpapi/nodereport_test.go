@@ -183,6 +183,99 @@ func TestNodeReportAggregatesAdminUsage(t *testing.T) {
 	}
 }
 
+// TestNodeReportBatchHandlesMultipleUsersAcrossMultipleAdminsInOneReport is
+// the real regression test for the bulk-query rewrite of handleNodeReport
+// (BulkIncrementUserUsage/BulkUpsertNodeUserUsage/BulkIncrementAdminUsage,
+// replacing a per-user loop that cost ~430 sequential round trips for a
+// 200-user report - confirmed via a 30k-user/10-node load test at ~7s per
+// call). The old per-row loop handled multiple users trivially by
+// construction; the new array-based queries need a real multi-row,
+// multi-admin case to prove the parallel id/delta arrays stay aligned and
+// that a zero-delta user (skipped before the arrays are even built) doesn't
+// shift anything after it.
+func TestNodeReportBatchHandlesMultipleUsersAcrossMultipleAdminsInOneReport(t *testing.T) {
+	router, token := newTestRouter(t)
+	pool := testPool(t)
+	_, secret := createTestNode(t, router, token, "report-test-node-batch")
+
+	adminAResp := doRequest(t, router, "POST", "/api/admin", token, map[string]interface{}{
+		"username": "batch_admin_a", "password": "SomePassword123", "is_sudo": false,
+	})
+	adminBResp := doRequest(t, router, "POST", "/api/admin", token, map[string]interface{}{
+		"username": "batch_admin_b", "password": "SomePassword123", "is_sudo": false,
+	})
+	if adminAResp.Code != http.StatusOK || adminBResp.Code != http.StatusOK {
+		t.Fatalf("create admins: %d %v / %d %v", adminAResp.Code, adminAResp.Body, adminBResp.Code, adminBResp.Body)
+	}
+	tokenA := loginAs(t, router, "batch_admin_a", "SomePassword123")
+	tokenB := loginAs(t, router, "batch_admin_b", "SomePassword123")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "VLESS TCP", "protocol": "vless"}})
+	for _, c := range []struct {
+		username string
+		adminTok string
+	}{
+		{"batch_user_1", tokenA},
+		{"batch_user_2", tokenA},
+		{"batch_user_3", tokenB},
+		{"batch_user_zero", tokenB}, // gets no traffic in the report below
+	} {
+		resp := doRequest(t, router, "POST", "/api/user", c.adminTok, map[string]interface{}{
+			"username": c.username, "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+		})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %v", c.username, resp.Code, resp.Body)
+		}
+	}
+
+	reportResp := doRequest(t, router, "POST", "/api/internal/node-report", secret, nodeReportPayload([]map[string]interface{}{
+		{"username": "batch_user_1", "uplink": 1000, "downlink": 0},
+		{"username": "batch_user_2", "uplink": 0, "downlink": 2000},
+		{"username": "batch_user_3", "uplink": 500, "downlink": 500},
+		{"username": "batch_user_zero", "uplink": 0, "downlink": 0},
+	}))
+	if reportResp.Code != http.StatusOK {
+		t.Fatalf("batch node report: %d %v", reportResp.Code, reportResp.Body)
+	}
+
+	for _, c := range []struct {
+		username string
+		want     int64
+	}{
+		{"batch_user_1", 1000},
+		{"batch_user_2", 2000},
+		{"batch_user_3", 1000},
+		{"batch_user_zero", 0},
+	} {
+		getResp := doRequest(t, router, "GET", "/api/user/"+c.username, token, nil)
+		if used := int64(getResp.Body["used_traffic"].(float64)); used != c.want {
+			t.Errorf("%s used_traffic = %d, want %d", c.username, used, c.want)
+		}
+	}
+
+	var usageA, usageB int64
+	if err := pool.QueryRow(context.Background(), "SELECT users_usage FROM admins WHERE username = 'batch_admin_a'").Scan(&usageA); err != nil {
+		t.Fatalf("query batch_admin_a usage: %v", err)
+	}
+	if err := pool.QueryRow(context.Background(), "SELECT users_usage FROM admins WHERE username = 'batch_admin_b'").Scan(&usageB); err != nil {
+		t.Fatalf("query batch_admin_b usage: %v", err)
+	}
+	if usageA != 3000 {
+		t.Errorf("batch_admin_a users_usage = %d, want 3000 (batch_user_1 + batch_user_2)", usageA)
+	}
+	if usageB != 1000 {
+		t.Errorf("batch_admin_b users_usage = %d, want 1000 (batch_user_3 only, batch_user_zero contributes nothing)", usageB)
+	}
+
+	var nodeUserUsageRows int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM node_user_usages").Scan(&nodeUserUsageRows); err != nil {
+		t.Fatalf("query node_user_usages count: %v", err)
+	}
+	if nodeUserUsageRows != 3 {
+		t.Errorf("node_user_usages row count = %d, want 3 (one per user with nonzero delta, none for batch_user_zero)", nodeUserUsageRows)
+	}
+}
+
 func TestGetMonitoringReflectsPushedHostMetricsAndStaleness(t *testing.T) {
 	router, token := newTestRouter(t)
 	pool := testPool(t)

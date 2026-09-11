@@ -13,8 +13,26 @@ SELECT id, username, admin_id FROM users WHERE username = ANY(sqlc.arg('username
 -- record_usages.py's own combined UPDATE).
 UPDATE users SET used_traffic = used_traffic + $2, online_at = now() WHERE id = $1;
 
+-- name: BulkIncrementUserUsage :exec
+-- Batch form of IncrementUserUsage - handleNodeReport used to call the
+-- single-row version once per user in a loop, meaning a real node's report
+-- of a few hundred active users cost a few hundred sequential round trips
+-- (confirmed the dominant cost of the whole handler via a 30k-user/10-node
+-- load test: ~7s per report, entirely this loop). unnest() turns the two
+-- parallel arrays into a virtual per-row table so the whole batch is one
+-- statement instead of len(ids) of them.
+UPDATE users SET used_traffic = used_traffic + v.delta, online_at = now()
+FROM (SELECT unnest(sqlc.arg('ids')::int[]) AS id, unnest(sqlc.arg('deltas')::bigint[]) AS delta) AS v
+WHERE users.id = v.id;
+
 -- name: IncrementAdminUsage :exec
 UPDATE admins SET users_usage = users_usage + $2 WHERE id = $1;
+
+-- name: BulkIncrementAdminUsage :exec
+-- Batch form of IncrementAdminUsage - same reasoning as BulkIncrementUserUsage.
+UPDATE admins SET users_usage = users_usage + v.delta
+FROM (SELECT unnest(sqlc.arg('ids')::int[]) AS id, unnest(sqlc.arg('deltas')::bigint[]) AS delta) AS v
+WHERE admins.id = v.id;
 
 -- name: UpsertNodeUserUsage :exec
 -- created_at is the caller-computed current-hour bucket (truncated to the
@@ -23,6 +41,16 @@ UPDATE admins SET users_usage = users_usage + $2 WHERE id = $1;
 -- of a duplicate row per push tick within the same hour.
 INSERT INTO node_user_usages (created_at, user_id, node_id, used_traffic)
 VALUES ($1, $2, $3, $4)
+ON CONFLICT (created_at, user_id, node_id)
+DO UPDATE SET used_traffic = node_user_usages.used_traffic + EXCLUDED.used_traffic;
+
+-- name: BulkUpsertNodeUserUsage :exec
+-- Batch form of UpsertNodeUserUsage - created_at and node_id are constant
+-- for one whole report (one node, one current-hour bucket), only user_id
+-- and delta vary per row, so only those two need to be arrays.
+INSERT INTO node_user_usages (created_at, user_id, node_id, used_traffic)
+SELECT sqlc.arg('created_at')::timestamptz, v.user_id, sqlc.arg('node_id')::int, v.delta
+FROM (SELECT unnest(sqlc.arg('user_ids')::int[]) AS user_id, unnest(sqlc.arg('deltas')::bigint[]) AS delta) AS v
 ON CONFLICT (created_at, user_id, node_id)
 DO UPDATE SET used_traffic = node_user_usages.used_traffic + EXCLUDED.used_traffic;
 
