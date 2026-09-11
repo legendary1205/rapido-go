@@ -199,7 +199,6 @@
   "rapido.xrayConfig.applyConfirmRemoval": "Yes, apply and remove",
   "rapido.xrayConfig.applyFailed": "Could not apply the Xray config.",
   "rapido.xrayConfig.discard": "Discard changes",
-  "rapido.xrayConfig.hostsSectionDesc": "Every host below is attached to one of the inbound tags in the JSON above - add, edit, reorder or remove them here.",
   "rapido.xrayConfig.inSync": "In sync with the server.",
   "rapido.xrayConfig.jsonDesc": "Log level, sniffing, outbounds, routing rules, DNS servers and inbounds - the whole Xray/sing-box configuration as one document. Edit it here and click Apply.",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "The \"inbounds\" field must be an array.",

@@ -199,7 +199,6 @@
   "rapido.xrayConfig.applyConfirmRemoval": "确认应用并删除",
   "rapido.xrayConfig.applyFailed": "应用 Xray 配置失败。",
   "rapido.xrayConfig.discard": "放弃更改",
-  "rapido.xrayConfig.hostsSectionDesc": "下方每个主机都关联到上方 JSON 中的某个 inbound 标签 - 在此处添加、编辑、排序或删除它们。",
   "rapido.xrayConfig.inSync": "已与服务器同步。",
   "rapido.xrayConfig.jsonDesc": "日志级别、嗅探、出站、路由规则、DNS 服务器和 inbound - 整个 Xray/sing-box 配置以单一文档呈现。在此编辑后点击「应用」。",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "「inbounds」字段必须是一个数组。",

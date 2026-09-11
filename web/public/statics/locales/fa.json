@@ -204,7 +204,6 @@
   "rapido.xrayConfig.applyConfirmRemoval": "بله، اعمال و حذف کن",
   "rapido.xrayConfig.applyFailed": "اعمال پیکربندی Xray با خطا مواجه شد.",
   "rapido.xrayConfig.discard": "لغو تغییرات",
-  "rapido.xrayConfig.hostsSectionDesc": "هر هاست زیر به یکی از تگ‌های inbound در JSON بالا متصل است - افزودن، ویرایش، جابه‌جایی و حذف آن‌ها از همین‌جا انجام می‌شود.",
   "rapido.xrayConfig.inSync": "همگام با سرور.",
   "rapido.xrayConfig.jsonDesc": "سطح لاگ، sniffing، خروجی‌ها، قوانین مسیریابی، سرورهای DNS و inboundها - کل پیکربندی Xray/sing-box به‌صورت یک سند. اینجا ویرایش کنید و روی «اعمال» بزنید.",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "فیلد «inbounds» باید یک آرایه باشد.",

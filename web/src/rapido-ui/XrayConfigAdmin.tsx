@@ -9,7 +9,6 @@ import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
 import { Modal } from "rapido-ui/Modal";
-import { HostsAdmin } from "rapido-ui/HostsAdmin";
 
 // parseXrayConfigJSON is deliberately lenient about the core-config fields
 // (same reasoning as coreConfigHelpers.ts's own parseFullConfigJSON: only
@@ -307,15 +306,14 @@ const XrayImportModal: FC<{ onClose: () => void; onApplied: () => void }> = ({ o
 
 // ---------------------------------------------------------------------------
 
-// One page, two things a sudo admin manages together: the Xray/sing-box
-// config as one JSON document (log level, sniffing, outbounds, routing
-// rules, DNS servers, AND inbounds - all one document, one Apply, replacing
-// what used to be the separate Core Config and Inbounds pages), and
-// directly below it the real Hosts admin (rapido-ui/HostsAdmin.tsx,
-// unmodified/reused wholesale, not reimplemented) - every inbound tag this
-// JSON defines gets its hosts (with the exact same add/edit/reorder/delete
-// controls the old standalone Hosts page had) right here, no separate page
-// to navigate to.
+// The Xray/sing-box config as one JSON document (log level, sniffing,
+// outbounds, routing rules, DNS servers, AND inbounds - all one document,
+// one Apply, replacing what used to be the separate Core Config and
+// Inbounds pages). Hosts deliberately stays its own standalone page
+// (rapido-ui/HostsAdmin.tsx via the "hosts" nav item) rather than being
+// embedded here too - an earlier version of this page embedded HostsAdmin
+// directly below the JSON editor, but the user asked for that removed:
+// one place for hosts, not two.
 export const XrayConfigAdmin: FC = () => {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useXrayConfigQuery();
@@ -341,12 +339,6 @@ export const XrayConfigAdmin: FC = () => {
       </div>
 
       <XrayConfigJSONEditor config={data} />
-
-      <div>
-        <h2 className="mb-1 text-lg font-semibold">{t("rapido.hosts.title")}</h2>
-        <p className="mb-3 text-sm text-rapido-muted">{t("rapido.xrayConfig.hostsSectionDesc")}</p>
-        <HostsAdmin />
-      </div>
 
       {importing && <XrayImportModal onClose={() => setImporting(false)} onApplied={() => {}} />}
     </div>

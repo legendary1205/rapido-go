@@ -199,7 +199,6 @@
   "rapido.xrayConfig.applyConfirmRemoval": "Да, применить и удалить",
   "rapido.xrayConfig.applyFailed": "Не удалось применить конфигурацию Xray.",
   "rapido.xrayConfig.discard": "Отменить изменения",
-  "rapido.xrayConfig.hostsSectionDesc": "Каждый хост ниже привязан к одному из тегов inbound в JSON выше - добавляйте, изменяйте, переставляйте и удаляйте их прямо здесь.",
   "rapido.xrayConfig.inSync": "Синхронизировано с сервером.",
   "rapido.xrayConfig.jsonDesc": "Уровень логирования, sniffing, исходящие соединения, правила маршрутизации, DNS-серверы и inbound-ы - вся конфигурация Xray/sing-box в виде одного документа. Изменяйте здесь и нажимайте «Применить».",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "Поле «inbounds» должно быть массивом.",
