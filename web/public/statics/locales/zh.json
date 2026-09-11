@@ -202,6 +202,7 @@
   "rapido.xrayConfig.inSync": "已与服务器同步。",
   "rapido.xrayConfig.jsonDesc": "日志级别、嗅探、出站、路由规则、DNS 服务器和 inbound - 整个 Xray/sing-box 配置以单一文档呈现。在此编辑后点击「应用」。",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "「inbounds」字段必须是一个数组。",
+  "rapido.xrayConfig.jsonLineError": "第 {{line}} 行有问题:{{message}}",
   "rapido.xrayConfig.jsonMustBeObject": "JSON 必须是一个对象,不能是数组或普通值。",
   "rapido.xrayConfig.jsonTitle": "Xray 配置(JSON)",
   "rapido.xrayConfig.loadFailed": "加载 Xray 配置失败。",

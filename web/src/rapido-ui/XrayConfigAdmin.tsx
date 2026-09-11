@@ -1,10 +1,11 @@
-import { FC, useEffect, useState } from "react";
+import { FC, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useXrayConfigQuery, useSaveXrayConfigMutation } from "hooks/useXrayConfigQuery";
 import { useImportXrayConfigMutation } from "hooks/useInboundsQuery";
 import { XrayConfig, XrayConfigWritePayload } from "types/XrayConfig";
 import { XrayImportResult } from "types/XrayImport";
 import { errorText } from "service/errors";
+import { locateJSONSyntaxError } from "utils/jsonSyntaxLocator";
 import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
@@ -39,12 +40,39 @@ const parseXrayConfigJSON = (text: string): XrayConfigWritePayload => {
   };
 };
 
+// Turns a caught error from parseXrayConfigJSON into what the editor shows:
+// a genuine JSON.parse SyntaxError gets run back through locateJSONSyntaxError
+// (see that module's own doc comment on why - native error messages aren't a
+// reliable source of a line number) and, when that succeeds, a line-numbered
+// message plus the line itself (so the gutter can highlight it too); the two
+// structural checks parseXrayConfigJSON throws itself (not-an-object,
+// inbounds-not-an-array) describe the whole document rather than one line, so
+// they intentionally surface with no line number.
+const describeJSONError = (
+  text: string,
+  error: unknown,
+  t: (key: string, opts?: Record<string, unknown>) => string
+): { message: string; line: number | null } => {
+  if (error instanceof SyntaxError) {
+    const loc = locateJSONSyntaxError(text);
+    if (loc) {
+      return { message: t("rapido.xrayConfig.jsonLineError", { line: loc.line, message: loc.message }), line: loc.line };
+    }
+    return { message: error.message, line: null };
+  }
+  return { message: error instanceof Error ? t(error.message) : String(error), line: null };
+};
+
 const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
   const { t } = useTranslation();
   const [text, setText] = useState(() => JSON.stringify(config, null, 2));
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
+  const [errorLine, setErrorLine] = useState<number | null>(null);
   const [previousText, setPreviousText] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const lineCount = text.split("\n").length;
   // Set only while a parsed pending payload is genuinely about to delete one
   // or more inbounds (omitted from the JSON - see xrayconfig.go's own doc
   // comment on why that's real deletion here, not a no-op like the old
@@ -78,6 +106,7 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
 
   const apply = () => {
     setError("");
+    setErrorLine(null);
     setPendingRemoval(null);
     try {
       const payload = parseXrayConfigJSON(text);
@@ -90,13 +119,16 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
       }
       doApply(payload);
     } catch (e) {
-      setError(e instanceof Error ? t(e.message) : String(e));
+      const described = describeJSONError(text, e, t);
+      setError(described.message);
+      setErrorLine(described.line);
     }
   };
 
   const discard = () => {
     setDirty(false);
     setError("");
+    setErrorLine(null);
     setPendingRemoval(null);
     setText(JSON.stringify(config, null, 2));
   };
@@ -104,6 +136,7 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
   const revert = () => {
     if (!previousText) return;
     setError("");
+    setErrorLine(null);
     try {
       const payload = parseXrayConfigJSON(previousText);
       save.mutate(payload, {
@@ -114,7 +147,15 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
         onError: (e) => setError(errorText(e, t("rapido.xrayConfig.revertFailed"))),
       });
     } catch (e) {
-      setError(e instanceof Error ? t(e.message) : String(e));
+      const described = describeJSONError(previousText, e, t);
+      setError(described.message);
+      setErrorLine(described.line);
+    }
+  };
+
+  const syncGutterScroll = () => {
+    if (textareaRef.current && gutterRef.current) {
+      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
     }
   };
 
@@ -128,19 +169,43 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
         {dirty && <Badge tone="yellow">{t("rapido.xrayConfig.unapplied")}</Badge>}
       </div>
 
-      <textarea
-        dir="ltr"
-        spellCheck={false}
-        rows={22}
-        className="w-full resize-y rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          setDirty(true);
-          setError("");
-          setPendingRemoval(null);
-        }}
-      />
+      <div className="relative">
+        {/* Absolutely positioned against this wrapper, whose own height is
+            just "however tall the in-flow textarea below currently is" -
+            so a manual resize-y drag on the textarea grows this wrapper too,
+            and the gutter (inset-y-0) stretches to match with no JS needed.
+            Only the vertical scroll offset needs syncing by hand (below),
+            since the gutter's own content can be taller than its visible
+            box once there are more lines than fit. */}
+        <div
+          ref={gutterRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 left-0 w-9 overflow-hidden rounded-l-lg border-r border-rapido-border bg-rapido-surface-2 py-2 text-right font-mono text-xs leading-5 text-rapido-muted"
+        >
+          {Array.from({ length: lineCount }, (_, i) => i + 1).map((n) => (
+            <div key={n} className={n === errorLine ? "pr-2 font-semibold text-red-400" : "pr-2"}>
+              {n}
+            </div>
+          ))}
+        </div>
+        <textarea
+          ref={textareaRef}
+          dir="ltr"
+          spellCheck={false}
+          wrap="off"
+          rows={22}
+          onScroll={syncGutterScroll}
+          className="w-full resize-y whitespace-pre overflow-x-auto rounded-lg border border-rapido-border bg-rapido-bg py-2 pl-11 pr-3 font-mono text-xs leading-5 text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setDirty(true);
+            setError("");
+            setErrorLine(null);
+            setPendingRemoval(null);
+          }}
+        />
+      </div>
       {error && (
         <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}

@@ -202,6 +202,7 @@
   "rapido.xrayConfig.inSync": "In sync with the server.",
   "rapido.xrayConfig.jsonDesc": "Log level, sniffing, outbounds, routing rules, DNS servers and inbounds - the whole Xray/sing-box configuration as one document. Edit it here and click Apply.",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "The \"inbounds\" field must be an array.",
+  "rapido.xrayConfig.jsonLineError": "Line {{line}} has a problem: {{message}}",
   "rapido.xrayConfig.jsonMustBeObject": "The JSON must be an object, not an array or a plain value.",
   "rapido.xrayConfig.jsonTitle": "Xray Config (JSON)",
   "rapido.xrayConfig.loadFailed": "Could not load the Xray config.",

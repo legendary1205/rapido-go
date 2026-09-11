@@ -207,6 +207,7 @@
   "rapido.xrayConfig.inSync": "همگام با سرور.",
   "rapido.xrayConfig.jsonDesc": "سطح لاگ، sniffing، خروجی‌ها، قوانین مسیریابی، سرورهای DNS و inboundها - کل پیکربندی Xray/sing-box به‌صورت یک سند. اینجا ویرایش کنید و روی «اعمال» بزنید.",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "فیلد «inbounds» باید یک آرایه باشد.",
+  "rapido.xrayConfig.jsonLineError": "خط {{line}} مشکل دارد: {{message}}",
   "rapido.xrayConfig.jsonMustBeObject": "JSON باید یک object باشد، نه آرایه یا یک مقدار ساده.",
   "rapido.xrayConfig.jsonTitle": "پیکربندی Xray (JSON)",
   "rapido.xrayConfig.loadFailed": "دریافت پیکربندی Xray با خطا مواجه شد.",

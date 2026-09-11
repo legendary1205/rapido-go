@@ -202,6 +202,7 @@
   "rapido.xrayConfig.inSync": "Синхронизировано с сервером.",
   "rapido.xrayConfig.jsonDesc": "Уровень логирования, sniffing, исходящие соединения, правила маршрутизации, DNS-серверы и inbound-ы - вся конфигурация Xray/sing-box в виде одного документа. Изменяйте здесь и нажимайте «Применить».",
   "rapido.xrayConfig.jsonInboundsMustBeArray": "Поле «inbounds» должно быть массивом.",
+  "rapido.xrayConfig.jsonLineError": "Проблема в строке {{line}}: {{message}}",
   "rapido.xrayConfig.jsonMustBeObject": "JSON должен быть объектом, а не массивом или простым значением.",
   "rapido.xrayConfig.jsonTitle": "Конфигурация Xray (JSON)",
   "rapido.xrayConfig.loadFailed": "Не удалось загрузить конфигурацию Xray.",
