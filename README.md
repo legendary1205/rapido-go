@@ -56,19 +56,20 @@ One command per server - the script fetches everything else itself (Docker, the 
 
 #### 1. Install the panel
 
+**The repository and its images are private**, so the very first fetch needs a GitHub token too - `curl raw.githubusercontent.com` on a private repo just 404s, before the script ever gets a chance to run. Use a token with `repo` + `read:packages` scope (a fine-grained token limited to this repo, with Contents: Read-only and Packages: Read-only, works too):
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+export RAPIDO_REPO_TOKEN=<your token>
+bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go.sh?ref=master") install
 ```
+
+The token is saved into `.env` (chmod 600) so later `rapido-go update` calls keep working unattended - it's never written into the script itself or into `.git/config`. (If this repository is ever made public, the plain, tokenless form also works: `bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install`.)
 
 Installs Docker if it isn't already, asks for the domain you'll run the dashboard on (must already point at this server - [Caddy](https://caddyserver.com/) uses it to request a real Let's Encrypt certificate automatically, no manual certbot dance), generates `.env`, pulls the pre-built image from GHCR, brings up Postgres + Redis + migrations + both the `api` and `backend` roles, and installs itself system-wide as the `rapido-go` command for later management.
 
 At the end it prints a one-time **bootstrap login** - see below.
-
-> **The repository and its images are private.** If you don't already have access configured, pass a GitHub token for this one command (it's saved into `.env`, chmod 600, for later `rapido-go update` calls - never written into the script itself or into `.git/config`):
-> ```bash
-> RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope> \
->   bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
-> ```
 
 <details>
 <summary><code>rapido-go.sh</code> (click to expand)</summary>
@@ -84,7 +85,17 @@ At the end it prints a one-time **bootstrap login** - see below.
 #
 #  Rapido-Go - installer and management CLI for the panel.
 #
-#  Install:
+#  Install (this repository is private, so the very first fetch needs a
+#  token too - a plain `curl raw.githubusercontent.com` 404s on a private
+#  repo before this script ever gets a chance to run):
+#
+#    export RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope>
+#    bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+#      -H "Accept: application/vnd.github.raw" \
+#      "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go.sh?ref=master") install
+#
+#  If this repository is ever made public, the plain form below also works
+#  and no token is needed for this first fetch:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
 #
 #  After installing, the command is available system-wide as `rapido-go`.
@@ -720,18 +731,24 @@ The install prints a **bootstrap login** (`SUDO_USERNAME`/`SUDO_PASSWORD`, saved
 
 1. In the dashboard, go to **Nodes → Add Node**, give it a name and address, save.
 2. The one-time reveal panel shows a single **setup_blob** value (base64) - this bundles the node's certificate, private key, the panel's CA, and its report secret together. Copy it now; it is never shown again.
-3. On the node server:
+3. On the node server (same private-repo token as the panel - see above):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+export RAPIDO_REPO_TOKEN=<your token>
+bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
 # paste the setup_blob when prompted, then pick a listen port (default 62051)
 ```
 
 or fully non-interactively:
 
 ```bash
+export RAPIDO_REPO_TOKEN=<your token>
 NODE_SETUP_BLOB='<paste the blob here>' \
-  bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+  bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+    -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
 ```
 
 <details>
@@ -742,7 +759,17 @@ NODE_SETUP_BLOB='<paste the blob here>' \
 #
 #  Rapido-Go Node - installer and management CLI.
 #
-#  Install:
+#  Install (this repository is private, so the very first fetch needs a
+#  token too - a plain `curl raw.githubusercontent.com` 404s on a private
+#  repo before this script ever gets a chance to run):
+#
+#    export RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope>
+#    bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+#      -H "Accept: application/vnd.github.raw" \
+#      "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
+#
+#  If this repository is ever made public, the plain form below also works
+#  and no token is needed for this first fetch:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
 #
 #  Afterwards the command is available system-wide as `rapido-go-node`.
@@ -1422,19 +1449,20 @@ Rapido-Go یک بازنویسی کامل و از صفر یک پنل VPN ری‌�
 
 #### ۱. نصب پنل
 
+**ریپو و ایمیج‌هاش خصوصی‌ان**، پس همون اولین fetch هم به یک توکن گیت‌هاب نیاز داره - یک `curl raw.githubusercontent.com` ساده روی ریپوی خصوصی همون اول با 404 مواجه می‌شه، قبل از اینکه اصلاً اسکریپت فرصت اجرا شدن پیدا کنه. از توکنی با اسکوپ `repo` + `read:packages` استفاده کنید (یک fine-grained token محدود به همین ریپو با دسترسی Contents: Read-only و Packages: Read-only هم کار می‌کنه):
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
+export RAPIDO_REPO_TOKEN=<توکن‌تون>
+bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go.sh?ref=master") install
 ```
+
+توکن توی `.env` (با دسترسی chmod 600) ذخیره می‌شه تا `rapido-go update` بعدی هم بدون نیاز به دخالت دستی کار کنه - نه توی خود اسکریپت نوشته می‌شه نه توی `.git/config`. (اگه یه روز این ریپو عمومی بشه، شکل ساده و بدون توکن هم کار می‌کنه: `bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install`.)
 
 اگه داکر نصب نباشه نصبش می‌کنه، دامنه‌ای که قراره داشبورد روش بالا بیاد رو می‌پرسه (باید از قبل به همین سرور اشاره کنه - [Caddy](https://caddyserver.com/) با همون دامنه یک گواهی واقعی Let's Encrypt خودکار می‌گیره، بدون نیاز به کار دستی با certbot)، `.env` رو می‌سازه، ایمیج آماده رو از GHCR می‌گیره، Postgres + Redis + migration + هر دو نقش `api` و `backend` رو بالا میاره، و خودش رو هم به‌صورت سراسری با اسم `rapido-go` نصب می‌کنه تا بعداً برای مدیریت ازش استفاده کنید.
 
 در آخر یک **لاگین بوت‌استرپ** یک‌باره چاپ می‌کنه - در ادامه توضیح داده شده.
-
-> **ریپو و ایمیج‌هاش خصوصی‌ان.** اگه از قبل دسترسی تنظیم نکردید، یک توکن گیت‌هاب فقط برای همین یک دستور بدید (توی `.env` با دسترسی chmod 600 ذخیره می‌شه تا برای `rapido-go update` بعدی هم کار کنه - نه توی خود اسکریپت نوشته می‌شه نه توی `.git/config`):
-> ```bash
-> RAPIDO_REPO_TOKEN=<توکنی با اسکوپ repo + read:packages> \
->   bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
-> ```
 
 محتوای کامل `rapido-go.sh` توی بخش انگلیسی بالا (Quick install) قابل مشاهده‌ست.
 
@@ -1450,18 +1478,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/mast
 
 ۱. توی داشبورد، به **Nodes → Add Node** برید، یک اسم و آدرس بدید و ذخیره کنید.
 ۲. پنل نمایش یک‌باره یک مقدار **setup_blob** (به‌صورت base64) رو نشون می‌ده - این مقدار گواهی نود، کلید خصوصی، CA پنل، و سکرت گزارش‌دهی رو همه با هم بسته‌بندی می‌کنه. همین الان کپی‌ش کنید؛ دیگه هیچ‌وقت نشون داده نمی‌شه.
-۳. روی سرور نود:
+۳. روی سرور نود (همون توکن ریپوی خصوصیِ پنل - بالا رو ببینید):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+export RAPIDO_REPO_TOKEN=<توکن‌تون>
+bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
 # موقع پرسیدن setup_blob پیستش کنید، بعد یک پورت گوش‌دادن انتخاب کنید (پیش‌فرض ۶۲۰۵۱)
 ```
 
 یا کاملاً غیرتعاملی:
 
 ```bash
+export RAPIDO_REPO_TOKEN=<توکن‌تون>
 NODE_SETUP_BLOB='<اینجا blob رو پیست کنید>' \
-  bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
+  bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+    -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
 ```
 
 محتوای کامل `rapido-go-node.sh` هم توی بخش انگلیسی بالا قابل مشاهده‌ست.

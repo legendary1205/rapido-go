@@ -8,7 +8,17 @@
 #
 #  Rapido-Go - installer and management CLI for the panel.
 #
-#  Install:
+#  Install (this repository is private, so the very first fetch needs a
+#  token too - a plain `curl raw.githubusercontent.com` 404s on a private
+#  repo before this script ever gets a chance to run):
+#
+#    export RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope>
+#    bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
+#      -H "Accept: application/vnd.github.raw" \
+#      "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go.sh?ref=master") install
+#
+#  If this repository is ever made public, the plain form below also works
+#  and no token is needed for this first fetch:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
 #
 #  After installing, the command is available system-wide as `rapido-go`.
