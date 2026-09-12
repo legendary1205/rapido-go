@@ -281,14 +281,19 @@ fetch_source() {
     if [ -d "$APP_DIR/.git" ]; then
         log "Updating source in $APP_DIR..."
         git -C "$APP_DIR" remote set-url origin "$(repo_url)"
-        git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
             || { scrub_remote; die "Could not fetch the repository. If it is private, run: RAPIDO_REPO_TOKEN=<token> rapido-go update"; }
         git -C "$APP_DIR" reset --hard "origin/$REPO_BRANCH" >/dev/null
         scrub_remote
     else
         log "Downloading Rapido-Go into $APP_DIR..."
         mkdir -p "$(dirname "$APP_DIR")"
-        git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" \
+        # GIT_TERMINAL_PROMPT=0: a missing/wrong token on a private repo must
+        # fail with the die() message below, not hang forever on a credential
+        # prompt with no terminal attached to answer it (this is exactly what
+        # happens with no token at all - found by actually running an install
+        # non-interactively over SSH, not assumed).
+        GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" \
             "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
             || die "Could not clone the repository. If it is private, set RAPIDO_REPO_TOKEN."
         scrub_remote
@@ -945,14 +950,17 @@ fetch_source() {
     if [ -d "$APP_DIR/.git" ]; then
         log "Updating source..."
         git -C "$APP_DIR" remote set-url origin "$(repo_url)"
-        git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
+        GIT_TERMINAL_PROMPT=0 git -C "$APP_DIR" -c credential.helper= fetch --depth 1 origin "$REPO_BRANCH" \
             || { scrub_remote; die "Could not fetch. If the repo is private, set RAPIDO_REPO_TOKEN."; }
         git -C "$APP_DIR" reset --hard "origin/$REPO_BRANCH" >/dev/null
         scrub_remote
     else
         log "Downloading Rapido-Go into $APP_DIR..."
         mkdir -p "$(dirname "$APP_DIR")"
-        git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
+        # GIT_TERMINAL_PROMPT=0: fail with the die() message below instead of
+        # hanging on a credential prompt with no terminal to answer it - see
+        # rapido-go.sh's copy of this comment for how that was actually found.
+        GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
             || die "Could not clone. If the repo is private, set RAPIDO_REPO_TOKEN."
         scrub_remote
     fi
