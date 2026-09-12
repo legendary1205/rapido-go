@@ -62,7 +62,14 @@ RUN CGO_ENABLED=0 go build -o /out/panel ./cmd/panel
 
 # --- runtime -------------------------------------------------------------------
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+# postgresql16-client: the panel shells out to the real pg_dump/psql
+# binaries for its own backup/restore and legacy-panel-import endpoints
+# (internal/httpapi/backup.go) - every prior deployment ran the binary
+# directly on a host that happened to already have these installed, so
+# this gap was never exposed until an actual restore was attempted through
+# this image: "pg_dump: exec: \"pg_dump\": executable file not found in
+# $PATH". Matches postgres:16-alpine in docker-compose.prod.yml.
+RUN apk add --no-cache ca-certificates postgresql16-client
 WORKDIR /app
 COPY --from=gobuild /out/panel ./panel
 COPY --from=goose /go/bin/goose /usr/local/bin/goose
