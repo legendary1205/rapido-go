@@ -219,7 +219,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// panel is reachable at all, and a 403 here reads to it as the
 		// whole server being down.
 		api.GET("/core", requireAdmin, h.handleGetCoreVersion)
-		api.GET("/core/config", requireSudo, h.handleGetRawXrayConfig)
+		// Readable by any admin, but a non-sudo one gets a secret-free copy
+		// (see handleGetRawXrayConfig). Every WRITE below stays sudo-only.
+		api.GET("/core/config", requireAdmin, h.handleGetRawXrayConfig)
 		api.PUT("/core/config", requireSudo, h.handlePutRawXrayConfig)
 		api.POST("/core/restart", requireSudo, h.handleRestartCore)
 		api.POST("/core/config/validate", requireSudo, h.handleValidateRawXrayConfig)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 	"github.com/legendary1205/rapido-go/internal/xrayimport"
 )
@@ -288,12 +289,45 @@ func (h *Handler) handleGetRawXrayConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read inbounds"})
 		return
 	}
+
+	// A non-sudo admin gets the same document with every secret stripped.
+	//
+	// The real panel simply refuses this route to non-sudo admins, and the
+	// reason is sound: the full config carries each inbound's TLS and
+	// REALITY private keys plus the UUID/password of EVERY user on the
+	// fleet. But refusing it outright has a worse real-world consequence -
+	// a reseller bot (WizWiz, confirmed in its own source: it reads
+	// `getMarzbanHosts()->inbounds` purely for tag+protocol when building a
+	// plan) then shows the operator an empty inbound list, and the usual
+	// fix is to make that reseller a sudo admin, which hands them the real
+	// keys AND full control of the panel.
+	//
+	// Serving a redacted copy gives the bot exactly the two fields it
+	// reads while leaking nothing, and leaves sudo behaviour untouched.
+	identity := auth.CurrentIdentity(c)
+	redacted := identity != nil && !identity.IsSudo
+	if redacted {
+		for i := range inbounds {
+			inbounds[i].Clients = nil
+			inbounds[i].TLSCertificate = ""
+			inbounds[i].TLSKey = ""
+			inbounds[i].RealityPrivateKey = ""
+			inbounds[i].RealityShortIDs = nil
+		}
+	}
 	coreRow, err := h.store.CachedGetCoreConfig(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read core config"})
 		return
 	}
 	core := toCoreConfigDTO(coreRow)
+	if redacted {
+		// Outbounds carry upstream credentials (a vmess/trojan exit's own
+		// uuid/password) and the fleet's exit topology; routing and DNS
+		// describe where traffic goes. None of it is anything a reseller's
+		// bot reads, so none of it is served to one.
+		core.Outbounds, core.RoutingRules, core.DNSServers = nil, nil, nil
+	}
 
 	raw, err := xrayimport.BuildXrayJSON(
 		inbounds,

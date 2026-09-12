@@ -68,10 +68,11 @@ func TestCoreStatsIsReachableByANonSudoAdmin(t *testing.T) {
 		}
 	}
 
-	// The rest of the /core family stays sudo-only, same as the real panel.
-	cfg := doRequest(t, router, "GET", "/api/core/config", resellerToken, nil)
-	if cfg.Code != http.StatusForbidden {
-		t.Errorf("GET /api/core/config as non-sudo = %d, want 403", cfg.Code)
+	// Writes under /core stay sudo-only. (Reading /core/config is allowed
+	// for any admin but redacted - see TestCoreConfigIsRedactedForNonSudo.)
+	restart := doRequest(t, router, "POST", "/api/core/restart", resellerToken, nil)
+	if restart.Code != http.StatusForbidden {
+		t.Errorf("POST /api/core/restart as non-sudo = %d, want 403", restart.Code)
 	}
 }
 
@@ -494,6 +495,65 @@ func TestSubscriptionHeadersMatchTheRealPanel(t *testing.T) {
 	}
 	if url := rec.Header().Get("Profile-Web-Page-Url"); !strings.Contains(url, subToken) {
 		t.Errorf("Profile-Web-Page-Url = %q, want the subscription URL that was fetched", url)
+	}
+}
+
+// TestCoreConfigIsRedactedForNonSudo covers a real, reported failure: a
+// reseller bot (WizWiz) builds its plan's inbound picker from
+// getMarzbanHosts()->inbounds, which is GET /api/core/config. Sudo-only
+// meant the reseller saw an empty list and the natural "fix" would have
+// been to make that reseller a sudo admin - handing them the fleet's TLS
+// and REALITY private keys, every user's credentials, and full control.
+// They now get the tags they need and nothing else.
+func TestCoreConfigIsRedactedForNonSudo(t *testing.T) {
+	router, sudoToken := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", sudoToken, []map[string]interface{}{
+		{"tag": "Secret VLESS", "protocol": "vless", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "example.test"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", sudoToken, map[string]interface{}{
+		"Secret VLESS": []map[string]interface{}{{"remark": "h", "address": "1.2.3.4", "port": 8443}},
+	})
+	doRequest(t, router, "POST", "/api/user", sudoToken, map[string]interface{}{
+		"username": "secret_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	doRequest(t, router, "POST", "/api/admin", sudoToken, map[string]interface{}{
+		"username": "core-reseller", "password": "pw12345", "is_sudo": false,
+	})
+	resellerToken := loginAs(t, router, "core-reseller", "pw12345")
+
+	resp := doRequest(t, router, "GET", "/api/core/config", resellerToken, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /api/core/config as a reseller = %d %v, want 200", resp.Code, resp.Body)
+	}
+	body := string(resp.Raw)
+
+	// What the bot actually reads must be there.
+	if !strings.Contains(body, `"tag": "Secret VLESS"`) || !strings.Contains(body, `"protocol": "vless"`) {
+		t.Errorf("reseller config is missing the tag/protocol its bot reads:\n%s", body)
+	}
+	// Nothing secret may be.
+	for _, secret := range []string{"BEGIN CERTIFICATE", "BEGIN EC PRIVATE KEY", "secret_user", "privateKey"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("reseller config leaked %q - it must carry no keys, no certificates and no user credentials", secret)
+		}
+	}
+
+	// Sudo still gets the real thing.
+	full := doRequest(t, router, "GET", "/api/core/config", sudoToken, nil)
+	if !strings.Contains(string(full.Raw), "secret_user") {
+		t.Errorf("sudo's core config lost its clients - only the non-sudo copy should be redacted")
+	}
+
+	// Writes stay sudo-only.
+	for _, w := range []struct{ method, path string }{
+		{"PUT", "/api/core/config"},
+		{"POST", "/api/core/restart"},
+		{"POST", "/api/core/config/validate"},
+	} {
+		if got := doRequest(t, router, w.method, w.path, resellerToken, map[string]interface{}{}); got.Code != http.StatusForbidden {
+			t.Errorf("%s %s as a reseller = %d, want 403", w.method, w.path, got.Code)
+		}
 	}
 }
 
