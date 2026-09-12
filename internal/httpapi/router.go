@@ -143,6 +143,15 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/settings/xray-config", requireSudo, h.handleGetXrayConfig)
 		api.PUT("/settings/xray-config", requireSudo, h.handleUpdateXrayConfig)
 
+		// Real Marzban's own API surface (app/routers/core.py) - kept
+		// separate from /settings/core-config above (this codebase's own
+		// sing-box-flavored DTO) since genuine-Marzban-API reseller bots
+		// (confirmed against wizwizdev/wizwizxui-timebot) call these exact
+		// paths expecting real, raw Xray JSON. See
+		// internal/httpapi/corexrayconfig.go's doc comments for scope.
+		api.GET("/core", requireSudo, h.handleGetCoreVersion)
+		api.GET("/core/config", requireSudo, h.handleGetRawXrayConfig)
+
 		api.GET("/settings/backup", requireSudo, h.handleListBackups)
 		api.POST("/settings/backup", requireSudo, h.handleCreateBackup)
 		api.GET("/settings/backup/:filename", requireSudo, h.handleDownloadBackup)
