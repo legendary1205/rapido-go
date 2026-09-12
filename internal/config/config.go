@@ -60,6 +60,21 @@ type Config struct {
 	ClashTemplateFile             string
 	V2raySubscriptionTemplateFile string
 
+	// UseCustomJSON* mirror config.py's USE_CUSTOM_JSON_* family exactly,
+	// including their shared default of false: each of v2rayN/v2rayNG/
+	// Streisand/Happ/NPVTunnel(ktor-client) only moves off the universal
+	// v2ray share-link format to v2ray-json when its own flag (or the
+	// blanket Default) is on. Real deployments differ on this per client -
+	// getting one wrong is not cosmetic (see internal/httpapi/subscription.go's
+	// detectSubscriptionFormat doc comment for the real incident this
+	// caused: v2rayN got a format its users should never have received).
+	UseCustomJSONDefault      bool
+	UseCustomJSONForV2RayN    bool
+	UseCustomJSONForV2RayNG   bool
+	UseCustomJSONForStreisand bool
+	UseCustomJSONForHapp      bool
+	UseCustomJSONForNPVTunnel bool
+
 	// DashboardDir is where the built dashboard (web/dist, a Vite build
 	// output) lives on disk - mirrors the current Python system serving its
 	// own dashboard build as static files from the same process. Relative
@@ -142,6 +157,13 @@ func Load() (*Config, error) {
 
 		LoginNotifyWhitelist: splitNonEmpty(getEnv("LOGIN_NOTIFY_WHITE_LIST", "")),
 	}
+
+	cfg.UseCustomJSONDefault = getBool("USE_CUSTOM_JSON_DEFAULT", false)
+	cfg.UseCustomJSONForV2RayN = getBool("USE_CUSTOM_JSON_FOR_V2RAYN", false)
+	cfg.UseCustomJSONForV2RayNG = getBool("USE_CUSTOM_JSON_FOR_V2RAYNG", false)
+	cfg.UseCustomJSONForStreisand = getBool("USE_CUSTOM_JSON_FOR_STREISAND", false)
+	cfg.UseCustomJSONForHapp = getBool("USE_CUSTOM_JSON_FOR_HAPP", false)
+	cfg.UseCustomJSONForNPVTunnel = getBool("USE_CUSTOM_JSON_FOR_NPVTUNNEL", false)
 
 	cfg.NotifyStatusChange = getBool("NOTIFY_STATUS_CHANGE", true)
 	cfg.NotifyUserCreated = getBool("NOTIFY_USER_CREATED", true)

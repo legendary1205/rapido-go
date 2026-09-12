@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +39,7 @@ func (h *Handler) handleGetSubscription(c *gin.Context) {
 		return
 	}
 
-	h.writeSubscription(c, user, detectSubscriptionFormat(c.GetHeader("User-Agent")), true)
+	h.writeSubscription(c, user, detectSubscriptionFormat(c.GetHeader("User-Agent"), h.formatFlags), true)
 }
 
 // handleGetSubscriptionFormat implements GET /sub/:token/:format - an
@@ -66,19 +68,67 @@ var validSubscriptionFormats = map[string]bool{
 	"v2ray": true, "sing-box": true, "clash": true, "clash-meta": true, "outline": true, "v2ray-json": true,
 }
 
+// SubscriptionFormatFlags mirrors config.py's USE_CUSTOM_JSON_* family
+// exactly - Default plus one flag per client. Real deployments differ on
+// these: on the production install this was ported from, only V2RayNG
+// and Streisand are actually turned on (V2RayN, Happ and NPVTunnel are
+// off, matching every one of these flags' own shipped default of False).
+// Getting this wrong is not cosmetic: this port used to send v2ray-json
+// to every one of these clients unconditionally, so v2rayN (whose flag is
+// off on that real deployment) got a format its users never should have
+// received, and v2rayNG's own version floor (below which its app-bundled
+// Xray-core cannot parse the JSON format at all) was never checked either.
+type SubscriptionFormatFlags struct {
+	Default   bool
+	V2RayN    bool
+	V2RayNG   bool
+	Streisand bool
+	Happ      bool
+	NPVTunnel bool
+}
+
+var (
+	v2rayNVersionRe  = regexp.MustCompile(`^v2rayN/(\d+\.\d+)`)
+	v2rayNGVersionRe = regexp.MustCompile(`^v2rayNG/(\d+\.\d+\.\d+)`)
+	happVersionRe    = regexp.MustCompile(`^Happ/(\d+\.\d+\.\d+)`)
+)
+
+// versionAtLeast reports whether a >= b, comparing dot-separated numeric
+// segments left to right and treating a missing segment as 0 (so "1.9" >=
+// "1.8.29") - Python's LooseVersion comparison, for the digits-only
+// version strings these User-Agents actually send.
+func versionAtLeast(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var av, bv int
+		if i < len(as) {
+			av, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			bv, _ = strconv.Atoi(bs[i])
+		}
+		if av != bv {
+			return av > bv
+		}
+	}
+	return true
+}
+
 // detectSubscriptionFormat auto-selects a format from the client's real
-// User-Agent, porting app/routers/subscription.py's own regex chain (checked
-// in this exact order - Clash Meta forks are matched before plain Clash,
-// since "ClashMetaForAndroid" etc. would otherwise match the plainer Clash
-// pattern first). Deliberately simplified in one place, documented rather
-// than silently dropped: the Python original version-gates v2rayN/v2rayNG/
-// Streisand/Happ's move to v2ray-json behind per-client USE_CUSTOM_JSON_*
-// settings and, for a narrow v2rayNG version band, reverses the link order
-// as a workaround for a bug in that specific release range - this project
-// has no equivalent of either knob yet, so those clients always get
-// v2ray-json (a strict upgrade over the v2ray-link fallback they'd otherwise
-// silently get) with no version check and no reversal.
-func detectSubscriptionFormat(userAgent string) string {
+// User-Agent, porting app/routers/subscription.py's own if/elif chain in
+// this exact order - Clash Meta forks are matched before plain Clash,
+// since "ClashMetaForAndroid" etc. would otherwise match the plainer
+// Clash pattern first. v2rayN/v2rayNG/Streisand/Happ/NPVTunnel(ktor-
+// client) only ever move off the universal v2ray share-link format when
+// their own flag (or the blanket Default) is on AND - for every one of
+// them except Streisand - their reported version clears a minimum floor;
+// otherwise they get the same plain v2ray links every unrecognized
+// User-Agent gets. The narrow v2rayNG 1.8.18-1.8.28 band that Python
+// additionally reverses link order for (a workaround for a bug specific
+// to that release range) is treated the same as >=1.8.29 here - link
+// order, not format, and a small gap next to what this used to be:
+// version-gating not implemented at all.
+func detectSubscriptionFormat(userAgent string, flags SubscriptionFormatFlags) string {
 	lower := strings.ToLower(userAgent)
 	switch {
 	case hasAnyPrefix(lower, "clash-verge", "clash-meta", "clash.meta", "flclash", "mihomo"):
@@ -93,11 +143,36 @@ func detectSubscriptionFormat(userAgent string) string {
 		return "sing-box"
 	case hasAnyPrefix(lower, "ss", "ssr", "ssd", "sss", "outline", "shadowsocks", "ssconf"):
 		return "outline"
-	case hasAnyPrefix(lower, "v2rayn", "v2rayng", "streisand", "happ", "ktor-client"):
-		return "v2ray-json"
-	default:
+	}
+
+	if m := v2rayNVersionRe.FindStringSubmatch(userAgent); m != nil {
+		if (flags.Default || flags.V2RayN) && versionAtLeast(m[1], "6.40") {
+			return "v2ray-json"
+		}
 		return "v2ray"
 	}
+	if m := v2rayNGVersionRe.FindStringSubmatch(userAgent); m != nil {
+		if (flags.Default || flags.V2RayNG) && versionAtLeast(m[1], "1.8.18") {
+			return "v2ray-json"
+		}
+		return "v2ray"
+	}
+	if strings.HasPrefix(lower, "streisand") {
+		if flags.Default || flags.Streisand {
+			return "v2ray-json"
+		}
+		return "v2ray"
+	}
+	if m := happVersionRe.FindStringSubmatch(userAgent); m != nil {
+		if (flags.Default || flags.Happ) && versionAtLeast(m[1], "1.11.0") {
+			return "v2ray-json"
+		}
+		return "v2ray"
+	}
+	if (flags.Default || flags.NPVTunnel) && strings.Contains(userAgent, "ktor-client") {
+		return "v2ray-json"
+	}
+	return "v2ray"
 }
 
 func hasAnyPrefix(lowerUserAgent string, prefixes ...string) bool {

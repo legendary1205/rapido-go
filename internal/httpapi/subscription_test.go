@@ -326,12 +326,20 @@ func TestSubscriptionAutoDetectsFormatFromUserAgent(t *testing.T) {
 	cases := []struct {
 		userAgent    string
 		wantContains string
+		base64       bool
 	}{
-		{"ClashMetaForAndroid/2.10", "proxies:"},
-		{"Clash/1.0", "proxies:"},
-		{"SFA/1.0", `"outbounds"`},
-		{"Outline/1.3", `"servers"`},
-		{"v2rayNG/1.9.0", `"outbounds"`},
+		{"ClashMetaForAndroid/2.10", "proxies:", false},
+		{"Clash/1.0", "proxies:", false},
+		{"SFA/1.0", `"outbounds"`, false},
+		{"Outline/1.3", `"servers"`, false},
+		// v2rayNG only gets the JSON format when USE_CUSTOM_JSON_FOR_V2RAYNG
+		// (or the blanket Default) is turned on - both are off in this test
+		// harness's zero-value SubscriptionFormatFlags, matching every one
+		// of these flags' own real shipped default of false, so this falls
+		// through to the same base64 v2ray links every unrecognized
+		// User-Agent gets. See TestDetectSubscriptionFormatVersionGating
+		// for the flags-on, version-gated case.
+		{"v2rayNG/1.9.0", "vless://", true},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(http.MethodGet, "/sub/"+subToken, nil)
@@ -341,8 +349,55 @@ func TestSubscriptionAutoDetectsFormatFromUserAgent(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("User-Agent %q: %d body=%s", tc.userAgent, rec.Code, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), tc.wantContains) {
-			t.Errorf("User-Agent %q: expected body to contain %q, got: %s", tc.userAgent, tc.wantContains, rec.Body.String())
+		body := rec.Body.String()
+		if tc.base64 {
+			decoded, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				t.Fatalf("User-Agent %q: body is not valid base64: %v", tc.userAgent, err)
+			}
+			body = string(decoded)
 		}
+		if !strings.Contains(body, tc.wantContains) {
+			t.Errorf("User-Agent %q: expected body to contain %q, got: %s", tc.userAgent, tc.wantContains, body)
+		}
+	}
+}
+
+// TestDetectSubscriptionFormatVersionGating exercises detectSubscriptionFormat
+// directly (no HTTP round trip needed) for the flags-and-version-floor
+// behavior that broke a real deployment: this port used to send every one
+// of v2rayN/v2rayNG/Streisand/Happ/NPVTunnel the JSON format
+// unconditionally, ignoring both their own USE_CUSTOM_JSON_FOR_* flag and
+// (except Streisand) a minimum client version below which its own
+// bundled core cannot parse that format at all.
+func TestDetectSubscriptionFormatVersionGating(t *testing.T) {
+	cases := []struct {
+		name       string
+		userAgent  string
+		flags      SubscriptionFormatFlags
+		wantFormat string
+	}{
+		{"v2rayN flag off falls back to plain regardless of version", "v2rayN/6.45", SubscriptionFormatFlags{}, "v2ray"},
+		{"v2rayN flag on but below version floor falls back to plain", "v2rayN/6.30", SubscriptionFormatFlags{V2RayN: true}, "v2ray"},
+		{"v2rayN flag on and at version floor gets json", "v2rayN/6.40", SubscriptionFormatFlags{V2RayN: true}, "v2ray-json"},
+		{"v2rayNG flag off falls back to plain regardless of version", "v2rayNG/1.9.0", SubscriptionFormatFlags{}, "v2ray"},
+		{"v2rayNG flag on but below version floor falls back to plain", "v2rayNG/1.8.0", SubscriptionFormatFlags{V2RayNG: true}, "v2ray"},
+		{"v2rayNG flag on and at version floor gets json", "v2rayNG/1.8.18", SubscriptionFormatFlags{V2RayNG: true}, "v2ray-json"},
+		{"Streisand flag on gets json with no version check at all", "Streisand/1.0", SubscriptionFormatFlags{Streisand: true}, "v2ray-json"},
+		{"Streisand flag off falls back to plain", "Streisand/1.0", SubscriptionFormatFlags{}, "v2ray"},
+		{"Happ flag on but below version floor falls back to plain", "Happ/1.10.0", SubscriptionFormatFlags{Happ: true}, "v2ray"},
+		{"Happ flag on and at version floor gets json", "Happ/1.11.0", SubscriptionFormatFlags{Happ: true}, "v2ray-json"},
+		{"NPVTunnel (ktor-client) flag on gets json", "okhttp/ktor-client", SubscriptionFormatFlags{NPVTunnel: true}, "v2ray-json"},
+		{"NPVTunnel (ktor-client) flag off falls back to plain", "okhttp/ktor-client", SubscriptionFormatFlags{}, "v2ray"},
+		{"blanket Default turns every one of them on", "v2rayN/6.40", SubscriptionFormatFlags{Default: true}, "v2ray-json"},
+		{"an unrecognized app always falls back to plain", "v2box/1.0", SubscriptionFormatFlags{Default: true}, "v2ray"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectSubscriptionFormat(tc.userAgent, tc.flags)
+			if got != tc.wantFormat {
+				t.Errorf("detectSubscriptionFormat(%q, %+v) = %q, want %q", tc.userAgent, tc.flags, got, tc.wantFormat)
+			}
+		})
 	}
 }

@@ -87,6 +87,18 @@ services:
       # that only guarantees the profile can route traffic at all.
       CLASH_SUBSCRIPTION_TEMPLATE: ${CLASH_SUBSCRIPTION_TEMPLATE:-}
       V2RAY_SUBSCRIPTION_TEMPLATE: ${V2RAY_SUBSCRIPTION_TEMPLATE:-}
+      # All false by default (every real client gets the universal v2ray
+      # share-link format) - matching each flag's own real shipped
+      # default. Turn one on only for a client you have actually
+      # confirmed accepts the JSON format at the version your users run;
+      # see internal/httpapi/subscription.go's detectSubscriptionFormat
+      # doc comment for why guessing this wrong is not cosmetic.
+      USE_CUSTOM_JSON_DEFAULT: ${USE_CUSTOM_JSON_DEFAULT:-false}
+      USE_CUSTOM_JSON_FOR_V2RAYN: ${USE_CUSTOM_JSON_FOR_V2RAYN:-false}
+      USE_CUSTOM_JSON_FOR_V2RAYNG: ${USE_CUSTOM_JSON_FOR_V2RAYNG:-false}
+      USE_CUSTOM_JSON_FOR_STREISAND: ${USE_CUSTOM_JSON_FOR_STREISAND:-false}
+      USE_CUSTOM_JSON_FOR_HAPP: ${USE_CUSTOM_JSON_FOR_HAPP:-false}
+      USE_CUSTOM_JSON_FOR_NPVTUNNEL: ${USE_CUSTOM_JSON_FOR_NPVTUNNEL:-false}
     volumes:
       - ./templates:/app/templates:ro
 

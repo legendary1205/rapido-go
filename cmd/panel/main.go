@@ -115,8 +115,12 @@ func run(logger *slog.Logger) error {
 		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, logger)
 	}
 
+	formatFlags := httpapi.SubscriptionFormatFlags{
+		Default: cfg.UseCustomJSONDefault, V2RayN: cfg.UseCustomJSONForV2RayN, V2RayNG: cfg.UseCustomJSONForV2RayNG,
+		Streisand: cfg.UseCustomJSONForStreisand, Happ: cfg.UseCustomJSONForHapp, NPVTunnel: cfg.UseCustomJSONForNPVTunnel,
+	}
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
-		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile,
+		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags,
 		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
 		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
