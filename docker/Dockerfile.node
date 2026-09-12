@@ -10,9 +10,20 @@
 # without this even though node never calls anything DB-related itself.
 # Found by actually running this Dockerfile in CI, not assumed correct.
 FROM golang:1.27-alpine AS sqlc
+# See docker/Dockerfile.panel for why this is direct rather than the
+# default GOPROXY=https://proxy.golang.org,direct - a real 403 from the
+# proxy CDN on specific transitive deps, confirmed reproducible, that the
+# go command never falls back past (it only falls through on 404/410).
+ENV GOPROXY=https://goproxy.io,direct
+RUN apk add --no-cache git
 RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
 FROM golang:1.27-alpine AS gobuild
+# Same goproxy.io reasoning as the sqlc stage above and as
+# docker/Dockerfile.panel - this module go mod downloads transitively
+# pulls in klauspost/compress too.
+ENV GOPROXY=https://goproxy.io,direct
+RUN apk add --no-cache git
 WORKDIR /src
 COPY --from=sqlc /go/bin/sqlc /usr/local/bin/sqlc
 COPY go.mod go.sum ./

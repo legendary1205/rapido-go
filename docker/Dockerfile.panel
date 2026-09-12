@@ -19,10 +19,24 @@ RUN npm run build
 # go.mod/go.sum, since it's a standalone CLI tool, not an import of the
 # project's own code -----------------------------------------------------------
 FROM golang:1.27-alpine AS goose
+# proxy.golang.org's CDN has answered some specific module zips with a
+# bare 403 (confirmed reproducible and global - the exact same URL 403s
+# from an unrelated, unrestricted machine too, so it is a real upstream
+# gap, not a network block here) - and the go command only falls back to
+# GOPROXY's ",direct" half on 404/410, never on 403, so the default
+# GOPROXY=https://proxy.golang.org,direct never actually reaches "direct"
+# for this. goproxy.io mirrors the same module data from separate
+# infrastructure. ",direct" is kept as a second fallback, which needs git
+# (not in this base image) to resolve a vanity import path like
+# golang.org/x/sys by cloning its VCS directly.
+ENV GOPROXY=https://goproxy.io,direct
+RUN apk add --no-cache git
 RUN CGO_ENABLED=0 go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
 
 # --- sqlc (query code generator) - same reasoning as goose above -----------------
 FROM golang:1.27-alpine AS sqlc
+ENV GOPROXY=https://goproxy.io,direct
+RUN apk add --no-cache git
 RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
 # --- go binary -----------------------------------------------------------------
@@ -30,6 +44,12 @@ RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 # internal/db/queries/*.sql - see sqlc.yaml) rather than committed, so it
 # has to be generated here before `go build` can see those packages at all.
 FROM golang:1.27-alpine AS gobuild
+# Same goproxy.io reasoning as the goose/sqlc stages above - this project's
+# own dependency tree transitively pulls in klauspost/compress too (a
+# different version, but the same package that was 403ing), so the plain
+# default GOPROXY hits the exact same gap here.
+ENV GOPROXY=https://goproxy.io,direct
+RUN apk add --no-cache git
 WORKDIR /src
 COPY --from=sqlc /go/bin/sqlc /usr/local/bin/sqlc
 COPY go.mod go.sum ./
