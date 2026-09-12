@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,6 +18,11 @@ import (
 // ever displays this field; it isn't used to gate behavior anywhere in
 // the real Marzban ecosystem this is restoring compatibility with.
 const xrayCoreVersionReported = "1.8.24"
+
+// minNodeVersionReported mirrors NodeSettings.min_node_version's own
+// default on the real panel - a value its dashboard shows next to the CA
+// certificate when adding a node, not something either side enforces.
+const minNodeVersionReported = "v0.2.0"
 
 // handleGetCoreVersion implements GET /api/core (sudo only) - real
 // Marzban's app/routers/core.py CoreStats endpoint. Kept deliberately
@@ -31,7 +38,146 @@ func (h *Handler) handleGetCoreVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": xrayCoreVersionReported,
 		"started": len(inboundRows) > 0,
+		// Real Marzban's CoreStats carries this third field (the path of
+		// its live log websocket). A client that reads it and connects
+		// would find nothing here - this architecture has no equivalent
+		// stream - but omitting the key entirely breaks a strict client
+		// that expects the full model, which costs more than an unused
+		// path does.
+		"logs_websocket": "/api/core/logs",
 	})
+}
+
+// handleRestartCore implements POST /api/core/restart (sudo only). Real
+// Marzban pushes a freshly-rendered config to its core and every connected
+// node here; this architecture inverts that - nodes pull their own config
+// on a short interval (see handleGetNodeConfig) - so the honest equivalent
+// is to drop the cached fleet-wide payload, which makes every node rebuild
+// from current data on its very next poll instead of up to the cache TTL
+// later. Returns {} exactly as the real endpoint does.
+func (h *Handler) handleRestartCore(c *gin.Context) {
+	if err := h.store.InvalidateNodeConfigPayload(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not trigger a core restart"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{})
+}
+
+// handlePutRawXrayConfig implements PUT /api/core/config (sudo only) - the
+// write half of the endpoint handleGetRawXrayConfig reads. Takes a real,
+// raw Xray JSON document (the same shape a bot just read back), translates
+// it through the same importer POST /api/inbounds/import-xray uses, and
+// echoes the payload on success, matching the real panel's own contract.
+func (h *Handler) handlePutRawXrayConfig(c *gin.Context) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Could not read the request body"})
+		return
+	}
+	parsed, err := xrayimport.ParseXrayConfig(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "could not parse this as an Xray config: " + err.Error()})
+		return
+	}
+	if badRequest, err := h.applyParsedXrayConfig(c.Request.Context(), parsed); err != nil {
+		status := http.StatusInternalServerError
+		if badRequest {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"detail": err.Error()})
+		return
+	}
+	// Echo the payload back, byte for byte, exactly as the real endpoint
+	// does ("On success the response body is unchanged: the payload").
+	c.Data(http.StatusOK, "application/json", raw)
+}
+
+// handleValidateRawXrayConfig implements POST /api/core/config/validate
+// (sudo only): structural checks only, writing and restarting nothing.
+// checked_with_xray is always false here and that is not a placeholder -
+// there is no Xray binary in this stack to hand the file to, so claiming
+// otherwise would be a lie a dashboard would act on.
+func (h *Handler) handleValidateRawXrayConfig(c *gin.Context) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Could not read the request body"})
+		return
+	}
+	parsed, err := xrayimport.ParseXrayConfig(raw)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"valid": false, "detail": err.Error(), "checked_with_xray": false,
+		})
+		return
+	}
+	detail := "Configuration is structurally valid."
+	if len(parsed.Warnings) > 0 {
+		detail = "Configuration is usable, with warnings: " + strings.Join(parsed.Warnings, "; ")
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"valid": true, "detail": detail, "checked_with_xray": false,
+	})
+}
+
+// handleListCoreConfigBackups implements GET /api/core/config/backups
+// (sudo only). Real Marzban keeps timestamped copies of its xray.json on
+// disk; this panel has no such file to copy (its core config lives in
+// Postgres, and whole-database backups are their own endpoint family under
+// /api/settings/backup), so the honest answer is an empty list rather than
+// a 404 a dashboard would render as an error.
+func (h *Handler) handleListCoreConfigBackups(c *gin.Context) {
+	c.JSON(http.StatusOK, []any{})
+}
+
+// handleGetCoreConfigBackup implements GET /api/core/config/backups/:id.
+// Nothing is ever stored (see handleListCoreConfigBackups), so every id is
+// genuinely absent.
+func (h *Handler) handleGetCoreConfigBackup(c *gin.Context) {
+	c.JSON(http.StatusNotFound, gin.H{"detail": "Backup not found"})
+}
+
+// handleRestoreCoreConfigBackup implements
+// POST /api/core/config/backups/:id/restore - same reasoning as above.
+func (h *Handler) handleRestoreCoreConfigBackup(c *gin.Context) {
+	c.JSON(http.StatusNotFound, gin.H{"detail": "Backup not found"})
+}
+
+// handleGetNodeSettings implements GET /api/node/settings (sudo only) -
+// the CA certificate a new node has to trust, which this panel issues
+// every node's own leaf certificate from (see handleCreateNode).
+func (h *Handler) handleGetNodeSettings(c *gin.Context) {
+	tls, err := h.store.Queries.GetTLS(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read node settings"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"min_node_version": minNodeVersionReported,
+		"certificate":      tls.Certificate,
+	})
+}
+
+// handleReconnectNode implements POST /api/node/:id/reconnect (sudo only).
+// Real Marzban dials the node itself here; this architecture has no
+// panel-to-node channel at all (nodes poll), so the equivalent is to drop
+// the cached config payload so that node's very next poll rebuilds from
+// current data. Returns the same body the real endpoint does.
+func (h *Handler) handleReconnectNode(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Invalid node id"})
+		return
+	}
+	ctx := c.Request.Context()
+	if _, err := h.store.Queries.GetNodeByID(ctx, id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Node not found"})
+		return
+	}
+	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not schedule a reconnection"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": "Reconnection task scheduled"})
 }
 
 // buildRawXrayInbounds gathers this panel's own auto-sync inbounds and

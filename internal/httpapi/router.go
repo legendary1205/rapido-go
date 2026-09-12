@@ -69,8 +69,30 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 	r := gin.New()
 	r.Use(slogMiddleware(logger), gin.Recovery(), CORS(allowedOrigins), maintenanceMiddleware(h.store))
 
+	// Gin's own defaults answer an unknown path with the plain-text body
+	// "404 page not found" and a wrong method with that same 404. FastAPI -
+	// which every Marzban-ecosystem client was written against - always
+	// answers JSON, and distinguishes the two. That difference is not
+	// cosmetic: a bot that json_decode()s the body gets null from plain
+	// text and reports the whole panel as unreachable rather than "that one
+	// call 404'd", which is exactly the "server unavailable" symptom real
+	// reseller bots hit here.
+	r.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Not Found"})
+	})
+	r.HandleMethodNotAllowed = true
+	r.NoMethod(func(c *gin.Context) {
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"detail": "Method Not Allowed"})
+	})
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	// The Python panel serves the dashboard itself at "/" - a client (or an
+	// admin pasting the bare domain) that lands here must not get a 404.
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusTemporaryRedirect, "/dashboard/")
 	})
 
 	requireAdmin := auth.RequireAdmin(h.issuer, h.store, h.sudoUsername)
@@ -95,6 +117,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/admin/:username/users/disable", requireSudo, h.handleDisableAdminUsers)
 		api.POST("/admin/:username/users/activate", requireSudo, h.handleActivateAdminUsers)
 		api.POST("/admin/usage/reset/:username", requireSudo, h.handleResetAdminUsage)
+		api.GET("/admin/usage/:username", requireSudo, h.handleGetAdminUsage)
 
 		api.GET("/inbounds", requireAdmin, h.handleListInbounds)
 		api.POST("/inbounds/sync", requireSudo, h.handleSyncInbounds)
@@ -118,6 +141,14 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.DELETE("/user/:username", requireAdmin, h.handleDeleteUser)
 		api.POST("/user/:username/reset", requireAdmin, h.handleResetUserDataUsage)
 		api.POST("/user/:username/revoke_sub", requireAdmin, h.handleRevokeUserSub)
+		api.GET("/user/:username/usage", requireAdmin, h.handleGetUserUsage)
+		api.POST("/user/:username/active-next", requireAdmin, h.handleActivateNextPlan)
+		api.PUT("/user/:username/set-owner", requireSudo, h.handleSetUserOwner)
+
+		api.GET("/users/usage", requireAdmin, h.handleGetUsersUsage)
+		api.GET("/users/expired", requireAdmin, h.handleGetExpiredUsers)
+		api.DELETE("/users/expired", requireAdmin, h.handleDeleteExpiredUsers)
+		api.POST("/users/reset", requireSudo, h.handleResetAllUsersUsage)
 
 		api.POST("/user_template", requireSudo, h.handleCreateUserTemplate)
 		api.GET("/user_template", requireAdmin, h.handleListUserTemplates)
@@ -128,9 +159,11 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/node", requireSudo, h.handleCreateNode)
 		api.GET("/nodes", requireSudo, h.handleListNodes)
 		api.GET("/nodes/usage", requireSudo, h.handleGetNodesUsage)
+		api.GET("/node/settings", requireSudo, h.handleGetNodeSettings)
 		api.GET("/node/:id", requireSudo, h.handleGetNode)
 		api.PUT("/node/:id", requireSudo, h.handleUpdateNode)
 		api.DELETE("/node/:id", requireSudo, h.handleDeleteNode)
+		api.POST("/node/:id/reconnect", requireSudo, h.handleReconnectNode)
 
 		api.GET("/monitoring", requireSudo, h.handleGetMonitoring)
 		api.GET("/monitoring/history", requireSudo, h.handleGetMonitoringHistory)
@@ -151,6 +184,12 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// internal/httpapi/corexrayconfig.go's doc comments for scope.
 		api.GET("/core", requireSudo, h.handleGetCoreVersion)
 		api.GET("/core/config", requireSudo, h.handleGetRawXrayConfig)
+		api.PUT("/core/config", requireSudo, h.handlePutRawXrayConfig)
+		api.POST("/core/restart", requireSudo, h.handleRestartCore)
+		api.POST("/core/config/validate", requireSudo, h.handleValidateRawXrayConfig)
+		api.GET("/core/config/backups", requireSudo, h.handleListCoreConfigBackups)
+		api.GET("/core/config/backups/:id", requireSudo, h.handleGetCoreConfigBackup)
+		api.POST("/core/config/backups/:id/restore", requireSudo, h.handleRestoreCoreConfigBackup)
 
 		api.GET("/settings/backup", requireSudo, h.handleListBackups)
 		api.POST("/settings/backup", requireSudo, h.handleCreateBackup)
@@ -194,6 +233,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 	r.GET("/sub/:token", h.handleGetSubscription)
 	r.GET("/sub/:token/:format", h.handleGetSubscriptionFormat)
 	r.GET("/sub/:token/info", h.handleSubscriptionInfo)
+	r.GET("/sub/:token/usage", h.handleGetSubscriptionUsage)
 	r.POST("/sub/:token/emergency", h.handleEmergencyRecharge)
 	r.GET("/sub/:token/tickets", h.handleListMyTickets)
 	r.POST("/sub/:token/tickets", h.handleCreateMyTicket)

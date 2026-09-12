@@ -72,8 +72,26 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	if badRequest, err := h.applyParsedXrayConfig(c.Request.Context(), parsed); err != nil {
+		status := http.StatusInternalServerError
+		if badRequest {
+			status = http.StatusUnprocessableEntity
+		}
+		c.JSON(status, gin.H{"detail": err.Error()})
+		return
+	}
 
+	c.JSON(http.StatusOK, result)
+}
+
+// applyParsedXrayConfig writes an already-parsed Xray config through this
+// codebase's own write paths - inbound sync, one real-port host per
+// inbound, then the merged Core Config. Shared by POST
+// /api/inbounds/import-xray and PUT /api/core/config (the real Marzban
+// route reseller bots use), so the two can never drift into applying the
+// same file differently. badRequest is true when the caller's payload is
+// what's wrong, false when this panel failed to write it.
+func (h *Handler) applyParsedXrayConfig(ctx context.Context, parsed xrayimport.Result) (badRequest bool, err error) {
 	entries := make([]inboundSyncEntry, 0, len(parsed.Inbounds))
 	for _, in := range parsed.Inbounds {
 		entries = append(entries, inboundSyncEntry{
@@ -85,8 +103,7 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 		})
 	}
 	if _, err := h.syncInboundEntries(ctx, entries); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not save the imported inbounds: " + err.Error()})
-		return
+		return false, fmt.Errorf("could not save the imported inbounds: %w", err)
 	}
 
 	// syncInboundEntries's own default host has no port at all (see
@@ -107,14 +124,12 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 	// (see createDefaultHost's own doc comment on exactly that bug).
 	maxPriority, err := h.store.Queries.GetMaxHostPriority(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not determine the next host priority: " + err.Error()})
-		return
+		return false, fmt.Errorf("could not determine the next host priority: %w", err)
 	}
 	nextPriority := maxPriority + 1
 	for _, in := range parsed.Inbounds {
 		if err := h.store.Queries.DeleteHostsByInboundTag(ctx, in.Tag); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not set up the host for " + in.Tag + ": " + err.Error()})
-			return
+			return false, fmt.Errorf("could not set up the host for %s: %w", in.Tag, err)
 		}
 		alpn, fingerprint := in.HostALPN, in.HostFingerprint
 		if alpn == "" {
@@ -128,23 +143,19 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 			Port: pgInt4FromInt(int(in.Port)), Security: "inbound_default", Alpn: alpn, Fingerprint: fingerprint,
 			InboundTag: in.Tag, Priority: nextPriority,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not set up the host for " + in.Tag + ": " + err.Error()})
-			return
+			return false, fmt.Errorf("could not set up the host for %s: %w", in.Tag, err)
 		}
 		nextPriority++
 	}
 
 	merged, err := h.mergeCoreConfigForImport(ctx, parsed)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "could not read the current core config: " + err.Error()})
-		return
+		return false, fmt.Errorf("could not read the current core config: %w", err)
 	}
 	if _, err := h.applyCoreConfig(ctx, merged); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "imported inbounds/hosts saved, but the core config could not be merged in: " + err.Error()})
-		return
+		return true, fmt.Errorf("imported inbounds/hosts saved, but the core config could not be merged in: %w", err)
 	}
-
-	c.JSON(http.StatusOK, result)
+	return false, nil
 }
 
 // mergeCoreConfigForImport folds a parsed Xray file's outbounds/routing
