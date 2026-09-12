@@ -4,9 +4,9 @@ import {
   addHostToTag,
   emptyHost,
   flattenSortedHosts,
+  moveFlatHost,
   patchHostAt,
   removeHostAt,
-  swapHostPriority,
 } from "../hostsReducers";
 
 const host = (remark: string, priority = 0): Host => ({ ...emptyHost(priority), remark });
@@ -86,7 +86,7 @@ describe("flattenSortedHosts", () => {
     const flat = flattenSortedHosts(mixed);
     expect(flat.map((f) => f.host.remark)).toEqual(["N1-first", "N2-second", "N1-third"]);
     // Each entry still knows its own tag and its index within that tag's
-    // array, since that's what swapHostPriority/patchHostAt address by.
+    // array, since that's what moveFlatHost/patchHostAt address by.
     expect(flat[1].tag).toBe("node-2");
     expect(flat[1].index).toBe(0);
   });
@@ -101,26 +101,19 @@ describe("flattenSortedHosts", () => {
   });
 });
 
-describe("swapHostPriority", () => {
-  it("swaps priority values across two different tags", () => {
+describe("moveFlatHost", () => {
+  it("moves a host up across a tag boundary, reordering the flattened view", () => {
     const mixed: HostsMap = {
       "node-1": [host("N1", 0)],
       "node-2": [host("N2", 1)],
     };
-    const next = swapHostPriority(mixed, { tag: "node-1", index: 0 }, { tag: "node-2", index: 0 });
-    expect(next["node-1"][0].priority).toBe(1);
-    expect(next["node-2"][0].priority).toBe(0);
-    // The swap is visible in the flattened, sorted order too - N2 now
-    // sorts before N1, proving this is what actually reorders display.
+    const next = moveFlatHost(mixed, flattenSortedHosts(mixed), 1, "up");
     expect(flattenSortedHosts(next).map((f) => f.host.remark)).toEqual(["N2", "N1"]);
   });
 
   it("leaves remark/address/every other field untouched - only priority moves", () => {
-    const mixed: HostsMap = {
-      a: [host("A", 0)],
-      b: [host("B", 1)],
-    };
-    const next = swapHostPriority(mixed, { tag: "a", index: 0 }, { tag: "b", index: 0 });
+    const mixed: HostsMap = { a: [host("A", 0)], b: [host("B", 1)] };
+    const next = moveFlatHost(mixed, flattenSortedHosts(mixed), 1, "up");
     expect(next["a"][0].remark).toBe("A");
     expect(next["b"][0].remark).toBe("B");
   });
@@ -128,8 +121,53 @@ describe("swapHostPriority", () => {
   it("does not mutate the input map", () => {
     const mixed: HostsMap = { a: [host("A", 0)], b: [host("B", 1)] };
     const before = JSON.stringify(mixed);
-    swapHostPriority(mixed, { tag: "a", index: 0 }, { tag: "b", index: 0 });
+    moveFlatHost(mixed, flattenSortedHosts(mixed), 1, "up");
     expect(JSON.stringify(mixed)).toBe(before);
+  });
+
+  it("is a no-op at the top/bottom edge of the list", () => {
+    const mixed: HostsMap = { a: [host("A", 0)], b: [host("B", 1)] };
+    const flat = flattenSortedHosts(mixed);
+    expect(moveFlatHost(mixed, flat, 0, "up")).toBe(mixed);
+    expect(moveFlatHost(mixed, flat, 1, "down")).toBe(mixed);
+  });
+
+  // Regression test for a real, recurring production bug: two hosts ended
+  // up sharing the same priority value (e.g. from a hand-built payload
+  // during a migration, or any writer that didn't assign distinct
+  // values). The old swapHostPriority traded the two neighbors' raw
+  // priority NUMBERS - swapping two equal numbers changes nothing, so
+  // the up/down buttons went permanently inert for that pair. Moving by
+  // array position instead must always visibly reorder the list, no
+  // matter what the pre-existing priority values were.
+  it("still moves a host even when it shares its priority value with its neighbor", () => {
+    const stuck: HostsMap = {
+      a: [{ ...host("X", 5), id: 20 }],
+      b: [{ ...host("Y", 5), id: 10 }],
+    };
+    // Tie broken by id: Y (id 10) sorts before X (id 20).
+    expect(flattenSortedHosts(stuck).map((f) => f.host.remark)).toEqual(["Y", "X"]);
+
+    const next = moveFlatHost(stuck, flattenSortedHosts(stuck), 1, "up");
+    expect(flattenSortedHosts(next).map((f) => f.host.remark)).toEqual(["X", "Y"]);
+    // And the collision itself is gone - every priority in the result is
+    // now unique, so a second move in either direction keeps working too.
+    const priorities = flattenSortedHosts(next).map((f) => f.host.priority);
+    expect(new Set(priorities).size).toBe(priorities.length);
+  });
+
+  // Renumbering is global, not just the moved pair: any duplicate
+  // elsewhere in the list must also be resolved to a unique value the
+  // first time anyone moves anything, not just the two hosts touched.
+  it("renumbers the entire flat list to unique sequential priorities on every move", () => {
+    const messy: HostsMap = {
+      a: [{ ...host("P0", 0), id: 1 }],
+      b: [{ ...host("P0b", 0), id: 2 }, { ...host("P5", 5), id: 3 }],
+    };
+    const flat = flattenSortedHosts(messy);
+    const next = moveFlatHost(messy, flat, 0, "down");
+    const priorities = flattenSortedHosts(next).map((f) => f.host.priority);
+    expect(priorities).toEqual([0, 1, 2]);
   });
 });
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 
 	"github.com/gin-gonic/gin"
 
@@ -112,6 +113,19 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 		body[tag] = hosts
 	}
 
+	// PUT /api/hosts is the only general-purpose write path for host data -
+	// every other creator of a host (createDefaultHost, the legacy/xray
+	// importers) already learned this lesson and hands out a distinct
+	// priority per row, but this endpoint took whatever the client sent
+	// verbatim. Two hosts sharing a priority value makes the Hosts page's
+	// up/down buttons a silent no-op the moment they're adjacent in the
+	// flattened view (hostsReducers.ts's swap logic trades two equal
+	// numbers and nothing visibly changes) - normalizing here, on every
+	// save, makes that state impossible to persist no matter which client
+	// (this dashboard, an older cached build, a script, a future
+	// integration) produced the duplicate.
+	normalizeHostPriorities(body)
+
 	ctx := c.Request.Context()
 	out := map[string][]hostDTO{}
 	for tag, hosts := range body {
@@ -140,6 +154,40 @@ func (h *Handler) handlePutHosts(c *gin.Context) {
 		h.logger.Warn("invalidate node config cache", "error", err)
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// normalizeHostPriorities rewrites every host's Priority in place to a
+// strictly unique, sequential value (0..N-1), preserving the relative
+// order the client submitted: sorted first by the submitted priority,
+// then by {tag, index} as a stable, deterministic tiebreak (Go's map
+// iteration order is randomized, so the tiebreak cannot depend on the
+// order `body`'s keys happen to range over). Two hosts arriving with
+// equal or colliding priorities collapse into adjacent, distinct values
+// instead of silently persisting the collision.
+func normalizeHostPriorities(body map[string][]hostDTO) {
+	type ref struct {
+		tag   string
+		index int
+	}
+	var refs []ref
+	for tag, hosts := range body {
+		for i := range hosts {
+			refs = append(refs, ref{tag, i})
+		}
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		hi, hj := body[refs[i].tag][refs[i].index], body[refs[j].tag][refs[j].index]
+		if hi.Priority != hj.Priority {
+			return hi.Priority < hj.Priority
+		}
+		if refs[i].tag != refs[j].tag {
+			return refs[i].tag < refs[j].tag
+		}
+		return refs[i].index < refs[j].index
+	})
+	for seq, r := range refs {
+		body[r.tag][r.index].Priority = int32(seq)
+	}
 }
 
 // validateHost mirrors app/models/proxy.py's ProxyHost validators: balanced

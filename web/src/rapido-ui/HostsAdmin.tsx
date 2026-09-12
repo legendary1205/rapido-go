@@ -11,9 +11,9 @@ import { Button } from "rapido-ui/Button";
 import {
   addHostToTag,
   flattenSortedHosts,
+  moveFlatHost,
   patchHostAt,
   removeHostAt,
-  swapHostPriority,
 } from "rapido-ui/hostsReducers";
 
 const SECURITY = ["inbound_default", "none", "tls"];
@@ -354,11 +354,7 @@ export const HostsAdmin: FC = () => {
   const flat = useMemo(() => (hosts ? flattenSortedHosts(hosts) : []), [hosts]);
 
   const moveInFlatList = (flatIndex: number, direction: "up" | "down") => {
-    const targetIndex = direction === "up" ? flatIndex - 1 : flatIndex + 1;
-    if (targetIndex < 0 || targetIndex >= flat.length) return;
-    const a = flat[flatIndex];
-    const b = flat[targetIndex];
-    setHosts((h) => (h ? swapHostPriority(h, a, b) : h));
+    setHosts((h) => (h ? moveFlatHost(h, flat, flatIndex, direction) : h));
     setMsg(null);
   };
 

@@ -92,20 +92,47 @@ export const flattenSortedHosts = (hosts: HostsMap): FlatHost[] => {
   return flat;
 };
 
-// Swaps the `priority` value of two hosts, addressed by {tag, index} -
-// they can be from different tags, which is the actual point: this is how
-// a "move up/down" click on the flattened view crosses a tag/node
-// boundary. Reuses patchHostAt twice rather than mutating array position,
-// since position within a tag's own array no longer means anything for
-// display order (only `priority` does) - swapping the array slots
-// wouldn't change what's shown to a customer at all.
-export const swapHostPriority = (
+// Moves the host at `flatIndex` (from an already-computed
+// flattenSortedHosts view) one step up or down, then renumbers EVERY
+// host in the flat list to a clean, unique, sequential priority (0..N-1)
+// matching its new position.
+//
+// This used to swap just the two `priority` VALUES between the moved
+// host and its neighbor (see git history: swapHostPriority). That broke
+// permanently the moment two hosts anywhere in the list ended up with an
+// equal priority (a real, recurring incident - e.g. hand-built host
+// payloads during a migration, or any other writer that didn't bother to
+// give every row a distinct value): swapping two equal numbers changes
+// nothing, so the neighbor pair silently stops responding to the up/down
+// buttons, and the flattened view's own (priority, id) tiebreak snaps
+// straight back to the pre-swap order. Moving by ARRAY POSITION instead
+// sidesteps the collision entirely - it doesn't matter what the two
+// neighbors' priority values were, only that they trade places - and
+// renumbering the whole list afterwards means any duplicate priority
+// already present in `hosts` (inherited from before this fix, or from
+// some future bug) gets cleaned up automatically the very first time
+// anyone moves anything. Backend PUT /api/hosts (see
+// internal/httpapi/hosts.go's normalizeHostPriorities) also renumbers on
+// every save as a second, independent guarantee.
+export const moveFlatHost = (
   hosts: HostsMap,
-  a: { tag: string; index: number },
-  b: { tag: string; index: number }
+  flat: FlatHost[],
+  flatIndex: number,
+  direction: "up" | "down"
 ): HostsMap => {
-  const priorityA = hosts[a.tag][a.index].priority;
-  const priorityB = hosts[b.tag][b.index].priority;
-  const withA = patchHostAt(hosts, a.tag, a.index, { priority: priorityB });
-  return patchHostAt(withA, b.tag, b.index, { priority: priorityA });
+  const targetIndex = direction === "up" ? flatIndex - 1 : flatIndex + 1;
+  if (targetIndex < 0 || targetIndex >= flat.length) return hosts;
+
+  const reordered = flat.slice();
+  const tmp = reordered[flatIndex];
+  reordered[flatIndex] = reordered[targetIndex];
+  reordered[targetIndex] = tmp;
+
+  let next = hosts;
+  reordered.forEach((f, priority) => {
+    if (f.host.priority !== priority) {
+      next = patchHostAt(next, f.tag, f.index, { priority });
+    }
+  });
+  return next;
 };

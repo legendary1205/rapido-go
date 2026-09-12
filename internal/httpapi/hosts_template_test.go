@@ -131,3 +131,56 @@ func TestUserTemplateDuplicateNameRejected(t *testing.T) {
 func pathf(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }
+
+// TestPutHostsNormalizesDuplicatePriorities is a regression test for a
+// real, recurring production bug: PUT /api/hosts persisted whatever
+// priority value the client sent, verbatim. Every other host-creating
+// path in this codebase (createDefaultHost, the legacy/xray importers)
+// had already been hardened to hand out a distinct priority per row, but
+// this endpoint - the only general-purpose write path, and the one the
+// Hosts admin page itself calls on every save - had not. The moment two
+// hosts anywhere in the payload shared a priority (e.g. a hand-built
+// migration payload, or any other writer that didn't bother), the Hosts
+// page's up/down buttons went permanently inert for that pair, because
+// swapping two equal priority values is a no-op. A save must always
+// leave the database with unique, sequential priorities, regardless of
+// what was submitted.
+func TestPutHostsNormalizesDuplicatePriorities(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Tag A", "protocol": "vmess"},
+		{"tag": "Tag B", "protocol": "vless"},
+	})
+
+	resp := doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"Tag A": []map[string]interface{}{
+			{"remark": "A1", "address": "a1.example.com", "priority": 5},
+		},
+		"Tag B": []map[string]interface{}{
+			{"remark": "B1", "address": "b1.example.com", "priority": 5},
+			{"remark": "B2", "address": "b2.example.com", "priority": 5},
+		},
+	})
+	if resp.Code != 200 {
+		t.Fatalf("put hosts: %d %v", resp.Code, resp.Body)
+	}
+
+	seen := map[float64]bool{}
+	for tag, raw := range resp.Body {
+		hosts, ok := raw.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, hRaw := range hosts {
+			hMap := hRaw.(map[string]interface{})
+			p := hMap["priority"].(float64)
+			if seen[p] {
+				t.Fatalf("duplicate priority %v found across hosts (tag %q, host %v) - up/down reorder would go inert", p, tag, hMap["remark"])
+			}
+			seen[p] = true
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("got %d distinct priorities, want 3 (one per host)", len(seen))
+	}
+}
