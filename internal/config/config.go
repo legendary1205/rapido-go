@@ -50,6 +50,16 @@ type Config struct {
 	// (the default) yields a relative path.
 	SubscriptionURLPrefix string
 
+	// ClashTemplateFile / V2raySubscriptionTemplateFile mirror the current
+	// Python system's own CLASH_SUBSCRIPTION_TEMPLATE / V2RAY_SUBSCRIPTION_TEMPLATE:
+	// a real YAML/JSON file supplying everything beyond bare connectivity
+	// (dns/tun/sniffer settings, rule-providers, a branded proxy-group
+	// name, local inbounds/routing) for those two subscription formats.
+	// Empty (the default) falls back to a minimal built-in shape - see
+	// subscription.ClashConfig/V2rayJSONConfig's own doc comments.
+	ClashTemplateFile             string
+	V2raySubscriptionTemplateFile string
+
 	// DashboardDir is where the built dashboard (web/dist, a Vite build
 	// output) lives on disk - mirrors the current Python system serving its
 	// own dashboard build as static files from the same process. Relative
@@ -100,20 +110,22 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Role:                  Role(getEnv("ROLE", string(RoleAPI))),
-		HTTPHost:              getEnv("UVICORN_HOST", "0.0.0.0"),
-		DatabaseURL:           getEnv("DATABASE_URL", ""),
-		RedisAddr:             getEnv("REDIS_ADDR", "127.0.0.1:6379"),
-		RedisPass:             getEnv("REDIS_PASSWORD", ""),
-		SudoUsername:          getEnv("SUDO_USERNAME", ""),
-		SudoPassword:          getEnv("SUDO_PASSWORD", ""),
-		CertsDir:              getEnv("CERTS_DIR", "./certs"),
-		JWTAccessTTL:          24 * time.Hour,
-		AllowedOrigins:        strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
-		PublicIP:              getEnv("PUBLIC_IP", ""),
-		SubscriptionURLPrefix: getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
-		DashboardDir:          getEnv("DASHBOARD_DIR", "./web/dist"),
-		BackupDir:             getEnv("BACKUP_DIR", "./db_backups"),
+		Role:                          Role(getEnv("ROLE", string(RoleAPI))),
+		HTTPHost:                      getEnv("UVICORN_HOST", "0.0.0.0"),
+		DatabaseURL:                   getEnv("DATABASE_URL", ""),
+		RedisAddr:                     getEnv("REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPass:                     getEnv("REDIS_PASSWORD", ""),
+		SudoUsername:                  getEnv("SUDO_USERNAME", ""),
+		SudoPassword:                  getEnv("SUDO_PASSWORD", ""),
+		CertsDir:                      getEnv("CERTS_DIR", "./certs"),
+		JWTAccessTTL:                  24 * time.Hour,
+		AllowedOrigins:                strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
+		PublicIP:                      getEnv("PUBLIC_IP", ""),
+		SubscriptionURLPrefix:         getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
+		ClashTemplateFile:             getEnv("CLASH_SUBSCRIPTION_TEMPLATE", ""),
+		V2raySubscriptionTemplateFile: getEnv("V2RAY_SUBSCRIPTION_TEMPLATE", ""),
+		DashboardDir:                  getEnv("DASHBOARD_DIR", "./web/dist"),
+		BackupDir:                     getEnv("BACKUP_DIR", "./db_backups"),
 
 		KirbotSecret:  getEnv("KIRBOT_SECRET", ""),
 		KirbotURL:     getEnv("KIRBOT_URL", "http://127.0.0.1:8080"),

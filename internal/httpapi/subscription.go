@@ -328,7 +328,7 @@ func (h *Handler) buildUserClashConfig(ctx context.Context, user generated.User,
 	if err != nil {
 		return nil, err
 	}
-	return subscription.ClashConfig(proxies)
+	return subscription.ClashConfig(proxies, h.clashTemplatePath)
 }
 
 func (h *Handler) buildUserOutlineConfig(ctx context.Context, user generated.User) ([]byte, error) {
@@ -348,9 +348,10 @@ func (h *Handler) buildUserOutlineConfig(ctx context.Context, user generated.Use
 }
 
 func (h *Handler) buildUserV2rayJSONConfig(ctx context.Context, user generated.User) ([]byte, error) {
+	template, _ := subscription.LoadJSONTemplate(h.v2rayTemplatePath)
 	var configs []map[string]any
 	err := h.forEachUserHost(ctx, user, func(protocol string, settings proxysettings.Settings, remark, address string, eff subscription.EffectiveInbound) {
-		cfg, err := subscription.V2rayJSONConfig(remark, address, eff, settings)
+		cfg, err := subscription.V2rayJSONConfig(remark, address, eff, settings, template)
 		if err == nil && cfg != nil {
 			configs = append(configs, cfg)
 		}

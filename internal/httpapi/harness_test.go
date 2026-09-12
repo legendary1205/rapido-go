@@ -109,7 +109,7 @@ func newTestRouterAndHandler(t *testing.T) (http.Handler, string, *Handler) {
 	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
 	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 5 * time.Second})
 
-	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "",
+	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "", "", "",
 		envDefaults, dispatcher, kirbotClient, nil, hostmetrics.NewPreviousTracker(),
 		os.Getenv("TEST_DATABASE_URL"), t.TempDir(), 5, logger)
 	router := NewRouter(handler, logger, []string{"*"})

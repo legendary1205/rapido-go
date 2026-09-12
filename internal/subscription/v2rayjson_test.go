@@ -11,7 +11,7 @@ func TestV2rayJSONConfigVLESSReality(t *testing.T) {
 	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "reality", SNI: "example.com", Fingerprint: "chrome", RealityPublicKey: "pub", RealityShortID: "sid"}
 	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "uuid-1", Flow: proxysettings.FlowVision}}
 
-	cfg, err := V2rayJSONConfig("My Node", "1.2.3.4", in, settings)
+	cfg, err := V2rayJSONConfig("My Node", "1.2.3.4", in, settings, nil)
 	if err != nil {
 		t.Fatalf("V2rayJSONConfig: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestV2rayJSONConfigSplitsMultiValueALPN(t *testing.T) {
 	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com", ALPN: "h2,http/1.1"}
 	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "uuid-1"}}
 
-	cfg, err := V2rayJSONConfig("My Node", "1.2.3.4", in, settings)
+	cfg, err := V2rayJSONConfig("My Node", "1.2.3.4", in, settings, nil)
 	if err != nil {
 		t.Fatalf("V2rayJSONConfig: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestV2rayJSONConfigSkipsUnsupportedTransport(t *testing.T) {
 	in := EffectiveInbound{Network: "kcp", Port: 443}
 	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "u"}}
 
-	cfg, err := V2rayJSONConfig("t", "1.2.3.4", in, settings)
+	cfg, err := V2rayJSONConfig("t", "1.2.3.4", in, settings, nil)
 	if err != nil {
 		t.Fatalf("V2rayJSONConfig: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestV2rayJSONConfigMuxSkippedWithVisionFlow(t *testing.T) {
 	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com", MuxEnable: true}
 	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "u", Flow: proxysettings.FlowVision}}
 
-	cfg, err := V2rayJSONConfig("t", "1.2.3.4", in, settings)
+	cfg, err := V2rayJSONConfig("t", "1.2.3.4", in, settings, nil)
 	if err != nil {
 		t.Fatalf("V2rayJSONConfig: %v", err)
 	}

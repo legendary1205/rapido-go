@@ -149,7 +149,18 @@ func ClashProxy(remark, address string, in EffectiveInbound, settings proxysetti
 		// request - so a flow'd VLESS node skips smux entirely, matching
 		// ClashMetaConfiguration.add's own explicit pop of a would-be smux
 		// block once flow is known.
-		node["smux"] = map[string]any{"enabled": true, "protocol": "smux", "max-streams": 8}
+		//
+		// Values match mux/default.json's own "clash" entry exactly (this
+		// used to invent {enabled:true, protocol:"smux", max-streams:8} -
+		// none of those three values are real: the shipped default is
+		// enabled:false, protocol is "h2mux" not "smux", and the key is
+		// max_streams with an underscore, not a hyphen). The block is
+		// added whenever mux_enable is set regardless of that "enabled"
+		// value - matching Python's own unconditional `if mux_enable:
+		// node["smux"] = mux_config` - an operator who edits the template
+		// file to flip it to true is exactly why this isn't hardcoded to
+		// false here.
+		node["smux"] = map[string]any{"enabled": false, "protocol": "h2mux", "max_streams": 8}
 	}
 
 	return node, nil
@@ -171,19 +182,43 @@ func ClashProxy(remark, address string, in EffectiveInbound, settings proxysetti
 // which is indistinguishable from "the network is down" to the person
 // using the app.
 //
-// This port keeps it to the minimum that makes the profile actually
-// route traffic - one "PROXY" select group and a MATCH catch-all - rather
-// than also porting the specific operator's IR rule-provider set and
-// "Net Shield" branding baked into that one template file, which belongs
-// in a per-installation customization mechanism (not yet built), not the
-// shared default every rapido-go install gets.
-func ClashConfig(proxies []map[string]any) ([]byte, error) {
+// templatePath, when non-empty and readable, points at a real YAML file
+// (CLASH_SUBSCRIPTION_TEMPLATE) providing everything the operator wants
+// beyond bare connectivity - mixed-port/dns/tun/sniffer settings, real
+// rule-providers, a branded proxy-group name, a full routing rule set.
+// Every proxy-group in that file gets its "proxies" list replaced with
+// the real, current server names; nothing else in the file is touched.
+// With no template configured (or one that fails to load), this falls
+// back to the minimum that makes the profile actually route traffic at
+// all: one generic "PROXY" select group and a MATCH catch-all.
+func ClashConfig(proxies []map[string]any, templatePath string) ([]byte, error) {
 	names := make([]string, 0, len(proxies))
 	for _, p := range proxies {
 		if name, ok := p["name"].(string); ok {
 			names = append(names, name)
 		}
 	}
+
+	if tmpl, ok := LoadYAMLTemplate(templatePath); ok {
+		doc := shallowCopyMap(tmpl)
+		doc["proxies"] = proxies
+		if groups, ok := doc["proxy-groups"].([]any); ok {
+			filled := make([]any, len(groups))
+			for i, g := range groups {
+				gm, ok := g.(map[string]any)
+				if !ok {
+					filled[i] = g
+					continue
+				}
+				ng := shallowCopyMap(gm)
+				ng["proxies"] = names
+				filled[i] = ng
+			}
+			doc["proxy-groups"] = filled
+		}
+		return yaml.Marshal(doc)
+	}
+
 	doc := map[string]any{
 		"proxies": proxies,
 		"proxy-groups": []any{

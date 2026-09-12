@@ -25,6 +25,8 @@ type Handler struct {
 	jwtSecret            []byte
 	publicIP             string
 	subURLPrefix         string
+	clashTemplatePath    string
+	v2rayTemplatePath    string
 	envDefaults          integrationsettings.Values
 	reports              *report.Dispatcher
 	kirbot               *kirbot.Client
@@ -40,13 +42,14 @@ type Handler struct {
 }
 
 func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
-	publicIP, subURLPrefix string, envDefaults integrationsettings.Values, reports *report.Dispatcher,
+	publicIP, subURLPrefix, clashTemplatePath, v2rayTemplatePath string, envDefaults integrationsettings.Values, reports *report.Dispatcher,
 	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
 	databaseURL, backupDir string, backupKeep int,
 	logger *slog.Logger) *Handler {
 	return &Handler{
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
+		clashTemplatePath: clashTemplatePath, v2rayTemplatePath: v2rayTemplatePath,
 		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
 		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker,
 		databaseURL: databaseURL, backupDir: backupDir, backupKeep: backupKeep,

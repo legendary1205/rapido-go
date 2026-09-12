@@ -24,12 +24,19 @@ const v2rayJSONEmail = "https://github.com/legendary1205/rapido"
 // EffectiveInbound has no fields to describe those transports' settings at
 // all (no seed/scMaxEachPostBytes/etc - see effective.go).
 //
-// Deliberately minimal like SingBoxConfig's own doc comment already commits
-// to for sing-box: no local inbounds/routing/dns/policy/log blocks, no
-// curated random-user-agent list (EffectiveInbound.RandomUserAgent exists
-// but SingBoxOutbound doesn't act on it either - same established scope cut,
-// applied consistently here rather than re-opened just for this format).
-func V2rayJSONConfig(remark, address string, in EffectiveInbound, settings proxysettings.Settings) (map[string]any, error) {
+// template, when non-nil (loaded once by the caller via LoadJSONTemplate
+// from V2RAY_SUBSCRIPTION_TEMPLATE), is a real standalone xray-core config
+// - log/dns/routing/policy/local inbounds/its own outbounds list - that
+// this proxy's outbound gets prepended onto, matching Python's add_config
+// (`outbounds + json_template["outbounds"]`): every generated profile in
+// the subscription carries the operator's full routing/ad-block setup,
+// not just the bare proxy. With no template configured (or one that
+// fails to load), this falls back to the minimum viable shape: the proxy
+// outbound plus a direct/blackhole pair, no curated random-user-agent
+// list (EffectiveInbound.RandomUserAgent exists but isn't acted on here
+// either - the same scope cut SingBoxConfig's own doc comment commits to,
+// applied consistently for this format's fallback).
+func V2rayJSONConfig(remark, address string, in EffectiveInbound, settings proxysettings.Settings, template map[string]any) (map[string]any, error) {
 	switch in.Network {
 	case "kcp", "splithttp", "xhttp":
 		return nil, nil
@@ -88,7 +95,20 @@ func V2rayJSONConfig(remark, address string, in EffectiveInbound, settings proxy
 		// comment on why: only the JSON formats carry mux at all, a vless://
 		// share link never does, which is why the same host works when added
 		// by hand but not through a mux-enabled JSON subscription).
-		outbound["mux"] = map[string]any{"enabled": true, "concurrency": 8}
+		// Values match mux/default.json's own "v2ray" entry exactly - this
+		// used to omit xudpConcurrency/xudpProxyUDP443 entirely.
+		outbound["mux"] = map[string]any{"enabled": true, "concurrency": 8, "xudpConcurrency": 8, "xudpProxyUDP443": "reject"}
+	}
+
+	if template != nil {
+		doc := shallowCopyMap(template)
+		doc["remarks"] = remark
+		base, _ := template["outbounds"].([]any)
+		outbounds := make([]any, 0, len(base)+1)
+		outbounds = append(outbounds, outbound)
+		outbounds = append(outbounds, base...)
+		doc["outbounds"] = outbounds
+		return doc, nil
 	}
 
 	config := map[string]any{

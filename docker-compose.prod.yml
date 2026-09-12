@@ -78,6 +78,17 @@ services:
       PUBLIC_IP: ${PUBLIC_IP:-}
       XRAY_SUBSCRIPTION_URL_PREFIX: ${XRAY_SUBSCRIPTION_URL_PREFIX:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      # Both empty by default (no override - see internal/subscription's
+      # ClashConfig/V2rayJSONConfig doc comments for the built-in minimal
+      # fallback that produces). Point these at real files bind-mounted
+      # from ./templates (below) to serve a fully customized Clash/
+      # v2ray-json profile - dns/tun/rule-provider settings, a branded
+      # proxy-group, local inbounds/routing - instead of the bare minimum
+      # that only guarantees the profile can route traffic at all.
+      CLASH_SUBSCRIPTION_TEMPLATE: ${CLASH_SUBSCRIPTION_TEMPLATE:-}
+      V2RAY_SUBSCRIPTION_TEMPLATE: ${V2RAY_SUBSCRIPTION_TEMPLATE:-}
+    volumes:
+      - ./templates:/app/templates:ro
 
   backend:
     image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}

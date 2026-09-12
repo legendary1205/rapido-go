@@ -69,7 +69,7 @@ func TestClashProxyShadowsocksIsMinimal(t *testing.T) {
 }
 
 func TestClashConfigHasRequiredTopLevelKeys(t *testing.T) {
-	raw, err := ClashConfig([]map[string]any{{"name": "a", "type": "ss"}})
+	raw, err := ClashConfig([]map[string]any{{"name": "a", "type": "ss"}}, "")
 	if err != nil {
 		t.Fatalf("ClashConfig: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestClashConfigProxyGroupAndRuleAreFunctional(t *testing.T) {
 	raw, err := ClashConfig([]map[string]any{
 		{"name": "Germany", "type": "vless"},
 		{"name": "Finland", "type": "vless"},
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("ClashConfig: %v", err)
 	}

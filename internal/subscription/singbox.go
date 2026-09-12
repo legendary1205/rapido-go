@@ -47,9 +47,15 @@ func SingBoxOutbound(tag, address string, in EffectiveInbound, settings proxyset
 	if tls := singBoxTLS(in); tls != nil {
 		out["tls"] = tls
 	}
-	if in.MuxEnable {
-		out["multiplex"] = map[string]any{"enabled": true, "protocol": "h2mux", "max_streams": 8}
-	}
+	// Python's SingBoxConfiguration.make_outbound sets this block on EVERY
+	// outbound unconditionally (not gated by mux_enable at all), from
+	// mux/default.json's own "sing-box" entry - only flipping `enabled`
+	// to `mux_enable and not flow` if the template's own `enabled` was
+	// already true. The shipped default has it false, so under an
+	// unmodified template `mux_enable` never has any observable effect on
+	// this format at all - a real, faithfully-preserved quirk, not
+	// something to "fix" by making it obey the per-host toggle instead.
+	out["multiplex"] = map[string]any{"enabled": false, "protocol": "h2mux", "max_streams": 8}
 	return out, nil
 }
 
