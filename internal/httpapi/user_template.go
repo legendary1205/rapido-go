@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,6 +17,22 @@ type userTemplateWriteRequest struct {
 	UsernamePrefix *string             `json:"username_prefix"`
 	UsernameSuffix *string             `json:"username_suffix"`
 	Inbounds       map[string][]string `json:"inbounds"`
+}
+
+// userTemplateModifyRequest is the PATCH-shaped body PUT
+// /api/user_template/:id takes. Every field is a pointer so "omitted" is
+// distinguishable from "explicitly set" - the real panel merges field by
+// field (`if x is not None`), and treating an omitted field as a zero here
+// meant PUT {"name":"Gold"} silently zeroed expire_duration, cleared the
+// username prefix/suffix, and detached every inbound from the template.
+// That is data loss on the documented partial-edit call.
+type userTemplateModifyRequest struct {
+	Name           *string              `json:"name"`
+	DataLimit      *int64               `json:"data_limit"`
+	ExpireDuration *int64               `json:"expire_duration"`
+	UsernamePrefix *string              `json:"username_prefix"`
+	UsernameSuffix *string              `json:"username_suffix"`
+	Inbounds       *map[string][]string `json:"inbounds"`
 }
 
 type userTemplateDTO struct {
@@ -138,6 +155,30 @@ func (h *Handler) handleListUserTemplates(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list user templates"})
 		return
 	}
+	// ?offset=&limit= are the real panel's own pagination on this route.
+	// Ignoring them didn't just lose a feature: a paginating client asking
+	// for page 2 got page 1 again, so it looped over the same templates
+	// forever and never reached the end.
+	offset, limit := 0, 0
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if offset > len(templates) {
+		templates = nil
+	} else {
+		templates = templates[offset:]
+	}
+	if limit > 0 && limit < len(templates) {
+		templates = templates[:limit]
+	}
+
 	out := make([]userTemplateDTO, 0, len(templates))
 	for _, t := range templates {
 		dto, err := h.toUserTemplateDTO(c.Request.Context(), t)
@@ -156,31 +197,59 @@ func (h *Handler) handleModifyUserTemplate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var req userTemplateWriteRequest
+	var req userTemplateModifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
 	ctx := c.Request.Context()
-	for _, tags := range req.Inbounds {
-		for _, tag := range tags {
-			if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
-				c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Inbound " + tag + " doesn't exist"})
-				return
+	if req.Inbounds != nil {
+		for _, tags := range *req.Inbounds {
+			for _, tag := range tags {
+				if _, err := h.store.CachedGetInboundByTag(ctx, tag); err != nil {
+					c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Inbound " + tag + " doesn't exist"})
+					return
+				}
 			}
 		}
 	}
+
+	// Stored values are the base; only fields the caller actually sent are
+	// overlaid - see userTemplateModifyRequest's own doc comment.
+	name := template.Name
+	if req.Name != nil {
+		name = *req.Name
+	}
+	dataLimit := template.DataLimit
+	if req.DataLimit != nil {
+		dataLimit = pgInt8FromInt64(*req.DataLimit)
+	}
+	expireDuration := template.ExpireDuration
+	if req.ExpireDuration != nil {
+		expireDuration = pgInt8FromInt64(*req.ExpireDuration)
+	}
+	usernamePrefix := template.UsernamePrefix
+	if req.UsernamePrefix != nil {
+		usernamePrefix = textFromPtr(req.UsernamePrefix)
+	}
+	usernameSuffix := template.UsernameSuffix
+	if req.UsernameSuffix != nil {
+		usernameSuffix = textFromPtr(req.UsernameSuffix)
+	}
+
 	updated, err := h.store.Queries.UpdateUserTemplate(ctx, generated.UpdateUserTemplateParams{
-		ID: template.ID, Name: req.Name, DataLimit: pgInt8FromInt64(req.DataLimit), ExpireDuration: pgInt8FromInt64(req.ExpireDuration),
-		UsernamePrefix: textFromPtr(req.UsernamePrefix), UsernameSuffix: textFromPtr(req.UsernameSuffix),
+		ID: template.ID, Name: name, DataLimit: dataLimit, ExpireDuration: expireDuration,
+		UsernamePrefix: usernamePrefix, UsernameSuffix: usernameSuffix,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not update user template"})
 		return
 	}
-	if err := h.replaceTemplateInbounds(ctx, updated.ID, req.Inbounds); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
+	if req.Inbounds != nil {
+		if err := h.replaceTemplateInbounds(ctx, updated.ID, *req.Inbounds); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
 	}
 	dto, err := h.toUserTemplateDTO(ctx, updated)
 	if err != nil {

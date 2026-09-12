@@ -17,7 +17,11 @@ import (
 )
 
 type adminDTO struct {
-	ID             int32   `json:"id"`
+	// Nullable: the env-bootstrapped sudo account has no admins row at
+	// all, and the real panel reports its id as null there. Emitting 0
+	// instead let a client both mistake it for a real admin id and fail
+	// the "is this the bootstrap account?" null check.
+	ID             *int32  `json:"id"`
 	Username       string  `json:"username"`
 	IsSudo         bool    `json:"is_sudo"`
 	IsOwner        bool    `json:"is_owner"`
@@ -28,8 +32,9 @@ type adminDTO struct {
 
 func toAdminDTO(a generated.Admin) adminDTO {
 	usage := a.UsersUsage
+	id := a.ID
 	return adminDTO{
-		ID:             a.ID,
+		ID:             &id,
 		Username:       a.Username,
 		IsSudo:         a.IsSudo,
 		IsOwner:        a.IsOwner,
@@ -264,7 +269,10 @@ func (h *Handler) handleListAdmins(c *gin.Context) {
 		}
 	}
 	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		// limit=0 means "no limit" on the real panel, not "no rows" - a
+		// client using it to fetch everything got an empty list here and
+		// concluded the panel had no admins at all.
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			params.Limit = pgInt4FromInt(n)
 		}
 	}

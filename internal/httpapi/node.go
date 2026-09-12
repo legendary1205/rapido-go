@@ -331,7 +331,15 @@ func (h *Handler) handleDeleteNode(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid node id"})
 		return
 	}
-	if err := h.store.Queries.DeleteNode(c.Request.Context(), id); err != nil {
+	ctx := c.Request.Context()
+	// An id that doesn't exist is a 404, not a success: a cleanup script
+	// that distinguishes "already gone" from "I just deleted it" (and one
+	// verifying a typo'd id) gets a wrong answer otherwise.
+	if _, err := h.store.Queries.GetNodeByID(ctx, id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Node not found"})
+		return
+	}
+	if err := h.store.Queries.DeleteNode(ctx, id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not delete node"})
 		return
 	}

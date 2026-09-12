@@ -351,6 +351,110 @@ func TestUsersUsageHonoursTheAdminFilter(t *testing.T) {
 	}
 }
 
+// TestModifyUserTemplateIsPartial covers real data loss: PUT
+// {"name":"Gold"} used to zero expire_duration, clear the username
+// prefix/suffix and detach every inbound, because an omitted field
+// decoded to its zero value and was written as-is.
+func TestModifyUserTemplateIsPartial(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Tmpl VLESS", "protocol": "vless"}})
+
+	created := doRequest(t, router, "POST", "/api/user_template", token, map[string]interface{}{
+		"name": "Gold", "data_limit": 53687091200, "expire_duration": 2592000,
+		"username_prefix": "gp_", "username_suffix": "_x",
+		"inbounds": map[string]interface{}{"vless": []string{"Tmpl VLESS"}},
+	})
+	if created.Code != http.StatusOK {
+		t.Fatalf("create template: %d %v", created.Code, created.Body)
+	}
+	id := strconv.Itoa(int(created.Body["id"].(float64)))
+
+	edited := doRequest(t, router, "PUT", "/api/user_template/"+id, token, map[string]interface{}{
+		"data_limit": 107374182400,
+	})
+	if edited.Code != http.StatusOK {
+		t.Fatalf("partial template edit = %d %v, want 200", edited.Code, edited.Body)
+	}
+	if edited.Body["data_limit"] != float64(107374182400) {
+		t.Errorf("data_limit = %v, want the new value", edited.Body["data_limit"])
+	}
+	if edited.Body["name"] != "Gold" {
+		t.Errorf("name = %v, want it preserved", edited.Body["name"])
+	}
+	if edited.Body["expire_duration"] != float64(2592000) {
+		t.Errorf("expire_duration = %v, want it preserved (it used to be zeroed)", edited.Body["expire_duration"])
+	}
+	if edited.Body["username_prefix"] != "gp_" || edited.Body["username_suffix"] != "_x" {
+		t.Errorf("username prefix/suffix = %v/%v, want them preserved", edited.Body["username_prefix"], edited.Body["username_suffix"])
+	}
+	inbounds, _ := edited.Body["inbounds"].(map[string]interface{})
+	if len(toStringSlice(inbounds["vless"])) != 1 {
+		t.Errorf("inbounds = %v, want the template's inbound preserved (it used to be wiped)", edited.Body["inbounds"])
+	}
+}
+
+// TestUserTemplateListPaginates pins ?offset=/?limit= - ignoring them meant
+// a paginating client got page 1 forever and never reached the end.
+func TestUserTemplateListPaginates(t *testing.T) {
+	router, token := newTestRouter(t)
+	for _, name := range []string{"t-one", "t-two", "t-three"} {
+		doRequest(t, router, "POST", "/api/user_template", token, map[string]interface{}{
+			"name": name, "data_limit": 1073741824, "expire_duration": 86400,
+		})
+	}
+
+	first := doRequest(t, router, "GET", "/api/user_template?limit=1&offset=0", token, nil)
+	var page1 []map[string]interface{}
+	if err := json.Unmarshal(first.Raw, &page1); err != nil {
+		t.Fatalf("decode page 1: %v (%s)", err, first.Raw)
+	}
+	second := doRequest(t, router, "GET", "/api/user_template?limit=1&offset=1", token, nil)
+	var page2 []map[string]interface{}
+	if err := json.Unmarshal(second.Raw, &page2); err != nil {
+		t.Fatalf("decode page 2: %v (%s)", err, second.Raw)
+	}
+	if len(page1) != 1 || len(page2) != 1 {
+		t.Fatalf("pages = %d and %d entries, want 1 each", len(page1), len(page2))
+	}
+	if page1[0]["id"] == page2[0]["id"] {
+		t.Errorf("page 2 returned the same template as page 1 (%v) - offset was ignored", page1[0]["id"])
+	}
+}
+
+// TestTicketBodyLimitsCountCharactersNotBytes is the fix for a limit that
+// was effectively halved for Persian text, which is what nearly every
+// ticket on this system is written in.
+func TestTicketBodyLimitsCountCharactersNotBytes(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Ticket VLESS", "protocol": "vless"}})
+	created := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "ticket_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	subURL, _ := created.Body["subscription_url"].(string)
+	if subURL == "" {
+		t.Fatalf("no subscription_url in create response: %v", created.Body)
+	}
+	subToken := subURL[strings.LastIndex(subURL, "/")+1:]
+
+	// 2500 Persian characters = 5000 UTF-8 bytes: well inside the real
+	// 4000-CHARACTER limit, but over it when counted as bytes.
+	persian := strings.Repeat("ب", 2500)
+	resp := doRequest(t, router, "POST", "/sub/"+subToken+"/tickets", "", map[string]interface{}{
+		"subject": "سلام", "message": persian,
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("a 2500-character Persian ticket = %d %v, want 200", resp.Code, resp.Body)
+	}
+
+	// Whitespace-only stays rejected, matching the real panel.
+	blank := doRequest(t, router, "POST", "/sub/"+subToken+"/tickets", "", map[string]interface{}{
+		"subject": "  ", "message": "   ",
+	})
+	if blank.Code != http.StatusUnprocessableEntity {
+		t.Errorf("whitespace-only ticket = %d, want 422", blank.Code)
+	}
+}
+
 func TestGetUsersUsageIsScopedAndShaped(t *testing.T) {
 	router, token := newTestRouter(t)
 

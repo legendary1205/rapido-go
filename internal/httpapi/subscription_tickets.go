@@ -83,11 +83,17 @@ func (h *Handler) handleCreateMyTicket(c *gin.Context) {
 		return
 	}
 	var req ticketCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.Subject) == 0 || len(req.Subject) > ticketSubjectMaxLen ||
-		len(req.Message) == 0 || len(req.Message) > ticketBodyMaxLen {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid subject/message"})
 		return
 	}
+	subject, subjectOK := ticketTextOK(req.Subject, ticketSubjectMaxLen)
+	message, messageOK := ticketTextOK(req.Message, ticketBodyMaxLen)
+	if !subjectOK || !messageOK {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid subject/message"})
+		return
+	}
+	req.Subject, req.Message = subject, message
 
 	ctx := c.Request.Context()
 	openCount, err := h.store.Queries.CountOpenTicketsByUserID(ctx, user.ID)
@@ -134,10 +140,16 @@ func (h *Handler) handleReplyMyTicket(c *gin.Context) {
 		return
 	}
 	var req ticketMessageWriteRequest
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.Body) == 0 || len(req.Body) > ticketBodyMaxLen {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "body must be 1 to 4000 characters"})
 		return
 	}
+	body, ok := ticketTextOK(req.Body, ticketBodyMaxLen)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "body must be 1 to 4000 characters"})
+		return
+	}
+	req.Body = body
 
 	ctx := c.Request.Context()
 	if _, err := h.store.Queries.GetUserTicketByID(ctx, generated.GetUserTicketByIDParams{ID: id, UserID: user.ID}); err != nil {

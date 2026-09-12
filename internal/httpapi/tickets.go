@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -28,6 +30,21 @@ const (
 	ticketSubjectMaxLen = 255
 	ticketBodyMaxLen    = 4000
 )
+
+// ticketTextOK counts CHARACTERS, not bytes, and rejects a
+// whitespace-only value - both matching the real panel, whose limits are
+// Python string lengths.
+//
+// Using len() here measured UTF-8 bytes instead, which quietly halved the
+// limit for Persian or Arabic text (2 bytes per character) and quartered
+// it for emoji: a 2001-character Persian reply was refused as "too long"
+// while the same text is accepted by the panel this one replaced. Nearly
+// every ticket on this system is written in Persian.
+func ticketTextOK(v string, max int) (string, bool) {
+	trimmed := strings.TrimSpace(v)
+	n := utf8.RuneCountInString(trimmed)
+	return trimmed, n > 0 && n <= max
+}
 
 type ticketMessageDTO struct {
 	ID        int32     `json:"id"`
@@ -219,10 +236,16 @@ func (h *Handler) handleAdminReplyTicket(c *gin.Context) {
 		return
 	}
 	var req ticketMessageWriteRequest
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.Body) == 0 || len(req.Body) > ticketBodyMaxLen {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "body must be 1 to 4000 characters"})
 		return
 	}
+	body, ok := ticketTextOK(req.Body, ticketBodyMaxLen)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "body must be 1 to 4000 characters"})
+		return
+	}
+	req.Body = body
 
 	ctx := c.Request.Context()
 	if _, found, err := h.renderAdminTicket(ctx, id, identity); err != nil {
