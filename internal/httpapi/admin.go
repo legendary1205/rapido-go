@@ -126,8 +126,10 @@ func (h *Handler) handleLogin(c *gin.Context) {
 	password := c.PostForm("password")
 	ip := clientIP(c)
 	ctx := c.Request.Context()
+	c.Set(contextLoginUsernameKey, username)
 
 	if h.tooManyFailedLogins(ctx, ip) {
+		c.Set(contextLoginErrorKey, "rate-limited")
 		c.JSON(http.StatusTooManyRequests, gin.H{"detail": "Too many login attempts, please try again later"})
 		return
 	}
@@ -145,14 +147,14 @@ func (h *Handler) handleLogin(c *gin.Context) {
 			// from any other 401, which cost a lot of time to diagnose by
 			// hand; with it, "which account is actually failing" is one
 			// grep away.
-			h.logger.Warn("login failed", "username", username, "ip", ip, "reason", "no such admin")
+			c.Set(contextLoginErrorKey, "no such admin")
 			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
 		if !auth.VerifyPassword(password, admin.HashedPassword) {
-			h.logger.Warn("login failed", "username", username, "ip", ip, "reason", "wrong password")
+			c.Set(contextLoginErrorKey, "wrong password")
 			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
@@ -179,6 +181,16 @@ func (h *Handler) handleLogin(c *gin.Context) {
 const (
 	loginStatusSuccess = "✅ Success"
 	loginStatusFailed  = "❌ Failed"
+)
+
+// contextLoginUsernameKey / contextLoginErrorKey hand the attempted
+// username and the failure reason to the API-client log
+// (internal/httpapi/apiclientlog.go) - a login request has no Identity to
+// read them off, and the username lives in the form body, which that
+// middleware deliberately never touches.
+const (
+	contextLoginUsernameKey = "login.username"
+	contextLoginErrorKey    = "login.error"
 )
 
 func contains(list []string, v string) bool {

@@ -67,7 +67,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(slogMiddleware(logger), gin.Recovery(), CORS(allowedOrigins), maintenanceMiddleware(h.store))
+	r.Use(slogMiddleware(logger), apiClientLogMiddleware(logger), gin.Recovery(), CORS(allowedOrigins), maintenanceMiddleware(h.store))
 
 	// Gin's own defaults answer an unknown path with the plain-text body
 	// "404 page not found" and a wrong method with that same 404. FastAPI -

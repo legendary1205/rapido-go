@@ -11,6 +11,15 @@ import (
 
 const contextIdentityKey = "auth.identity"
 
+// ContextAttemptedUsernameKey / ContextAuthErrorKey carry who a *rejected*
+// request claimed to be and why it was rejected, so the API-client log
+// (internal/httpapi/apiclientlog.go) can name the account even though the
+// request never produced an Identity. Nothing else reads them.
+const (
+	ContextAttemptedUsernameKey = "auth.attempted_username"
+	ContextAuthErrorKey         = "auth.error"
+)
+
 // Identity is the resolved admin identity attached to the request context
 // once a middleware below has run. AdminID is 0 for the env-bootstrapped
 // sudo account, which has no admins row at all.
@@ -97,6 +106,10 @@ func resolve(c *gin.Context, issuer *TokenIssuer, resolver Resolver, sudoUsernam
 	if err != nil {
 		return nil, reasonBadToken, err
 	}
+	// Recorded even on the paths that go on to reject: the API-client log
+	// is far more useful when it can name the account a failing bot is
+	// trying to be.
+	c.Set(ContextAttemptedUsernameKey, claims.Username)
 
 	if claims.IsSudo() && sudoUsername != "" && claims.Username == sudoUsername {
 		return &Identity{Username: claims.Username, IsSudo: true, IsOwner: true}, "", nil
@@ -118,6 +131,7 @@ func unauthorized(c *gin.Context, reason string) {
 	c.Header("WWW-Authenticate", "Bearer")
 	if reason != "" {
 		c.Header("X-Auth-Error", reason)
+		c.Set(ContextAuthErrorKey, reason)
 	}
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"detail": "Could not validate credentials"})
 }
