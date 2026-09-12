@@ -3,6 +3,7 @@ package subscription
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 )
@@ -79,7 +80,7 @@ func singBoxTLS(in EffectiveInbound) map[string]any {
 			tls["insecure"] = true
 		}
 		if in.ALPN != "" {
-			tls["alpn"] = []string{in.ALPN}
+			tls["alpn"] = strings.Split(in.ALPN, ",")
 		}
 		if in.Fingerprint != "" {
 			tls["utls"] = map[string]any{"enabled": true, "fingerprint": in.Fingerprint}

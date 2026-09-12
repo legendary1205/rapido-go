@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 )
@@ -157,7 +158,7 @@ func v2rayJSONTLS(in EffectiveInbound) map[string]any {
 			t["fingerprint"] = in.Fingerprint
 		}
 		if in.ALPN != "" {
-			t["alpn"] = []string{in.ALPN}
+			t["alpn"] = strings.Split(in.ALPN, ",")
 		}
 		return t
 	case "reality":
