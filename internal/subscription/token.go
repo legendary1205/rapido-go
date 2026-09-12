@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -66,8 +67,23 @@ func ValidateToken(token string, secret []byte) (username string, createdAt time
 	return parts[0], time.Unix(ts, 0).UTC(), true
 }
 
+// sign hashes dataB64 with secret rendered as its HEX-STRING TEXT, not its
+// raw bytes - a real, previously-undetected porting mismatch. Python's
+// original does `sha256((data_b64_str + get_secret_key()).encode("utf-8"))`,
+// and get_secret_key() returns the jwt_secrets/`jwt` table's secret_key
+// column as-is: a 64-character hex STRING, concatenated as literal text.
+// This package's caller (cmd/panel/main.go's ensureJWTSecret) instead
+// hex-decodes that same column into 32 raw bytes before handing it out as
+// `secret` here - every other use of that value (there is currently only
+// this one) has no reason to care, so nothing surfaced the mismatch until
+// a real cross-system migration needed an old, Python-issued subscription
+// token to verify against this Go binary: every single previously-issued
+// link failed, indistinguishable from a wrong secret value, even once the
+// secret's VALUE was correctly carried over from the old panel. Re-hex-
+// encoding here reconstructs the exact 64-character string Python signs
+// with, regardless of what form the caller's own copy of the secret takes.
 func sign(dataB64 string, secret []byte) string {
-	h := sha256.Sum256(append([]byte(dataB64), secret...))
+	h := sha256.Sum256([]byte(dataB64 + hex.EncodeToString(secret)))
 	full := base64.URLEncoding.EncodeToString(h[:])
 	return full[:10]
 }
