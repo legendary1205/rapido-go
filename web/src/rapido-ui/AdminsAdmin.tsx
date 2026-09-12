@@ -2,9 +2,12 @@ import { FC, useState } from "react";
 import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import {
+  useActivateAdminUsersMutation,
   useAdminsQuery,
   useCreateAdminMutation,
   useDeleteAdminMutation,
+  useDisableAdminUsersMutation,
+  useResetAdminUsageMutation,
   useUpdateAdminMutation,
 } from "hooks/useAdminsQuery";
 import { useCurrentAdminQuery } from "hooks/useCurrentAdminQuery";
@@ -17,12 +20,6 @@ import { Input } from "rapido-ui/Input";
 import { Checkbox } from "rapido-ui/Checkbox";
 import { Modal } from "rapido-ui/Modal";
 import { formatBytes } from "utils/formatByte";
-
-// Per the plan's key fact #4: the old dashboard's per-admin "activate users",
-// "disable users" and "reset usage counter" buttons have no Go backend at
-// all (not even a query for the first two) - removed here rather than wired
-// to a 404, leaving Edit/Delete and the InactiveAdmins card as this phase's
-// full admin-management surface. A fast-follow, not a silent regression.
 
 // ---------------------------------------------------------------------------
 
@@ -159,8 +156,12 @@ const AdminCard: FC<{
 }> = ({ row, isSelf, onEdit }) => {
   const { t } = useTranslation();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDisable, setConfirmDisable] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const deleteAdmin = useDeleteAdminMutation();
+  const disableUsers = useDisableAdminUsersMutation();
+  const activateUsers = useActivateAdminUsersMutation();
+  const resetUsage = useResetAdminUsageMutation();
 
   const remove = () => {
     setMsg(null);
@@ -170,6 +171,31 @@ const AdminCard: FC<{
         setMsg({ tone: "err", text: errorText(e, t("rapido.admins.actionFailed")) });
         setConfirmDelete(false);
       },
+    });
+  };
+
+  const disable = () => {
+    setMsg(null);
+    setConfirmDisable(false);
+    disableUsers.mutate(row.username, {
+      onSuccess: () => setMsg({ tone: "ok", text: t("rapido.admins.usersDisabled") }),
+      onError: (e) => setMsg({ tone: "err", text: errorText(e, t("rapido.admins.actionFailed")) }),
+    });
+  };
+
+  const activate = () => {
+    setMsg(null);
+    activateUsers.mutate(row.username, {
+      onSuccess: () => setMsg({ tone: "ok", text: t("rapido.admins.usersActivated") }),
+      onError: (e) => setMsg({ tone: "err", text: errorText(e, t("rapido.admins.actionFailed")) }),
+    });
+  };
+
+  const doResetUsage = () => {
+    setMsg(null);
+    resetUsage.mutate(row.username, {
+      onSuccess: () => setMsg({ tone: "ok", text: t("rapido.admins.usageReset") }),
+      onError: (e) => setMsg({ tone: "err", text: errorText(e, t("rapido.admins.actionFailed")) }),
     });
   };
 
@@ -228,6 +254,30 @@ const AdminCard: FC<{
         <div className="flex flex-wrap items-center gap-1.5">
           <Button variant="chip" tone="accent" onClick={onEdit}>
             {t("rapido.edit")}
+          </Button>
+
+          {confirmDisable ? (
+            <>
+              <span className="text-xs text-amber-400">{t("rapido.admins.disableWarning")}</span>
+              <Button variant="chip" tone="red" disabled={disableUsers.isPending} onClick={disable}>
+                {t("rapido.admins.disableUsers")}
+              </Button>
+              <Button variant="chip" onClick={() => setConfirmDisable(false)}>
+                {t("cancel")}
+              </Button>
+            </>
+          ) : (
+            <Button variant="chip" onClick={() => setConfirmDisable(true)}>
+              {t("rapido.admins.disableUsers")}
+            </Button>
+          )}
+
+          <Button variant="chip" disabled={activateUsers.isPending} onClick={activate}>
+            {t("rapido.admins.activateUsers")}
+          </Button>
+
+          <Button variant="chip" disabled={resetUsage.isPending} onClick={doResetUsage}>
+            {t("rapido.admins.resetUsage")}
           </Button>
 
           {/* Deleting yourself would end the session you are working in, and

@@ -286,6 +286,65 @@ func (h *Handler) handleDeleteAdmin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"detail": "Admin removed successfully"})
 }
 
+// handleDisableAdminUsers implements POST /api/admin/{username}/users/disable
+// (sudo only) - a bulk moderation action, e.g. for a reseller who stopped
+// paying: every active or on_hold user under this admin goes to disabled in
+// one call, without deleting them.
+func (h *Handler) handleDisableAdminUsers(c *gin.Context) {
+	username := c.Param("username")
+	admin, err := h.store.Queries.GetAdminByUsername(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Admin not found"})
+		return
+	}
+	users, err := h.store.Queries.DisableActiveUsersByAdminID(c.Request.Context(), pgInt4FromInt(int(admin.ID)))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not disable this admin's users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": "Users successfully disabled", "users_affected": len(users)})
+}
+
+// handleActivateAdminUsers implements POST /api/admin/{username}/users/activate
+// (sudo only) - the reverse of handleDisableAdminUsers.
+func (h *Handler) handleActivateAdminUsers(c *gin.Context) {
+	username := c.Param("username")
+	admin, err := h.store.Queries.GetAdminByUsername(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Admin not found"})
+		return
+	}
+	users, err := h.store.Queries.ActivateDisabledUsersByAdminID(c.Request.Context(), pgInt4FromInt(int(admin.ID)))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not activate this admin's users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": "Users successfully activated", "users_affected": len(users)})
+}
+
+// handleResetAdminUsage implements POST /api/admin/usage/reset/{username}
+// (sudo only) - zeroes the "Traffic sold" counter shown on the admin's own
+// card, archiving the prior value into admin_usage_logs first (see
+// ResetAdminUsage's own doc comment).
+func (h *Handler) handleResetAdminUsage(c *gin.Context) {
+	username := c.Param("username")
+	admin, err := h.store.Queries.GetAdminByUsername(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Admin not found"})
+		return
+	}
+	updated, err := h.store.Queries.ResetAdminUsage(c.Request.Context(), admin.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not reset admin usage"})
+		return
+	}
+	if err := h.store.InvalidateAdmin(c.Request.Context(), updated.ID, updated.Username); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not invalidate admin cache"})
+		return
+	}
+	c.JSON(http.StatusOK, toAdminDTO(updated))
+}
+
 type inactiveAdminDTO struct {
 	Username     string    `json:"username"`
 	LastActivity time.Time `json:"last_activity"`

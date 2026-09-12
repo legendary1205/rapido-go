@@ -237,3 +237,165 @@ func TestGetInactiveAdminsExcludesSudoAndRecentActivity(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 func int64Ptr(n int64) *int64 { return &n }
+
+func TestDisableActiveUsersByAdminIDOnlyTouchesThatAdminsActiveAndOnHoldUsers(t *testing.T) {
+	pool := testPool(t)
+	truncateAdmins(t, pool)
+	q := generated.New(pool)
+	ctx := context.Background()
+
+	admin, err := q.CreateAdmin(ctx, generated.CreateAdminParams{Username: "reseller", HashedPassword: "h"})
+	if err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+	otherAdmin, err := q.CreateAdmin(ctx, generated.CreateAdminParams{Username: "other-reseller", HashedPassword: "h"})
+	if err != nil {
+		t.Fatalf("CreateAdmin(other): %v", err)
+	}
+
+	mustCreateUser := func(username, status string, adminID int32) generated.User {
+		t.Helper()
+		u, err := q.CreateUser(ctx, generated.CreateUserParams{
+			Username:               username,
+			Status:                 status,
+			DataLimitResetStrategy: "no_reset",
+			AdminID:                pgInt4FromInt(int(adminID)),
+		})
+		if err != nil {
+			t.Fatalf("CreateUser(%s): %v", username, err)
+		}
+		return u
+	}
+
+	active := mustCreateUser("active-user", statusActive, admin.ID)
+	onHold := mustCreateUser("on-hold-user", statusOnHold, admin.ID)
+	alreadyDisabled := mustCreateUser("already-disabled", statusDisabled, admin.ID)
+	expired := mustCreateUser("expired-user", "expired", admin.ID)
+	otherAdminsActive := mustCreateUser("other-active", statusActive, otherAdmin.ID)
+
+	affected, err := q.DisableActiveUsersByAdminID(ctx, pgInt4FromInt(int(admin.ID)))
+	if err != nil {
+		t.Fatalf("DisableActiveUsersByAdminID: %v", err)
+	}
+	if len(affected) != 2 {
+		t.Fatalf("affected %d users, want 2 (active + on_hold): %+v", len(affected), affected)
+	}
+
+	assertStatus := func(id int32, want string) {
+		t.Helper()
+		u, err := q.GetUserByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetUserByID(%d): %v", id, err)
+		}
+		if u.Status != want {
+			t.Errorf("user %d status = %q, want %q", id, u.Status, want)
+		}
+	}
+	assertStatus(active.ID, statusDisabled)
+	assertStatus(onHold.ID, statusDisabled)
+	assertStatus(alreadyDisabled.ID, statusDisabled) // unchanged, still disabled
+	assertStatus(expired.ID, "expired")              // untouched - not active/on_hold
+	assertStatus(otherAdminsActive.ID, statusActive)  // untouched - different admin
+}
+
+func TestActivateDisabledUsersByAdminIDOnlyTouchesThatAdminsDisabledUsers(t *testing.T) {
+	pool := testPool(t)
+	truncateAdmins(t, pool)
+	q := generated.New(pool)
+	ctx := context.Background()
+
+	admin, err := q.CreateAdmin(ctx, generated.CreateAdminParams{Username: "reseller", HashedPassword: "h"})
+	if err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+	otherAdmin, err := q.CreateAdmin(ctx, generated.CreateAdminParams{Username: "other-reseller", HashedPassword: "h"})
+	if err != nil {
+		t.Fatalf("CreateAdmin(other): %v", err)
+	}
+
+	mustCreateUser := func(username, status string, adminID int32) generated.User {
+		t.Helper()
+		u, err := q.CreateUser(ctx, generated.CreateUserParams{
+			Username:               username,
+			Status:                 status,
+			DataLimitResetStrategy: "no_reset",
+			AdminID:                pgInt4FromInt(int(adminID)),
+		})
+		if err != nil {
+			t.Fatalf("CreateUser(%s): %v", username, err)
+		}
+		return u
+	}
+
+	disabled := mustCreateUser("disabled-user", statusDisabled, admin.ID)
+	alreadyActive := mustCreateUser("already-active", statusActive, admin.ID)
+	expired := mustCreateUser("expired-user", "expired", admin.ID)
+	otherAdminsDisabled := mustCreateUser("other-disabled", statusDisabled, otherAdmin.ID)
+
+	affected, err := q.ActivateDisabledUsersByAdminID(ctx, pgInt4FromInt(int(admin.ID)))
+	if err != nil {
+		t.Fatalf("ActivateDisabledUsersByAdminID: %v", err)
+	}
+	if len(affected) != 1 {
+		t.Fatalf("affected %d users, want 1: %+v", len(affected), affected)
+	}
+
+	assertStatus := func(id int32, want string) {
+		t.Helper()
+		u, err := q.GetUserByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetUserByID(%d): %v", id, err)
+		}
+		if u.Status != want {
+			t.Errorf("user %d status = %q, want %q", id, u.Status, want)
+		}
+	}
+	assertStatus(disabled.ID, statusActive)
+	assertStatus(alreadyActive.ID, statusActive)
+	assertStatus(expired.ID, "expired")                  // untouched - not disabled
+	assertStatus(otherAdminsDisabled.ID, statusDisabled) // untouched - different admin
+}
+
+func TestResetAdminUsageZeroesCounterAndArchivesPriorValue(t *testing.T) {
+	pool := testPool(t)
+	truncateAdmins(t, pool)
+	q := generated.New(pool)
+	ctx := context.Background()
+
+	admin, err := q.CreateAdmin(ctx, generated.CreateAdminParams{Username: "reseller", HashedPassword: "h"})
+	if err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE admins SET users_usage = 500 WHERE id = $1", admin.ID); err != nil {
+		t.Fatalf("seed users_usage: %v", err)
+	}
+
+	updated, err := q.ResetAdminUsage(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("ResetAdminUsage: %v", err)
+	}
+	if updated.UsersUsage != 0 {
+		t.Errorf("UsersUsage = %d, want 0", updated.UsersUsage)
+	}
+
+	var loggedTraffic int64
+	if err := pool.QueryRow(ctx, "SELECT used_traffic_at_reset FROM admin_usage_logs WHERE admin_id = $1", admin.ID).Scan(&loggedTraffic); err != nil {
+		t.Fatalf("query admin_usage_logs: %v", err)
+	}
+	if loggedTraffic != 500 {
+		t.Errorf("archived used_traffic_at_reset = %d, want 500", loggedTraffic)
+	}
+
+	// A second reset on an already-zero counter must not log a second,
+	// misleading "reset from 0" row - see ResetAdminUsage's own WHERE clause.
+	if _, err := q.ResetAdminUsage(ctx, admin.ID); err != nil {
+		t.Fatalf("second ResetAdminUsage: %v", err)
+	}
+	var logCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_usage_logs WHERE admin_id = $1", admin.ID).Scan(&logCount); err != nil {
+		t.Fatalf("count admin_usage_logs: %v", err)
+	}
+	if logCount != 1 {
+		t.Errorf("admin_usage_logs rows = %d, want 1 (second reset-from-zero must not log again)", logCount)
+	}
+}

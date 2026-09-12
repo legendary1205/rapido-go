@@ -87,6 +87,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/admins", requireSudo, h.handleListAdmins)
 		api.PUT("/admin/:username", requireSudo, h.handleUpdateAdmin)
 		api.DELETE("/admin/:username", requireSudo, h.handleDeleteAdmin)
+		api.POST("/admin/:username/users/disable", requireSudo, h.handleDisableAdminUsers)
+		api.POST("/admin/:username/users/activate", requireSudo, h.handleActivateAdminUsers)
+		api.POST("/admin/usage/reset/:username", requireSudo, h.handleResetAdminUsage)
 
 		api.GET("/inbounds", requireAdmin, h.handleListInbounds)
 		api.POST("/inbounds/sync", requireSudo, h.handleSyncInbounds)

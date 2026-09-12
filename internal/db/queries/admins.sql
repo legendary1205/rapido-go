@@ -66,3 +66,24 @@ ORDER BY last_activity ASC;
 -- a later phase and isn't performed here.
 DELETE FROM users WHERE admin_id = $1
 RETURNING *;
+
+-- name: DisableActiveUsersByAdminID :many
+-- Mirrors crud.disable_all_active_users(admin=...): every active or
+-- on_hold user under this admin goes to disabled in one statement - no
+-- separate node-side dispatch needed, since node config is polled with a
+-- short cache TTL (see nodeConfigCacheTTL) rather than push-invalidated.
+UPDATE users SET status = 'disabled', last_status_change = now()
+WHERE admin_id = $1 AND status IN ('active', 'on_hold')
+RETURNING *;
+
+-- name: ActivateDisabledUsersByAdminID :many
+-- Mirrors crud.activate_all_disabled_users(admin=..., users_limit=None)'s
+-- actual effect for that call shape: every disabled user under this admin
+-- goes back to active unconditionally. (The Python version also has an
+-- on_hold-reclassification pass, but it runs against the same rows this
+-- statement just flipped to active within the same transaction, so it
+-- never matches anything for this call shape - not replicated here since
+-- it would be dead code either way.)
+UPDATE users SET status = 'active', last_status_change = now()
+WHERE admin_id = $1 AND status = 'disabled'
+RETURNING *;
