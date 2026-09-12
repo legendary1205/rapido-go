@@ -4,6 +4,7 @@
 package proxysettings
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -86,6 +87,26 @@ func randomPassword() string {
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
+// hasSettings reports whether raw actually carries per-protocol settings to
+// unmarshal - false for both "field omitted entirely" and an empty JSON
+// array ("[]", allowing surrounding whitespace). That second shape is not
+// hypothetical: a real, unmodified reseller bot (wizwizdev/wizwizxui-
+// timebot, confirmed live) builds its add-user request body by
+// json_decode()-ing a stored plan template with PHP's associative-array
+// mode, then json_encode()-ing it back - a round trip that cannot tell an
+// empty JSON *object* ("{}", "no special settings for this protocol") from
+// an empty JSON *array*, and always re-emits the latter. Real Marzban's
+// Python/Pydantic stack coerces both the same way; this codebase's strict
+// encoding/json unmarshal into a struct does not, and would otherwise
+// reject a common, legitimate request shape with a 422 that has nothing to
+// do with the request actually being wrong.
+func hasSettings(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return !bytes.Equal(bytes.TrimSpace(raw), []byte("[]"))
+}
+
 // FromWire builds a Settings from a client-supplied JSON payload for the
 // given protocol, applying the same defaulting rules as the Python
 // ProxySettings subclasses: a missing/empty id or password is generated,
@@ -94,7 +115,7 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 	switch proxyType {
 	case VMess:
 		var s VMessSettings
-		if len(raw) > 0 {
+		if hasSettings(raw) {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return Settings{}, fmt.Errorf("proxysettings: invalid vmess settings: %w", err)
 			}
@@ -106,7 +127,7 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 
 	case VLESS:
 		var s VLESSSettings
-		if len(raw) > 0 {
+		if hasSettings(raw) {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return Settings{}, fmt.Errorf("proxysettings: invalid vless settings: %w", err)
 			}
@@ -128,7 +149,7 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 
 	case Trojan:
 		var s TrojanSettings
-		if len(raw) > 0 {
+		if hasSettings(raw) {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return Settings{}, fmt.Errorf("proxysettings: invalid trojan settings: %w", err)
 			}
@@ -140,7 +161,7 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 
 	case Shadowsocks:
 		var s ShadowsocksSettings
-		if len(raw) > 0 {
+		if hasSettings(raw) {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return Settings{}, fmt.Errorf("proxysettings: invalid shadowsocks settings: %w", err)
 			}

@@ -67,29 +67,53 @@ func validateDiscordWebhook(v *string) error {
 	return nil
 }
 
-// loginRateLimitWindow/Max bound POST /api/admin/token per source IP -
-// neither this panel nor the real Python original has ever had any login
-// rate limit at all (a real, documented gap, not a deliberate scope cut),
-// which in practice let a single misbehaving or brute-forcing client hammer
-// this endpoint indefinitely, one bcrypt comparison at a time. 10/minute is
-// generous for a real interactive admin (who logs in once and gets a
-// 24-hour token) while still catching any client retrying every few
-// seconds - the exact pattern that motivated adding this.
+// loginRateLimitWindow/Max bound POST /api/admin/token's *failed* attempts
+// per source IP - neither this panel nor the real Python original has ever
+// had any login rate limit at all (a real, documented gap, not a
+// deliberate scope cut). This counts failures only, never successes: a
+// live compatibility test against a real, unmodified reseller bot
+// (WizWiz) showed it re-authenticates fresh on nearly every single API
+// call rather than caching its token - a legitimate bot doing a burst of
+// real operations can rack up far more than 10 *correct* logins a minute,
+// and counting those would have made this fix break exactly the
+// compatibility it was meant to protect. 20 wrong-password attempts/minute
+// is still a meaningful cap on wasted bcrypt CPU and brute-force/enumeration
+// risk, without touching anyone whose credentials are simply correct.
 const (
 	loginRateLimitWindow = time.Minute
-	loginRateLimitMax    = 10
+	loginRateLimitMax    = 20
 )
 
-// loginRateLimited checks and bumps the per-IP counter, failing OPEN (never
-// blocking a real login) if Redis itself is unreachable - availability of
-// the login path matters more than this specific defense-in-depth layer.
-func (h *Handler) loginRateLimited(ctx context.Context, ip string) bool {
-	count, err := h.store.Cache.Incr(ctx, cache.LoginAttemptsKey(ip), loginRateLimitWindow)
+// tooManyFailedLogins peeks the per-IP failure counter without bumping it -
+// call recordFailedLogin separately, only once a login has actually been
+// confirmed wrong. Fails OPEN (never blocks) if Redis itself is unreachable
+// or the key doesn't exist yet - availability of the login path matters
+// more than this specific defense-in-depth layer.
+func (h *Handler) tooManyFailedLogins(ctx context.Context, ip string) bool {
+	val, err := h.store.Cache.Get(ctx, cache.LoginAttemptsKey(ip))
 	if err != nil {
-		h.logger.Warn("login rate limit check", "error", err)
 		return false
 	}
-	return count > loginRateLimitMax
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return false
+	}
+	return n >= loginRateLimitMax
+}
+
+func (h *Handler) recordFailedLogin(ctx context.Context, ip string) {
+	if _, err := h.store.Cache.Incr(ctx, cache.LoginAttemptsKey(ip), loginRateLimitWindow); err != nil {
+		h.logger.Warn("record failed login", "error", err)
+	}
+}
+
+// clearFailedLogins runs on every successful login so a real admin who
+// mistypes a password a few times before getting it right isn't left
+// sitting close to the limit for the rest of the window.
+func (h *Handler) clearFailedLogins(ctx context.Context, ip string) {
+	if err := h.store.Cache.Del(ctx, cache.LoginAttemptsKey(ip)); err != nil {
+		h.logger.Warn("clear failed logins", "error", err)
+	}
 }
 
 // handleLogin implements POST /api/admin/token, matching the current
@@ -103,7 +127,7 @@ func (h *Handler) handleLogin(c *gin.Context) {
 	ip := clientIP(c)
 	ctx := c.Request.Context()
 
-	if h.loginRateLimited(ctx, ip) {
+	if h.tooManyFailedLogins(ctx, ip) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"detail": "Too many login attempts, please try again later"})
 		return
 	}
@@ -115,11 +139,13 @@ func (h *Handler) handleLogin(c *gin.Context) {
 	default:
 		admin, err := h.store.Queries.GetAdminByUsername(ctx, username)
 		if err != nil {
+			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
 		if !auth.VerifyPassword(password, admin.HashedPassword) {
+			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
@@ -132,6 +158,7 @@ func (h *Handler) handleLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not issue token"})
 		return
 	}
+	h.clearFailedLogins(ctx, ip)
 	if !contains(h.loginNotifyWhitelist, ip) {
 		h.reports.Login(ctx, username, ip, loginStatusSuccess)
 	}

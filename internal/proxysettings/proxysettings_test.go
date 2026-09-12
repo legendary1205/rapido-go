@@ -78,6 +78,50 @@ func TestFromWireShadowsocksDefaults(t *testing.T) {
 	}
 }
 
+// TestFromWireTreatsEmptyArrayAsNoSettings covers a real, live-confirmed
+// compatibility gap: a real, unmodified reseller bot (wizwizdev/
+// wizwizxui-timebot) sends "[]" instead of "{}" for a protocol's settings
+// once its plan template round-trips through PHP's associative-array JSON
+// decode/encode (see hasSettings's own doc comment for the exact
+// mechanism) - every protocol must accept this shape the same as no
+// settings supplied at all, not reject it as malformed input.
+func TestFromWireTreatsEmptyArrayAsNoSettings(t *testing.T) {
+	for _, proxyType := range []ProxyType{VMess, VLESS, Trojan, Shadowsocks} {
+		s, err := FromWire(proxyType, json.RawMessage(`[]`))
+		if err != nil {
+			t.Errorf("FromWire(%s, []): %v, want the same defaulting as no settings at all", proxyType, err)
+		}
+		switch proxyType {
+		case VMess:
+			if s.VMess.ID == "" {
+				t.Error("VMess.ID is empty, want an auto-generated UUID")
+			}
+		case VLESS:
+			if s.VLESS.ID == "" || s.VLESS.Flow != FlowVision {
+				t.Errorf("VLESS = %+v, want a generated id and Vision flow", s.VLESS)
+			}
+		case Trojan:
+			if s.Trojan.Password == "" {
+				t.Error("Trojan.Password is empty, want an auto-generated password")
+			}
+		case Shadowsocks:
+			if s.Shadowsocks.Password == "" || s.Shadowsocks.Method == "" {
+				t.Errorf("Shadowsocks = %+v, want a generated password and default method", s.Shadowsocks)
+			}
+		}
+	}
+}
+
+// TestFromWireStillRejectsNonEmptyArray proves the compatibility shim is
+// narrowly scoped to exactly "[]" - a genuinely malformed non-empty array
+// must still be rejected, not silently swallowed.
+func TestFromWireStillRejectsNonEmptyArray(t *testing.T) {
+	_, err := FromWire(VLESS, json.RawMessage(`[1,2,3]`))
+	if err == nil {
+		t.Error("FromWire(VLESS, [1,2,3]) succeeded, want an error - this is not the empty-array compatibility shape")
+	}
+}
+
 func TestFromWireRejectsUnknownType(t *testing.T) {
 	if _, err := FromWire("wireguard", nil); err == nil {
 		t.Error("FromWire with an unknown proxy type succeeded, want an error")
