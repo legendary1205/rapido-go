@@ -415,6 +415,32 @@ func TestListUsersSortMatchesOldDashboardOptions(t *testing.T) {
 	}
 }
 
+// TestDeleteUserSucceedsAfterAUsageReset is a regression test for a real
+// bug found via a live compatibility test against a real, unmodified
+// reseller bot (WizWiz): every user-owned table except user_usage_logs was
+// promoted to a real ON DELETE CASCADE FK (see 00001_init_schema.sql's own
+// history) - that one table was left on Postgres's default NO ACTION, so
+// deleting any user who had ever had their traffic reset (inserting a
+// user_usage_logs row) failed outright with a plain 500, not the normal
+// success response every other user could get.
+func TestDeleteUserSucceedsAfterAUsageReset(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Delete VLESS", "protocol": "vless"}})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "delete_after_reset_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+
+	resetResp := doRequest(t, router, "POST", "/api/user/delete_after_reset_user/reset", token, nil)
+	if resetResp.Code != http.StatusOK {
+		t.Fatalf("reset user: %d %v", resetResp.Code, resetResp.Body)
+	}
+
+	delResp := doRequest(t, router, "DELETE", "/api/user/delete_after_reset_user", token, nil)
+	if delResp.Code != http.StatusOK {
+		t.Fatalf("delete user after a reset: %d %v, want 200 - a user_usage_logs row must not block deletion", delResp.Code, delResp.Body)
+	}
+}
+
 func toStringSlice(v interface{}) []string {
 	if v == nil {
 		return nil
