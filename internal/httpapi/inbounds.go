@@ -127,7 +127,11 @@ func (h *Handler) handleDeleteInbound(c *gin.Context) {
 	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)
 	}
-	c.JSON(http.StatusOK, gin.H{"detail": "Inbound removed successfully"})
+	proxiesRemoved, err := h.pruneOrphanedProxies(ctx)
+	if err != nil {
+		h.logger.Warn("prune orphaned proxies", "error", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": "Inbound removed successfully", "orphaned_proxies_removed": proxiesRemoved})
 }
 
 // deleteInboundByTag is the real work behind DELETE /api/inbounds/:tag:
@@ -304,4 +308,32 @@ func proxyTypeValid(protocol string) bool {
 		return true
 	}
 	return false
+}
+
+// pruneOrphanedProxies deletes every proxy whose protocol no longer has any
+// inbound at all - see PruneOrphanedProxies's own doc comment for why this
+// matters (a protocol dropped from the live config, e.g. going from
+// vless+vmess+trojan down to vless-only, otherwise leaves dead vmess/trojan
+// credentials sitting in every affected user's proxies forever).
+//
+// Deliberately refuses to run at all when there are currently zero inbounds
+// of ANY protocol: PruneOrphanedProxies's `NOT IN (SELECT ... FROM
+// inbounds)` would otherwise treat an empty inbounds table as "every
+// protocol is orphaned" and delete every proxy for every user - a real risk
+// during a legitimate "clear everything, then re-import" admin workflow
+// (this migration's own Core Config reset did exactly that), not just a
+// hypothetical edge case.
+func (h *Handler) pruneOrphanedProxies(ctx context.Context) (int, error) {
+	inbounds, err := h.store.Queries.ListInbounds(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("could not list inbounds: %w", err)
+	}
+	if len(inbounds) == 0 {
+		return 0, nil
+	}
+	removed, err := h.store.Queries.PruneOrphanedProxies(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("could not prune orphaned proxies: %w", err)
+	}
+	return len(removed), nil
 }

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"testing"
 )
@@ -178,5 +179,114 @@ func TestInboundsDetailAndDeleteAreSudoOnly(t *testing.T) {
 	}
 	if resp := doRequest(t, router, "DELETE", "/api/inbounds/anything", nonSudo, nil); resp.Code != 403 {
 		t.Errorf("DELETE /inbounds/:tag as non-sudo: got %d, want 403 (%v)", resp.Code, resp.Body)
+	}
+}
+
+// userProxyProtocols fetches a user and returns the set of protocol keys
+// present in its "proxies" object.
+func userProxyProtocols(t *testing.T, router http.Handler, token, username string) map[string]bool {
+	t.Helper()
+	resp := doRequest(t, router, "GET", "/api/user/"+username, token, nil)
+	if resp.Code != 200 {
+		t.Fatalf("get user %s: %d %v", username, resp.Code, resp.Body)
+	}
+	proxies, _ := resp.Body["proxies"].(map[string]interface{})
+	out := make(map[string]bool, len(proxies))
+	for k := range proxies {
+		out[k] = true
+	}
+	return out
+}
+
+// TestDeletingLastInboundOfAProtocolPrunesThatProtocolsProxies is a
+// regression test found by the user comparing a real migration's data
+// against the source panel: a protocol dropped from the live Xray/Core
+// Config (here, vmess going from "has one inbound" to "has none") must not
+// leave every affected user still carrying a vmess proxy credential nobody
+// can ever serve again.
+func TestDeletingLastInboundOfAProtocolPrunesThatProtocolsProxies(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "VLESS-1", "protocol": "vless"},
+		{"tag": "VMess-only", "protocol": "vmess"},
+	})
+	create := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "multi-proto-user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}, "vmess": map[string]interface{}{}},
+	})
+	if create.Code != 200 {
+		t.Fatalf("create user: %d %v", create.Code, create.Body)
+	}
+	if got := userProxyProtocols(t, router, token, "multi-proto-user"); !got["vless"] || !got["vmess"] {
+		t.Fatalf("user should start with both vless and vmess proxies, got %v", got)
+	}
+
+	del := doRequest(t, router, "DELETE", "/api/inbounds/VMess-only", token, nil)
+	if del.Code != 200 {
+		t.Fatalf("delete VMess-only: %d %v", del.Code, del.Body)
+	}
+	if n, _ := del.Body["orphaned_proxies_removed"].(float64); n != 1 {
+		t.Errorf("orphaned_proxies_removed = %v, want 1", del.Body["orphaned_proxies_removed"])
+	}
+
+	got := userProxyProtocols(t, router, token, "multi-proto-user")
+	if got["vmess"] {
+		t.Errorf("vmess proxy should have been pruned once its only inbound was deleted, still present: %v", got)
+	}
+	if !got["vless"] {
+		t.Errorf("vless proxy should be untouched (vless still has an inbound), got %v", got)
+	}
+}
+
+// TestDeletingOneOfSeveralInboundsOfTheSameProtocolPrunesNothing makes sure
+// the prune is genuinely per-protocol, not per-tag: removing one of two
+// vless inbounds must not touch anyone's vless proxy, since vless itself
+// still has a surviving inbound.
+func TestDeletingOneOfSeveralInboundsOfTheSameProtocolPrunesNothing(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "VLESS-A", "protocol": "vless"},
+		{"tag": "VLESS-B", "protocol": "vless"},
+	})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "vless-user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+
+	del := doRequest(t, router, "DELETE", "/api/inbounds/VLESS-A", token, nil)
+	if del.Code != 200 {
+		t.Fatalf("delete VLESS-A: %d %v", del.Code, del.Body)
+	}
+	if n, _ := del.Body["orphaned_proxies_removed"].(float64); n != 0 {
+		t.Errorf("orphaned_proxies_removed = %v, want 0 (VLESS-B still serves vless)", del.Body["orphaned_proxies_removed"])
+	}
+	if got := userProxyProtocols(t, router, token, "vless-user"); !got["vless"] {
+		t.Errorf("vless proxy should be untouched, got %v", got)
+	}
+}
+
+// TestPruneOrphanedProxiesNeverRunsWhenNoInboundsRemainAtAll is the safety
+// guard test: PruneOrphanedProxies's SQL is `type NOT IN (SELECT protocol
+// FROM inbounds)`, and an empty inbounds table makes that NOT IN match
+// every row - the exact opposite of "orphaned". Deleting every inbound one
+// at a time (a real workflow: clearing everything before a fresh import)
+// must never wipe every user's proxies as a side effect.
+func TestPruneOrphanedProxiesNeverRunsWhenNoInboundsRemainAtAll(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{{"tag": "Only VLESS", "protocol": "vless"}})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "sole-user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+
+	del := doRequest(t, router, "DELETE", "/api/inbounds/"+url.PathEscape("Only VLESS"), token, nil)
+	if del.Code != 200 {
+		t.Fatalf("delete Only VLESS: %d %v", del.Code, del.Body)
+	}
+	if n, _ := del.Body["orphaned_proxies_removed"].(float64); n != 0 {
+		t.Errorf("orphaned_proxies_removed = %v, want 0 - zero inbounds must skip pruning entirely", del.Body["orphaned_proxies_removed"])
+	}
+	if got := userProxyProtocols(t, router, token, "sole-user"); !got["vless"] {
+		t.Errorf("vless proxy must survive deleting the last inbound - pruning must refuse to run with zero inbounds left, got %v", got)
 	}
 }

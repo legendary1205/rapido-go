@@ -131,6 +131,7 @@ func (h *Handler) handleUpdateXrayConfig(c *gin.Context) {
 		return
 	}
 
+	removedAnyInbound := false
 	for _, tag := range previousTags {
 		if submittedTags[tag] {
 			continue
@@ -138,6 +139,15 @@ func (h *Handler) handleUpdateXrayConfig(c *gin.Context) {
 		if err := h.deleteInboundByTag(ctx, tag); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 			return
+		}
+		removedAnyInbound = true
+	}
+	// Removing a tag can drop a protocol's last inbound (e.g. replacing a
+	// vless+vmess+trojan config with a vless-only one) - prune once for the
+	// whole batch, not per tag, same as InvalidateNodeConfigPayload below.
+	if removedAnyInbound {
+		if _, err := h.pruneOrphanedProxies(ctx); err != nil {
+			h.logger.Warn("prune orphaned proxies", "error", err)
 		}
 	}
 

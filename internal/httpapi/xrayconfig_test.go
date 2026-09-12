@@ -116,6 +116,13 @@ func TestUpdateXrayConfigDeletesInboundsOmittedFromThePayload(t *testing.T) {
 		"Keep Me":   []map[string]interface{}{{"remark": "k", "address": "1.2.3.4", "port": 443, "security": "none"}},
 		"Remove Me": []map[string]interface{}{{"remark": "r", "address": "1.2.3.4", "port": 444, "security": "none"}},
 	})
+	// A user holding both protocols - the trojan side should be pruned once
+	// "Remove Me" (trojan's only inbound) disappears from this Apply, the
+	// same real gap the migration itself hit (see PruneOrphanedProxies).
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "both-proto-user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}, "trojan": map[string]interface{}{}},
+	})
 
 	resp := doRequest(t, router, "PUT", "/api/settings/xray-config", token, map[string]interface{}{
 		"inbounds": []map[string]interface{}{{"tag": "Keep Me", "protocol": "vless"}},
@@ -141,6 +148,15 @@ func TestUpdateXrayConfigDeletesInboundsOmittedFromThePayload(t *testing.T) {
 	}
 	if keepHosts, ok := hostsResp.Body["Keep Me"].([]interface{}); !ok || len(keepHosts) != 1 {
 		t.Errorf("Keep Me's own host was disturbed: %v", hostsResp.Body["Keep Me"])
+	}
+
+	userResp := doRequest(t, router, "GET", "/api/user/both-proto-user", token, nil)
+	proxies, _ := userResp.Body["proxies"].(map[string]interface{})
+	if _, stillHasTrojan := proxies["trojan"]; stillHasTrojan {
+		t.Errorf("trojan proxy should have been pruned once its only inbound was removed via Apply, got %v", proxies)
+	}
+	if _, stillHasVless := proxies["vless"]; !stillHasVless {
+		t.Errorf("vless proxy should be untouched, got %v", proxies)
 	}
 }
 

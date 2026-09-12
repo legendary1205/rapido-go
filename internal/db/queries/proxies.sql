@@ -39,3 +39,17 @@ WHERE proxy_id = ANY($1::int[]) ORDER BY proxy_id, inbound_tag;
 -- name: UpdateProxySettings :one
 UPDATE proxies SET settings = $2 WHERE id = $1
 RETURNING *;
+
+-- name: PruneOrphanedProxies :many
+-- Deletes every proxy whose protocol has no inbound left at all - called
+-- after any change that could remove the last inbound of a protocol
+-- (deleting one inbound, or the Xray-config JSON editor's full-replace
+-- Apply), so a protocol dropped from the live config doesn't leave dead
+-- credentials sitting in every affected user's proxies forever. A user
+-- gaining or losing a proxy row this way is exactly the same shape as any
+-- other proxy change (subscription links/configs are always generated
+-- from whatever proxies currently exist), so no extra invalidation beyond
+-- what the caller already does for the inbound change itself is needed.
+DELETE FROM proxies
+WHERE type NOT IN (SELECT DISTINCT protocol FROM inbounds)
+RETURNING *;
