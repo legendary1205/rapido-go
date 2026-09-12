@@ -385,6 +385,17 @@ compose() {
 }
 
 wait_healthy() {
+    # cmd_install's own call arrives with RAPIDO_DOMAIN already set by
+    # prompt_domain earlier in the same run, but cmd_update never prompts
+    # for it at all - load it from .env here too (same idiom as
+    # load_saved_token) so `rapido-go update` doesn't crash under set -u
+    # on a plain unset-variable reference the moment it reaches the
+    # https:// check below. Found by actually running `rapido-go update`
+    # non-interactively, not assumed.
+    if [ -z "${RAPIDO_DOMAIN:-}" ] && [ -f "$APP_DIR/.env" ]; then
+        RAPIDO_DOMAIN="$(grep -E '^RAPIDO_DOMAIN=' "$APP_DIR/.env" 2>/dev/null \
+            | head -1 | cut -d= -f2- | tr -d '"')"
+    fi
     # Caddy needs a moment to get its certificate on a fresh domain before
     # https:// answers - poll plain HTTP on the panel's own compose network
     # first (proves the app itself is up), then the public https:// URL.

@@ -12,8 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/sagernet/sing/common/buf"
-	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/common/bufio"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -93,59 +92,46 @@ func (m *Manager) Drain() map[string]Usage {
 	return out
 }
 
-// CountingConn wraps a net.Conn accepted on an inbound listener, counting
-// Read (bytes received from the client - uplink) and Write (bytes sent to
-// the client - downlink) into mgr, keyed by user.
-type CountingConn struct {
-	net.Conn
-	user string
-	mgr  *Manager
-}
-
+// WrapConn wraps a net.Conn accepted on an inbound listener, counting Read
+// (bytes received from the client - uplink) and Write (bytes sent to the
+// client - downlink) into mgr, keyed by user.
+//
+// Built on sing's own bufio.CounterConn rather than a hand-rolled
+// net.Conn embed: a plain embed only forwards the methods it's given, but
+// sing-box's copy/splice paths walk a wrapper chain looking for an
+// `Upstream() any` (and friends: UnwrapReader/UnwrapWriter,
+// CreateVectorisedWriter) to find the real underlying connection and
+// negotiate things like buffer headroom with IT, not with whatever
+// wrapper happens to be sitting in front. A wrapper that doesn't forward
+// those is invisible to that negotiation, not neutral to it - see
+// WrapPacketConn's doc comment for the real crash this caused on the
+// packet side.
 func WrapConn(conn net.Conn, user string, mgr *Manager) net.Conn {
-	return &CountingConn{Conn: conn, user: user, mgr: mgr}
+	return bufio.NewCounterConn(conn,
+		[]N.CountFunc{func(n int64) { mgr.Add(user, n, 0) }},
+		[]N.CountFunc{func(n int64) { mgr.Add(user, 0, n) }},
+	)
 }
 
-func (c *CountingConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 {
-		c.mgr.Add(c.user, int64(n), 0)
-	}
-	return n, err
-}
-
-func (c *CountingConn) Write(b []byte) (int, error) {
-	n, err := c.Conn.Write(b)
-	if n > 0 {
-		c.mgr.Add(c.user, 0, int64(n))
-	}
-	return n, err
-}
-
-// CountingPacketConn is CountingConn's equivalent for the UDP/packet path.
-type CountingPacketConn struct {
-	N.PacketConn
-	user string
-	mgr  *Manager
-}
-
+// WrapPacketConn is WrapConn's equivalent for the UDP/packet path.
+//
+// This used to be a hand-rolled struct embedding N.PacketConn directly
+// (see git history) - it crashed a real production node under live
+// Mux+UDP traffic: `panic: buffer overflow: capacity 16384, start 0,
+// need 16` inside sing-vmess's mux WritePacket (mux is protocol-agnostic
+// in this ecosystem - sing-box reuses it for VLESS too, not just VMess).
+// sing-box's packet-copy loop pre-sizes buffers by walking the wrapper
+// chain via `Upstream() any` to find how much header room the REAL
+// innermost conn needs, so mux can prepend its header into reserved
+// space instead of reallocating. A hand-rolled wrapper with no
+// Upstream() is opaque to that walk, so the loop assumed zero headroom
+// and handed mux a buffer with none to prepend into. sing's own
+// bufio.CounterPacketConn does this exact byte-counting job already,
+// with Upstream() and every other introspection method correctly
+// forwarded.
 func WrapPacketConn(conn N.PacketConn, user string, mgr *Manager) N.PacketConn {
-	return &CountingPacketConn{PacketConn: conn, user: user, mgr: mgr}
-}
-
-func (c *CountingPacketConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
-	destination, err := c.PacketConn.ReadPacket(buffer)
-	if err == nil {
-		c.mgr.Add(c.user, int64(buffer.Len()), 0)
-	}
-	return destination, err
-}
-
-func (c *CountingPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	n := buffer.Len()
-	err := c.PacketConn.WritePacket(buffer, destination)
-	if err == nil {
-		c.mgr.Add(c.user, 0, int64(n))
-	}
-	return err
+	return bufio.NewCounterPacketConn(conn,
+		[]N.CountFunc{func(n int64) { mgr.Add(user, n, 0) }},
+		[]N.CountFunc{func(n int64) { mgr.Add(user, 0, n) }},
+	)
 }

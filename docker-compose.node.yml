@@ -17,10 +17,28 @@ services:
   node:
     image: ${RAPIDO_NODE_IMAGE:-ghcr.io/legendary1205/rapido-go-node}:${RAPIDO_NODE_TAG:-latest}
     restart: unless-stopped
-    ports:
-      - "${LISTEN_PORT:-62051}:62051"
+    # Host networking, not a published port list, for two independent
+    # reasons - either one alone would rule out the bridge network this
+    # used to run under:
+    #   1. The panel has no per-node inbound scoping (every node applies
+    #      the fleet's ENTIRE Core Config), so the set of client-facing
+    #      ports this process binds is whatever inbounds exist panel-side
+    #      at the moment - unknown at compose-time and can change on any
+    #      config push. A fixed `ports:` list (even a wide range) either
+    #      misses newly-added ports or blindly opens ones nothing uses.
+    #   2. bind_interface-based outbound routing (WireGuard exits: see
+    #      rapido-go-node.sh's own `tunnels` command) needs to see the
+    #      host's real network interfaces (wg0, a named tunnel, etc.)
+    #      directly - a bridge network's separate namespace hides them
+    #      entirely, so any host whose Core Config routes through a named
+    #      interface would silently fall back to the container's default
+    #      route instead.
+    # Host mode means every port this process opens - the control API
+    # below and whatever inbounds it starts - is reachable exactly as if
+    # it ran outside Docker at all.
+    network_mode: host
     environment:
-      NODE_LISTEN_ADDR: 0.0.0.0:62051
+      NODE_LISTEN_ADDR: 0.0.0.0:${LISTEN_PORT:-62051}
       # Only needed on the very first `up` - the container writes
       # cert/key/ca into the volume below and never reads this again
       # afterward. Required for a genuinely fresh volume (the node
