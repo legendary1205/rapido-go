@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -334,6 +335,82 @@ func TestListUsersTotalIsRealCountNotPageSize(t *testing.T) {
 		}
 		if len(users) != wantPageLen {
 			t.Errorf("limit=%d: page has %d users, want %d", limit, len(users), wantPageLen)
+		}
+	}
+}
+
+// TestListUsersSortMatchesOldDashboardOptions verifies each of the 5 sort
+// values the old dashboard's dropdown sends (see users.sql's ListUsers doc
+// comment), plus that an unrecognized/missing value falls back to the same
+// default the dashboard itself defaults to ("-created_at", newest first) -
+// not just whatever the SQL CASE expression's tiebreaker happens to do.
+func TestListUsersSortMatchesOldDashboardOptions(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Sort VLESS", "protocol": "vless"}})
+
+	type spec struct {
+		username    string
+		usedTraffic int64
+		expire      int64
+	}
+	// Created in this exact order, so id and created_at both increase
+	// alice -> bob -> carol - lets created_at-based sorts and id-based
+	// sorts be checked with the same fixture.
+	specs := []spec{
+		{"alice", 300, 3000000000},
+		{"bob", 100, 1000000000},
+		{"carol", 200, 2000000000},
+	}
+	for _, s := range specs {
+		resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+			"username": s.username, "expire": s.expire,
+			"proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+		})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("create user %s: %d %v", s.username, resp.Code, resp.Body)
+		}
+		// used_traffic isn't writable through PUT /api/user (it's tracked
+		// via node reports, see nodereport.go) - set it directly, same as
+		// store_test.go does for fields no HTTP endpoint exposes.
+		if _, err := handler.store.Pool.Exec(context.Background(),
+			"UPDATE users SET used_traffic = $1 WHERE username = $2", s.usedTraffic, s.username); err != nil {
+			t.Fatalf("seed used_traffic for %s: %v", s.username, err)
+		}
+	}
+
+	usernamesInOrder := func(sort string) []string {
+		t.Helper()
+		url := "/api/users"
+		if sort != "" {
+			url += "?sort=" + sort
+		}
+		resp := doRequest(t, router, "GET", url, token, nil)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("list users (sort=%q): %d %v", sort, resp.Code, resp.Body)
+		}
+		users, _ := resp.Body["users"].([]interface{})
+		out := make([]string, 0, len(users))
+		for _, u := range users {
+			out = append(out, u.(map[string]interface{})["username"].(string))
+		}
+		return out
+	}
+
+	cases := []struct {
+		sort string
+		want []string
+	}{
+		{"-created_at", []string{"carol", "bob", "alice"}}, // newest first
+		{"created_at", []string{"alice", "bob", "carol"}},  // oldest first
+		{"username", []string{"alice", "bob", "carol"}},    // A-Z
+		{"-used_traffic", []string{"alice", "carol", "bob"}},
+		{"expire", []string{"bob", "carol", "alice"}}, // soonest first
+		{"", []string{"carol", "bob", "alice"}},        // missing -> default newest-first
+		{"not-a-real-option", []string{"carol", "bob", "alice"}}, // unrecognized -> same default
+	}
+	for _, c := range cases {
+		if got := usernamesInOrder(c.sort); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("sort=%q: order = %v, want %v", c.sort, got, c.want)
 		}
 	}
 }

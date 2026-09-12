@@ -30,16 +30,6 @@ const cleanFilters = (filters: UsersFilters): Record<string, unknown> => {
   return out;
 };
 
-// GET /api/users accepts search/status/offset/limit - NOT `sort`. This is a
-// real gap in the current Go backend (users.sql's ListUsers query has a
-// fixed `ORDER BY id`, and handleListUsers in internal/httpapi/user.go never
-// reads a sort query param at all), not something the frontend can safely
-// paper over: the list is server-paginated, so re-sorting one page
-// client-side would misrepresent what the other pages contain. `sort` is
-// still sent (an unrecognized query param is simply ignored server-side) so
-// the UsersTable dropdown keeps working the moment sorting is implemented,
-// but until then it has no visible effect - flagged here rather than quietly
-// dropped or quietly faked.
 export const useUsersQuery = (filters: UsersFilters) =>
   useQuery({
     queryKey: queryKeys.users(cleanFilters(filters)),

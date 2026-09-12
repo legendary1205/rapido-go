@@ -37,12 +37,6 @@ const statusFilterOptions: { value: Status | ""; labelKey: string }[] = [
   { value: "disabled", labelKey: "status.disabled" },
 ];
 
-// `sort` is sent to GET /api/users, but the Go backend does not implement it
-// yet (see hooks/useUsersQuery.ts's own comment - ListUsers.sql has a fixed
-// `ORDER BY id`). Left in the UI so the control keeps working the moment
-// backend sorting exists, rather than removing a feature the plan didn't ask
-// to drop; a human should decide whether to hide this dropdown or implement
-// the backend sort in the meantime (see the final report).
 const sortOptions: { value: string; labelKey: string }[] = [
   { value: "-created_at", labelKey: "rapido.sortNewest" },
   { value: "created_at", labelKey: "rapido.sortOldest" },

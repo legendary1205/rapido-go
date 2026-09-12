@@ -85,6 +85,21 @@ RETURNING *;
 -- Every filter is optional (NULL disables it) so one query serves both the
 -- sudo "all users" and the non-sudo "only my users" cases, matching
 -- crud.get_users. limit/offset NULL means unbounded/0, same as ListAdmins.
+--
+-- `sort` mirrors the 5 options the old dashboard's own sort dropdown always
+-- sent (confirmed by reading the actual served UsersPage bundle) - the Go
+-- handler validates it against this exact allow-list before it ever reaches
+-- SQL, so this CASE-per-option shape (not string-built ORDER BY) is a
+-- defense in depth against a stray value becoming a real injection vector,
+-- not the only guard. Every CASE but the one matching `sort` evaluates to
+-- NULL and Postgres just skips it, so exactly one of the 5 keys actually
+-- orders the result; `id DESC` as the last, always-active key is both the
+-- default (the handler defaults `sort` itself to "-created_at", but this
+-- covers any caller that skips that entirely) and the tiebreaker for the
+-- other 4. Plain `ORDER BY id` (oldest first, no options at all) used to
+-- make an admin's newest signups the LAST page instead of the first, the
+-- opposite of the old panel's default - found by comparing the two
+-- dashboards directly, not assumed.
 SELECT * FROM users
 WHERE (sqlc.narg('admin_id')::int IS NULL OR admin_id = sqlc.narg('admin_id')::int)
   AND (sqlc.narg('statuses')::text[] IS NULL OR status = ANY(sqlc.narg('statuses')::text[]))
@@ -93,7 +108,13 @@ WHERE (sqlc.narg('admin_id')::int IS NULL OR admin_id = sqlc.narg('admin_id')::i
     OR username ILIKE '%' || sqlc.narg('search')::text || '%'
     OR note ILIKE '%' || sqlc.narg('search')::text || '%'
   )
-ORDER BY id
+ORDER BY
+  CASE WHEN sqlc.narg('sort')::text = 'created_at' THEN created_at END ASC,
+  CASE WHEN sqlc.narg('sort')::text = '-created_at' THEN created_at END DESC,
+  CASE WHEN sqlc.narg('sort')::text = 'username' THEN username END ASC,
+  CASE WHEN sqlc.narg('sort')::text = '-used_traffic' THEN used_traffic END DESC,
+  CASE WHEN sqlc.narg('sort')::text = 'expire' THEN expire END ASC,
+  id DESC
 LIMIT sqlc.narg('limit')::int OFFSET sqlc.narg('offset')::int;
 
 -- name: CountUsers :one

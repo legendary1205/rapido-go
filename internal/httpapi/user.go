@@ -753,6 +753,24 @@ func (h *Handler) handleRevokeUserSub(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// validUserSorts are the exact 5 values the old dashboard's sort dropdown
+// always sent (see users.sql's ListUsers doc comment) - allow-listed here,
+// not just left to the SQL CASE expression's own "no branch matches" no-op,
+// so an unrecognized value falls back to the dashboard's own default
+// ("-created_at", newest first) instead of silently falling through to
+// nothing but the id DESC tiebreak.
+var validUserSorts = map[string]bool{
+	"created_at": true, "-created_at": true, "username": true,
+	"-used_traffic": true, "expire": true,
+}
+
+func validUserSort(v string) string {
+	if validUserSorts[v] {
+		return v
+	}
+	return "-created_at"
+}
+
 // handleListUsers implements GET /api/users: sudo sees every user, a
 // regular admin only their own (matching system.py/user.py's `scope =
 // dbadmin if not admin.is_sudo else None` pattern).
@@ -778,6 +796,8 @@ func (h *Handler) handleListUsers(c *gin.Context) {
 			params.Limit = pgInt4FromInt(n)
 		}
 	}
+	sort := validUserSort(c.Query("sort"))
+	params.Sort = textFromPtr(&sort)
 	ctx := c.Request.Context()
 	rows, err := h.store.Queries.ListUsers(ctx, params)
 	if err != nil {
