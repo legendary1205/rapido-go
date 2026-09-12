@@ -77,6 +77,11 @@ services:
       SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
       PUBLIC_IP: ${PUBLIC_IP:-}
       XRAY_SUBSCRIPTION_URL_PREFIX: ${XRAY_SUBSCRIPTION_URL_PREFIX:-}
+      # Customer-visible: real VPN clients render these as the in-app
+      # support button and the profile's name (see .env.prod.example).
+      SUB_SUPPORT_URL: ${SUB_SUPPORT_URL:-https://t.me/}
+      SUB_PROFILE_TITLE: ${SUB_PROFILE_TITLE:-Subscription}
+      SUB_UPDATE_INTERVAL: ${SUB_UPDATE_INTERVAL:-12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       # Both empty by default (no override - see internal/subscription's
       # ClashConfig/V2rayJSONConfig doc comments for the built-in minimal

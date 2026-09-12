@@ -455,6 +455,48 @@ func TestTicketBodyLimitsCountCharactersNotBytes(t *testing.T) {
 	}
 }
 
+// TestSubscriptionHeadersMatchTheRealPanel pins the headers real VPN
+// clients (Happ, Streisand, v2rayNG, Hiddify) actually render: without
+// support-url the in-app support button disappears, and without
+// profile-web-page-url the customer has no link back to their account
+// page from inside the app.
+func TestSubscriptionHeadersMatchTheRealPanel(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Hdr VLESS", "protocol": "vless"}})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"Hdr VLESS": []map[string]interface{}{{"remark": "h", "address": "1.2.3.4", "port": 8443}},
+	})
+	created := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "header_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	subURL, _ := created.Body["subscription_url"].(string)
+	subToken := subURL[strings.LastIndex(subURL, "/")+1:]
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+subToken, nil)
+	req.Header.Set("User-Agent", "v2rayNG/1.8.19")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subscription fetch: %d %s", rec.Code, rec.Body.String())
+	}
+	for header, want := range map[string]string{
+		"Profile-Update-Interval": "12",
+		"Support-Url":             "https://t.me/", // the real panel's own default
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	for _, header := range []string{"Content-Disposition", "Profile-Title", "Subscription-Userinfo", "Profile-Web-Page-Url"} {
+		if rec.Header().Get(header) == "" {
+			t.Errorf("%s is missing from the subscription response", header)
+		}
+	}
+	if url := rec.Header().Get("Profile-Web-Page-Url"); !strings.Contains(url, subToken) {
+		t.Errorf("Profile-Web-Page-Url = %q, want the subscription URL that was fetched", url)
+	}
+}
+
 func TestGetUsersUsageIsScopedAndShaped(t *testing.T) {
 	router, token := newTestRouter(t)
 

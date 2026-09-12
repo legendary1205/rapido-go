@@ -28,6 +28,7 @@ type Handler struct {
 	clashTemplatePath    string
 	v2rayTemplatePath    string
 	formatFlags          SubscriptionFormatFlags
+	subBranding          SubscriptionBranding
 	envDefaults          integrationsettings.Values
 	reports              *report.Dispatcher
 	kirbot               *kirbot.Client
@@ -42,8 +43,32 @@ type Handler struct {
 	restoreDatabase restoreDatabaseFn
 }
 
+// SubscriptionBranding carries the three operator-facing values the real
+// panel exposes on every subscription response (SUB_SUPPORT_URL,
+// SUB_PROFILE_TITLE, SUB_UPDATE_INTERVAL). Real VPN clients render the
+// first two as buttons, so leaving them empty is visible to customers.
+type SubscriptionBranding struct {
+	SupportURL     string
+	ProfileTitle   string
+	UpdateInterval string
+}
+
+func (b SubscriptionBranding) withDefaults() SubscriptionBranding {
+	if b.SupportURL == "" {
+		b.SupportURL = "https://t.me/"
+	}
+	if b.ProfileTitle == "" {
+		b.ProfileTitle = "Subscription"
+	}
+	if b.UpdateInterval == "" {
+		b.UpdateInterval = "12"
+	}
+	return b
+}
+
 func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPassword string, jwtSecret []byte,
 	publicIP, subURLPrefix, clashTemplatePath, v2rayTemplatePath string, formatFlags SubscriptionFormatFlags,
+	subBranding SubscriptionBranding,
 	envDefaults integrationsettings.Values, reports *report.Dispatcher,
 	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
 	databaseURL, backupDir string, backupKeep int,
@@ -52,6 +77,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
 		clashTemplatePath: clashTemplatePath, v2rayTemplatePath: v2rayTemplatePath, formatFlags: formatFlags,
+		subBranding: subBranding.withDefaults(),
 		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
 		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker,
 		databaseURL: databaseURL, backupDir: backupDir, backupKeep: backupKeep,

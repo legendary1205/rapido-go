@@ -448,8 +448,30 @@ func (h *Handler) setSubscriptionHeaders(c *gin.Context, user generated.User) {
 	}
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, user.Username))
 	c.Header("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(user.Username)))
-	c.Header("Profile-Update-Interval", "12")
+	c.Header("Profile-Update-Interval", h.subBranding.UpdateInterval)
 	c.Header("Subscription-Userinfo", fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", user.UsedTraffic, total, expire))
+	// Real VPN clients (Happ, Streisand, v2rayNG, Hiddify) render these two
+	// directly: support-url becomes the in-app support button, and
+	// profile-web-page-url the link back to the account page. Without them
+	// the customer has no route to either from inside the app.
+	c.Header("Support-Url", h.subBranding.SupportURL)
+	c.Header("Profile-Web-Page-Url", h.subscriptionRequestURL(c))
+}
+
+// subscriptionRequestURL rebuilds the absolute URL this subscription was
+// fetched with, which is what the real panel puts in profile-web-page-url
+// (`str(request.url)`). The configured public prefix wins when set, since
+// that is the address customers actually reach - Host alone would leak an
+// internal name when the panel sits behind a proxy.
+func (h *Handler) subscriptionRequestURL(c *gin.Context) string {
+	if h.subURLPrefix != "" {
+		return strings.TrimRight(h.subURLPrefix, "/") + c.Request.URL.RequestURI()
+	}
+	scheme := "https"
+	if c.Request.TLS == nil && c.GetHeader("X-Forwarded-Proto") != "https" {
+		scheme = "http"
+	}
+	return scheme + "://" + c.Request.Host + c.Request.URL.RequestURI()
 }
 
 // recordSubUserAgent mirrors crud.update_user_sub, called on every hit of

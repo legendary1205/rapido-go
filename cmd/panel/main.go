@@ -119,8 +119,11 @@ func run(logger *slog.Logger) error {
 		Default: cfg.UseCustomJSONDefault, V2RayN: cfg.UseCustomJSONForV2RayN, V2RayNG: cfg.UseCustomJSONForV2RayNG,
 		Streisand: cfg.UseCustomJSONForStreisand, Happ: cfg.UseCustomJSONForHapp, NPVTunnel: cfg.UseCustomJSONForNPVTunnel,
 	}
+	subBranding := httpapi.SubscriptionBranding{
+		SupportURL: cfg.SubSupportURL, ProfileTitle: cfg.SubProfileTitle, UpdateInterval: cfg.SubUpdateInterval,
+	}
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
-		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags,
+		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags, subBranding,
 		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
 		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)

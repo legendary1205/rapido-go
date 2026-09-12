@@ -50,6 +50,15 @@ type Config struct {
 	// (the default) yields a relative path.
 	SubscriptionURLPrefix string
 
+	// SubSupportURL / SubProfileTitle / SubUpdateInterval mirror the real
+	// panel's SUB_SUPPORT_URL / SUB_PROFILE_TITLE / SUB_UPDATE_INTERVAL,
+	// sent as headers on every subscription fetch. Real VPN clients render
+	// the support URL as an in-app button and the title as the profile's
+	// name, so these are customer-visible, not internal settings.
+	SubSupportURL     string
+	SubProfileTitle   string
+	SubUpdateInterval string
+
 	// ClashTemplateFile / V2raySubscriptionTemplateFile mirror the current
 	// Python system's own CLASH_SUBSCRIPTION_TEMPLATE / V2RAY_SUBSCRIPTION_TEMPLATE:
 	// a real YAML/JSON file supplying everything beyond bare connectivity
@@ -137,6 +146,9 @@ func Load() (*Config, error) {
 		AllowedOrigins:                strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
 		PublicIP:                      getEnv("PUBLIC_IP", ""),
 		SubscriptionURLPrefix:         getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
+		SubSupportURL:                 getEnv("SUB_SUPPORT_URL", "https://t.me/"),
+		SubProfileTitle:               getEnv("SUB_PROFILE_TITLE", "Subscription"),
+		SubUpdateInterval:             getEnv("SUB_UPDATE_INTERVAL", "12"),
 		ClashTemplateFile:             getEnv("CLASH_SUBSCRIPTION_TEMPLATE", ""),
 		V2raySubscriptionTemplateFile: getEnv("V2RAY_SUBSCRIPTION_TEMPLATE", ""),
 		DashboardDir:                  getEnv("DASHBOARD_DIR", "./web/dist"),
