@@ -139,12 +139,20 @@ func (h *Handler) handleLogin(c *gin.Context) {
 	default:
 		admin, err := h.store.Queries.GetAdminByUsername(ctx, username)
 		if err != nil {
+			// Logged at warn with the attempted username and source IP -
+			// never the password. Without this, a reseller whose bot is
+			// stuck in a login-retry loop is indistinguishable in the logs
+			// from any other 401, which cost a lot of time to diagnose by
+			// hand; with it, "which account is actually failing" is one
+			// grep away.
+			h.logger.Warn("login failed", "username", username, "ip", ip, "reason", "no such admin")
 			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
 		if !auth.VerifyPassword(password, admin.HashedPassword) {
+			h.logger.Warn("login failed", "username", username, "ip", ip, "reason", "wrong password")
 			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})

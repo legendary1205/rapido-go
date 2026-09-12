@@ -89,9 +89,15 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// "/" itself is registered by MountDashboardStatic (it needs the build
-	// directory), which serves the dashboard's own index.html there with a
-	// 200 exactly as the real panel does.
+	// The bare root is a 200 with an empty document - what an admin sees on
+	// the real panel when they open the domain without /dashboard, and a
+	// reachability probe for any client that checks the root. The dashboard
+	// itself lives only under /dashboard/ (see MountDashboardStatic): its
+	// asset paths are built for that prefix, so serving it here would just
+	// render broken.
+	r.GET("/", func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><html><head><title></title></head><body></body></html>"))
+	})
 
 	requireAdmin := auth.RequireAdmin(h.issuer, h.store, h.sudoUsername)
 	requireSudo := auth.RequireSudo(h.issuer, h.store, h.sudoUsername)

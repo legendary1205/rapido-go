@@ -45,9 +45,9 @@ type Resolver interface {
 //     hasn't expired yet - so changing a password invalidates old tokens.
 func RequireAdmin(issuer *TokenIssuer, resolver Resolver, sudoUsername string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		identity, err := resolve(c, issuer, resolver, sudoUsername)
+		identity, reason, err := resolve(c, issuer, resolver, sudoUsername)
 		if err != nil {
-			unauthorized(c)
+			unauthorized(c, reason)
 			return
 		}
 		c.Set(contextIdentityKey, identity)
@@ -59,9 +59,9 @@ func RequireAdmin(issuer *TokenIssuer, resolver Resolver, sudoUsername string) g
 // equivalent to Admin.check_sudo_admin.
 func RequireSudo(issuer *TokenIssuer, resolver Resolver, sudoUsername string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		identity, err := resolve(c, issuer, resolver, sudoUsername)
+		identity, reason, err := resolve(c, issuer, resolver, sudoUsername)
 		if err != nil {
-			unauthorized(c)
+			unauthorized(c, reason)
 			return
 		}
 		if !identity.IsSudo {
@@ -73,35 +73,52 @@ func RequireSudo(issuer *TokenIssuer, resolver Resolver, sudoUsername string) gi
 	}
 }
 
-func resolve(c *gin.Context, issuer *TokenIssuer, resolver Resolver, sudoUsername string) (*Identity, error) {
+// Rejection reasons, surfaced on the 401 as an X-Auth-Error header. The
+// response body stays byte-identical to the real panel's
+// {"detail":"Could not validate credentials"} - clients parse that and must
+// not see anything new - but "why" is otherwise completely invisible from
+// outside, which turns any misconfigured client into the same opaque
+// symptom. A header costs nothing and is visible in the reverse proxy's
+// own access log.
+const (
+	reasonNoBearer      = "no-bearer-token"
+	reasonBadToken      = "invalid-or-expired-token"
+	reasonUnknownAdmin  = "token-admin-no-longer-exists"
+	reasonPasswordReset = "token-predates-password-change"
+)
+
+func resolve(c *gin.Context, issuer *TokenIssuer, resolver Resolver, sudoUsername string) (*Identity, string, error) {
 	header := c.GetHeader("Authorization")
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {
-		return nil, ErrInvalidToken
+		return nil, reasonNoBearer, ErrInvalidToken
 	}
 	claims, err := issuer.Verify(strings.TrimPrefix(header, prefix))
 	if err != nil {
-		return nil, err
+		return nil, reasonBadToken, err
 	}
 
 	if claims.IsSudo() && sudoUsername != "" && claims.Username == sudoUsername {
-		return &Identity{Username: claims.Username, IsSudo: true, IsOwner: true}, nil
+		return &Identity{Username: claims.Username, IsSudo: true, IsOwner: true}, "", nil
 	}
 
 	adminID, isSudo, isOwner, passwordResetAt, found, err := resolver.ResolveAdmin(c.Request.Context(), claims.Username)
 	if err != nil || !found {
-		return nil, ErrInvalidToken
+		return nil, reasonUnknownAdmin, ErrInvalidToken
 	}
 	if passwordResetAt != nil {
 		if claims.IssuedAt == nil || passwordResetAt.After(claims.IssuedAt.Time) {
-			return nil, ErrInvalidToken
+			return nil, reasonPasswordReset, ErrInvalidToken
 		}
 	}
-	return &Identity{AdminID: adminID, Username: claims.Username, IsSudo: isSudo, IsOwner: isOwner}, nil
+	return &Identity{AdminID: adminID, Username: claims.Username, IsSudo: isSudo, IsOwner: isOwner}, "", nil
 }
 
-func unauthorized(c *gin.Context) {
+func unauthorized(c *gin.Context, reason string) {
 	c.Header("WWW-Authenticate", "Bearer")
+	if reason != "" {
+		c.Header("X-Auth-Error", reason)
+	}
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"detail": "Could not validate credentials"})
 }
 
