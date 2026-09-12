@@ -23,7 +23,15 @@ import (
 // CSP's font-src 'self'), and that page lives outside /dashboard/'s own
 // route tree entirely (it's served from /sub/:token), so it needs this
 // second, root-level mount to actually find the font files.
+// The site root serves that same build's index.html directly, with a 200 -
+// not a redirect to /dashboard/. The real panel answers "/" with the
+// dashboard HTML itself, and a client that probes the bare domain to decide
+// whether a panel is reachable (several reseller bots do exactly that)
+// treats anything other than a 200 as down, redirect or not.
 func MountDashboardStatic(r *gin.Engine, dir string) {
 	r.StaticFS("/dashboard", http.Dir(dir))
 	r.StaticFS("/statics", http.Dir(filepath.Join(dir, "statics")))
+	r.GET("/", func(c *gin.Context) {
+		c.File(filepath.Join(dir, "index.html"))
+	})
 }

@@ -89,11 +89,9 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// The Python panel serves the dashboard itself at "/" - a client (or an
-	// admin pasting the bare domain) that lands here must not get a 404.
-	r.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusTemporaryRedirect, "/dashboard/")
-	})
+	// "/" itself is registered by MountDashboardStatic (it needs the build
+	// directory), which serves the dashboard's own index.html there with a
+	// 200 exactly as the real panel does.
 
 	requireAdmin := auth.RequireAdmin(h.issuer, h.store, h.sudoUsername)
 	requireSudo := auth.RequireSudo(h.issuer, h.store, h.sudoUsername)
@@ -182,7 +180,13 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// (confirmed against wizwizdev/wizwizxui-timebot) call these exact
 		// paths expecting real, raw Xray JSON. See
 		// internal/httpapi/corexrayconfig.go's doc comments for scope.
-		api.GET("/core", requireSudo, h.handleGetCoreVersion)
+		// Any admin, not just sudo - the real panel gates this one with
+		// Admin.get_current while everything else under /core is
+		// check_sudo_admin. It matters: a reseller bot logged in as an
+		// ordinary (non-sudo) admin probes this to decide whether the
+		// panel is reachable at all, and a 403 here reads to it as the
+		// whole server being down.
+		api.GET("/core", requireAdmin, h.handleGetCoreVersion)
 		api.GET("/core/config", requireSudo, h.handleGetRawXrayConfig)
 		api.PUT("/core/config", requireSudo, h.handlePutRawXrayConfig)
 		api.POST("/core/restart", requireSudo, h.handleRestartCore)

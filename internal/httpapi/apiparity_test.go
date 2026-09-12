@@ -45,6 +45,36 @@ func TestWrongMethodAnswersJSON405(t *testing.T) {
 	}
 }
 
+// TestCoreStatsIsReachableByANonSudoAdmin pins the one auth level that
+// differs from every other /core route: the real panel gates GET /api/core
+// with Admin.get_current, not check_sudo_admin. Reseller bots run as
+// ordinary non-sudo admins and probe this to decide whether the panel is
+// reachable at all, so a 403 here reads to them as the whole server being
+// down - which is exactly how it was first reported.
+func TestCoreStatsIsReachableByANonSudoAdmin(t *testing.T) {
+	router, sudoToken := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/admin", sudoToken, map[string]interface{}{
+		"username": "core-probe-reseller", "password": "pw12345", "is_sudo": false,
+	})
+	resellerToken := loginAs(t, router, "core-probe-reseller", "pw12345")
+
+	resp := doRequest(t, router, "GET", "/api/core", resellerToken, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /api/core as a non-sudo admin = %d %v, want 200", resp.Code, resp.Body)
+	}
+	for _, key := range []string{"version", "started", "logs_websocket"} {
+		if _, ok := resp.Body[key]; !ok {
+			t.Errorf("CoreStats is missing %q: %v", key, resp.Body)
+		}
+	}
+
+	// The rest of the /core family stays sudo-only, same as the real panel.
+	cfg := doRequest(t, router, "GET", "/api/core/config", resellerToken, nil)
+	if cfg.Code != http.StatusForbidden {
+		t.Errorf("GET /api/core/config as non-sudo = %d, want 403", cfg.Code)
+	}
+}
+
 func TestGetUserUsageReturnsMasterAndEveryNode(t *testing.T) {
 	router, token := newTestRouter(t)
 	createTestNode(t, router, token, "usage-node-1")
