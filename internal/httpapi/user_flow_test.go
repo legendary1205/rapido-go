@@ -107,7 +107,10 @@ func TestModifyUserExpireStatusTransitions(t *testing.T) {
 		t.Fatalf("expected status=expired for a past expire, got %d %v", resp.Code, resp.Body)
 	}
 
-	future := int64(4102444800) // 2100
+	// 2037 - the latest a unix timestamp can be and still fit users.expire's
+	// 32-bit INTEGER column (4102444800, "2100", silently wrapped negative
+	// before expireFitsColumn started rejecting it).
+	future := int64(2100000000)
 	resp = doRequest(t, router, "PUT", "/api/user/expire_test", token, map[string]interface{}{"expire": future})
 	if resp.Code != 200 || resp.Body["status"] != "active" {
 		t.Fatalf("expected status=active after extending expire into the future, got %d %v", resp.Code, resp.Body)
@@ -356,10 +359,15 @@ func TestListUsersSortMatchesOldDashboardOptions(t *testing.T) {
 	// Created in this exact order, so id and created_at both increase
 	// alice -> bob -> carol - lets created_at-based sorts and id-based
 	// sorts be checked with the same fixture.
+	// Every expire here must fit in users.expire's 32-bit INTEGER column.
+	// The original fixture used 3000000000, which does not - it wrapped to
+	// a negative timestamp, which silently made alice sort FIRST and made
+	// this test look flaky for a long time. See expireFitsColumn: the API
+	// now rejects such a value outright instead of wrapping it.
 	specs := []spec{
-		{"alice", 300, 3000000000},
+		{"alice", 300, 2000000000},
 		{"bob", 100, 1000000000},
-		{"carol", 200, 2000000000},
+		{"carol", 200, 1500000000},
 	}
 	for _, s := range specs {
 		resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
@@ -412,6 +420,43 @@ func TestListUsersSortMatchesOldDashboardOptions(t *testing.T) {
 		if got := usernamesInOrder(c.sort); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("sort=%q: order = %v, want %v", c.sort, got, c.want)
 		}
+	}
+}
+
+// TestCreateUserRejectsOutOfRangeExpire is the regression test for what
+// looked like a flaky sort test for a long time: users.expire is a 32-bit
+// INTEGER, and an oversized value used to be cast with a plain int32()
+// conversion, which wraps instead of failing. The user came back 200 OK
+// with an expire far in the NEGATIVE past - already expired, silently.
+func TestCreateUserRejectsOutOfRangeExpire(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Expire VLESS", "protocol": "vless"}})
+
+	resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "overflow_user", "expire": 3000000000,
+		"proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create with an out-of-range expire = %d %v, want 422", resp.Code, resp.Body)
+	}
+
+	// An in-range value is still accepted and round-trips exactly.
+	ok := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "inrange_user", "expire": 2000000000,
+		"proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("create with an in-range expire: %d %v", ok.Code, ok.Body)
+	}
+	if expire, _ := ok.Body["expire"].(float64); int64(expire) != 2000000000 {
+		t.Errorf("expire = %v, want 2000000000 stored verbatim", ok.Body["expire"])
+	}
+
+	// The same guard applies on edit, where the wrap would silently expire
+	// a live customer.
+	edit := doRequest(t, router, "PUT", "/api/user/inrange_user", token, map[string]interface{}{"expire": 4000000000})
+	if edit.Code != http.StatusUnprocessableEntity {
+		t.Errorf("modify with an out-of-range expire = %d %v, want 422", edit.Code, edit.Body)
 	}
 }
 

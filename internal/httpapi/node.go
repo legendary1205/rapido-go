@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -339,8 +338,11 @@ func (h *Handler) handleDeleteNode(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"detail": "Node removed successfully"})
 }
 
+// nodeUsageDTO mirrors app/models/node.py's NodeUsageResponse - node_id is
+// nullable there because the list always leads with a "Master" row for the
+// panel's own core.
 type nodeUsageDTO struct {
-	NodeID   int32  `json:"node_id"`
+	NodeID   *int32 `json:"node_id"`
 	NodeName string `json:"node_name"`
 	Uplink   int64  `json:"uplink"`
 	Downlink int64  `json:"downlink"`
@@ -351,17 +353,12 @@ type nodeUsageDTO struct {
 // Every node gets a row even with zero traffic in the window (see
 // GetNodesUsage's own doc comment).
 func (h *Handler) handleGetNodesUsage(c *gin.Context) {
-	end := time.Now().UTC()
-	start := end.AddDate(0, 0, -30)
-	if v := c.Query("start"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			start = t
-		}
-	}
-	if v := c.Query("end"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			end = t
-		}
+	// Same ?start=/?end= contract as every other usage endpoint: several
+	// ISO spellings accepted, an inverted range rejected outright rather
+	// than silently answered with the 30-day default.
+	start, end, ok := usageWindow(c)
+	if !ok {
+		return
 	}
 
 	rows, err := h.store.Queries.GetNodesUsage(c.Request.Context(), generated.GetNodesUsageParams{
@@ -371,9 +368,16 @@ func (h *Handler) handleGetNodesUsage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read node usage"})
 		return
 	}
-	out := make([]nodeUsageDTO, 0, len(rows))
+	// The real panel's list always leads with a "Master" row for the
+	// panel's own core. There is no local core here (this rewrite's node
+	// agent is always a separate process), so its totals are genuinely
+	// zero - but the row itself has to exist, because clients locate the
+	// series with usages[0] or by matching node_id === null.
+	out := make([]nodeUsageDTO, 0, len(rows)+1)
+	out = append(out, nodeUsageDTO{NodeID: nil, NodeName: "Master"})
 	for _, r := range rows {
-		out = append(out, nodeUsageDTO{NodeID: r.NodeID, NodeName: r.NodeName, Uplink: r.Uplink, Downlink: r.Downlink})
+		id := r.NodeID
+		out = append(out, nodeUsageDTO{NodeID: &id, NodeName: r.NodeName, Uplink: r.Uplink, Downlink: r.Downlink})
 	}
 	c.JSON(http.StatusOK, gin.H{"usages": out})
 }

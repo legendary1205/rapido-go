@@ -27,6 +27,18 @@ JOIN users u ON u.id = nu.user_id
 WHERE nu.created_at >= $1 AND nu.created_at <= $2 AND u.admin_id = $3
 GROUP BY nu.node_id;
 
+-- name: SumAllUsersUsageByNodeForAdmins :many
+-- Backs GET /api/users/usage?admin=alice&admin=bob - the real panel's own
+-- repeatable filter, which a per-reseller billing client relies on. Without
+-- it that client silently receives fleet-wide totals and bills the wrong
+-- numbers, with a 200 and no sign the filter was dropped.
+SELECT nu.node_id, SUM(nu.used_traffic)::bigint AS total
+FROM node_user_usages nu
+JOIN users u ON u.id = nu.user_id
+WHERE nu.created_at >= $1 AND nu.created_at <= $2
+  AND u.admin_id = ANY(sqlc.arg('admin_ids')::int[])
+GROUP BY nu.node_id;
+
 -- name: ListExpiredUsers :many
 -- 'limited' counts as expired here too, exactly as the real panel's
 -- get_expired_users_list does - both mean "this user can no longer connect

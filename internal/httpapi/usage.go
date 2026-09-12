@@ -203,6 +203,39 @@ func (h *Handler) handleGetUsersUsage(c *gin.Context) {
 	}
 
 	if identity.IsSudo {
+		// ?admin=alice&admin=bob narrows fleet-wide totals to those
+		// resellers' users - the real panel's own filter (declared there as
+		// `owner` with alias "admin"), and the whole point of this endpoint
+		// for a per-reseller billing client. An unknown name simply matches
+		// no users, yielding all-zero usages with a 200, exactly as it does
+		// there.
+		if owners := c.QueryArray("admin"); len(owners) > 0 {
+			adminIDs := make([]int32, 0, len(owners))
+			for _, name := range owners {
+				admin, err := h.store.Queries.GetAdminByUsername(ctx, name)
+				if err != nil {
+					continue
+				}
+				adminIDs = append(adminIDs, admin.ID)
+			}
+			if len(adminIDs) > 0 {
+				rows, err := h.store.Queries.SumAllUsersUsageByNodeForAdmins(ctx, generated.SumAllUsersUsageByNodeForAdminsParams{
+					CreatedAt:   pgtype.Timestamptz{Time: start, Valid: true},
+					CreatedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
+					AdminIds:    adminIDs,
+				})
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read usage"})
+					return
+				}
+				for _, r := range rows {
+					acc.add(r.NodeID, r.Total)
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{"usages": acc.list()})
+			return
+		}
+
 		rows, err := h.store.Queries.SumAllUsersUsageByNode(ctx, generated.SumAllUsersUsageByNodeParams{
 			CreatedAt:   pgtype.Timestamptz{Time: start, Valid: true},
 			CreatedAt_2: pgtype.Timestamptz{Time: end, Valid: true},

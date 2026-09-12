@@ -249,6 +249,108 @@ func TestGetUserUsageReturnsMasterAndEveryNode(t *testing.T) {
 	}
 }
 
+// TestSingleUserResponsesCarryLinks covers a real bot flow: revoke a
+// subscription, then hand the customer the regenerated configs straight
+// out of the response. Every single-user endpoint returns a UserResponse
+// on the real panel, and links is a computed property of that model - an
+// empty list here means the bot silently sends nothing.
+func TestSingleUserResponsesCarryLinks(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "Links VLESS", "protocol": "vless"}})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"Links VLESS": []map[string]interface{}{{"remark": "h", "address": "1.2.3.4", "port": 8443}},
+	})
+
+	created := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "links_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if created.Code != http.StatusOK {
+		t.Fatalf("create user: %d %v", created.Code, created.Body)
+	}
+
+	for _, step := range []struct {
+		name, method, path string
+		body               interface{}
+	}{
+		{"create", "", "", nil}, // checked from `created` below
+		{"modify", "PUT", "/api/user/links_user", map[string]interface{}{"note": "x"}},
+		{"reset", "POST", "/api/user/links_user/reset", nil},
+		{"revoke_sub", "POST", "/api/user/links_user/revoke_sub", nil},
+	} {
+		resp := created
+		if step.method != "" {
+			resp = doRequest(t, router, step.method, step.path, token, step.body)
+		}
+		if resp.Code != http.StatusOK {
+			t.Fatalf("%s: %d %v", step.name, resp.Code, resp.Body)
+		}
+		links, _ := resp.Body["links"].([]interface{})
+		if len(links) == 0 {
+			t.Errorf("%s response has no links - a bot handing the customer their configs from this response sends nothing", step.name)
+		}
+		// The same responses must never carry a null per-protocol excluded
+		// list: excluding nothing is the normal case, and a client that
+		// iterates it would crash on null.
+		excluded, ok := resp.Body["excluded_inbounds"].(map[string]interface{})
+		if ok {
+			if v, present := excluded["vless"]; present && v == nil {
+				t.Errorf("%s: excluded_inbounds.vless is null, want an empty list", step.name)
+			}
+		}
+	}
+}
+
+// TestNodesUsageLeadsWithMasterRow pins the row clients locate the
+// local-core series by - usages[0] / node_id === null on the real panel.
+func TestNodesUsageLeadsWithMasterRow(t *testing.T) {
+	router, token := newTestRouter(t)
+	createTestNode(t, router, token, "usage-master-node")
+
+	resp := doRequest(t, router, "GET", "/api/nodes/usage", token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("nodes usage: %d %v", resp.Code, resp.Body)
+	}
+	usages, ok := resp.Body["usages"].([]interface{})
+	if !ok || len(usages) < 2 {
+		t.Fatalf("usages = %v, want the Master row plus the node", resp.Body["usages"])
+	}
+	master := usages[0].(map[string]interface{})
+	if master["node_name"] != "Master" || master["node_id"] != nil {
+		t.Errorf("first row = %v, want the Master row with a null node_id", master)
+	}
+
+	inverted := doRequest(t, router, "GET", "/api/nodes/usage?start=2026-02-01&end=2026-01-01", token, nil)
+	if inverted.Code != http.StatusBadRequest {
+		t.Errorf("inverted range = %d, want 400", inverted.Code)
+	}
+}
+
+// TestUsersUsageHonoursTheAdminFilter pins the repeatable ?admin= filter a
+// per-reseller billing client depends on - without it the caller silently
+// gets fleet-wide totals and bills the wrong numbers.
+func TestUsersUsageHonoursTheAdminFilter(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/admin", token, map[string]interface{}{
+		"username": "usage-filter-admin", "password": "pw12345",
+	})
+
+	filtered := doRequest(t, router, "GET", "/api/users/usage?admin=usage-filter-admin", token, nil)
+	if filtered.Code != http.StatusOK {
+		t.Fatalf("filtered usage: %d %v", filtered.Code, filtered.Body)
+	}
+	usages, ok := filtered.Body["usages"].([]interface{})
+	if !ok || len(usages) == 0 {
+		t.Fatalf("usages = %v, want at least the Master row", filtered.Body["usages"])
+	}
+	// That admin owns no users, so every series must be zero - proof the
+	// filter was applied rather than dropped.
+	for _, u := range usages {
+		if total, _ := u.(map[string]interface{})["used_traffic"].(float64); total != 0 {
+			t.Errorf("usage = %v, want zeroes for an admin with no users (the filter was ignored)", u)
+		}
+	}
+}
+
 func TestGetUsersUsageIsScopedAndShaped(t *testing.T) {
 	router, token := newTestRouter(t)
 

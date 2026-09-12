@@ -59,6 +59,10 @@ SELECT n.id AS node_id, n.name AS node_name,
        COALESCE(SUM(u.uplink), 0)::bigint AS uplink,
        COALESCE(SUM(u.downlink), 0)::bigint AS downlink
 FROM nodes n
-LEFT JOIN node_usages u ON u.node_id = n.id AND u.created_at >= $1 AND u.created_at < $2
+-- Inclusive upper bound, matching the real panel: a row stamped exactly at
+-- `end` belongs to the window, and node_usages rows land on a fixed tick,
+-- so an exclusive bound silently drops a whole bucket for a client paging
+-- a month by back-to-back hour boundaries.
+LEFT JOIN node_usages u ON u.node_id = n.id AND u.created_at >= $1 AND u.created_at <= $2
 GROUP BY n.id, n.name
 ORDER BY n.id;

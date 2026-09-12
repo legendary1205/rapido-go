@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -189,6 +190,10 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid data_limit_reset_strategy"})
 		return
 	}
+	if !expireFitsColumn(req.Expire) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": expireOutOfRangeDetail})
+		return
+	}
 
 	ctx := c.Request.Context()
 	settingsByType, err := resolveProxySettings(req.Proxies)
@@ -274,6 +279,7 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 	// no admins row at all, so its created users have no owning admin.
 	h.reports.UserCreated(ctx, toUserSummary(resp), identity.Username, h.resolveAdminRef(ctx, dbuser.AdminID))
 	h.dispatchGatewayUserSync(ctx, dbuser)
+	h.attachUserLinks(ctx, dbuser, &resp)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -326,26 +332,45 @@ func (h *Handler) handleGetUser(c *gin.Context) {
 	if !ok {
 		return
 	}
+	h.respondWithUser(c, dbuser)
+}
+
+// respondWithUser writes one user's full response, links included.
+//
+// Every single-user endpoint on the real panel returns a UserResponse, and
+// `links` is a computed property of that model - so it is present on
+// create, modify, reset, revoke_sub, active-next and set-owner alike, not
+// just on GET. That matters for a real flow: a bot that revokes a
+// subscription and immediately hands the customer the regenerated configs
+// reads them straight out of this response, and an empty list there means
+// it silently sends nothing.
+//
+// A link-building failure degrades to an empty list rather than failing
+// the request: a bot seeing an empty links array is far less disruptive
+// than the endpoint 500ing on a formatting edge case.
+func (h *Handler) respondWithUser(c *gin.Context, dbuser generated.User) {
 	ctx := c.Request.Context()
 	resp, err := h.buildUserResponse(ctx, dbuser)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
 		return
 	}
-	// Only the single-user GET pays for link generation - see the Links
-	// field's own doc comment on userResponseDTO. A failure here degrades
-	// to an empty list rather than failing the whole request: an external
-	// bot reading a missing/empty links array is far less disruptive than
-	// this endpoint suddenly 500ing on a link-formatting edge case.
+	h.attachUserLinks(ctx, dbuser, &resp)
+	c.JSON(http.StatusOK, resp)
+}
+
+// attachUserLinks fills in the one field buildUserResponses deliberately
+// leaves empty for the batched list path - see respondWithUser's own
+// comment for why every single-user response needs it.
+func (h *Handler) attachUserLinks(ctx context.Context, dbuser generated.User, resp *userResponseDTO) {
 	links, err := h.buildUserLinks(ctx, dbuser)
 	if err != nil {
-		h.logger.Warn("could not build user links for GET /user", "username", dbuser.Username, "error", err)
+		h.logger.Warn("could not build user links", "username", dbuser.Username, "error", err)
 	}
 	if links == nil {
 		links = []string{}
 	}
 	resp.Links = links
-	c.JSON(http.StatusOK, resp)
 }
 
 // loadAuthorizedUser fetches the :username path param and enforces the same
@@ -413,6 +438,10 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 	}
 	if req.DataLimitResetStrategy != nil && !validResetStrategy[*req.DataLimitResetStrategy] {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid data_limit_reset_strategy"})
+		return
+	}
+	if !expireFitsColumn(req.Expire) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": expireOutOfRangeDetail})
 		return
 	}
 
@@ -549,6 +578,7 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 		h.reports.StatusChange(ctx, updated.Username, updated.Status, userAdmin)
 	}
 	h.dispatchGatewayUserSync(ctx, updated)
+	h.attachUserLinks(ctx, updated, &resp)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -706,6 +736,7 @@ func (h *Handler) handleResetUserDataUsage(c *gin.Context) {
 		return
 	}
 	h.reports.UserDataUsageReset(ctx, updated.Username, identity.Username, h.resolveAdminRef(ctx, updated.AdminID))
+	h.attachUserLinks(ctx, updated, &resp)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -750,6 +781,7 @@ func (h *Handler) handleRevokeUserSub(c *gin.Context) {
 		return
 	}
 	h.reports.UserSubscriptionRevoked(ctx, updated.Username, identity.Username, h.resolveAdminRef(ctx, updated.AdminID))
+	h.attachUserLinks(ctx, updated, &resp)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -919,6 +951,13 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 		for _, p := range proxiesByUser[u.ID] {
 			proxiesOut[p.Type] = p.Settings
 			excluded := excludedByProxy[p.ID]
+			if excluded == nil {
+				// An empty list, never null: the real panel always sends a
+				// list here, and excluding nothing is the normal case - a
+				// client that iterates or len()s it must not crash on the
+				// common path.
+				excluded = []string{}
+			}
 			excludedOut[p.Type] = excluded
 			inboundsOut[p.Type] = subtractTags(knownByProtocol[p.Type], excluded)
 		}
@@ -979,6 +1018,25 @@ func subtractTags(all, exclude []string) []string {
 		}
 	}
 	return out
+}
+
+// expireOutOfRangeDetail / expireFitsColumn guard the users.expire column,
+// which is a 32-bit INTEGER holding a unix timestamp (the same width the
+// real panel's own schema uses).
+//
+// Without this check the value was cast with a plain int32() conversion,
+// which does not fail on overflow - it wraps. A caller sending an expiry
+// past 2038-01-19 (or any oversized number) got a 200 and a user whose
+// expire had silently become a large NEGATIVE timestamp, i.e. already
+// expired decades ago, with nothing anywhere saying so. Rejecting is the
+// only honest answer: the value genuinely cannot be stored.
+const expireOutOfRangeDetail = "expire is out of range - it must be a unix timestamp that fits in a 32-bit integer (before 2038-01-19)"
+
+func expireFitsColumn(expire *int64) bool {
+	if expire == nil {
+		return true
+	}
+	return *expire >= math.MinInt32 && *expire <= math.MaxInt32
 }
 
 // normalizeZero mirrors the repeated `x or None` pattern in the current

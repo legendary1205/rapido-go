@@ -204,6 +204,7 @@ func (h *Handler) handleSetUserOwner(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read user"})
 		return
 	}
+	h.attachUserLinks(ctx, updated, &resp)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -253,5 +254,6 @@ func (h *Handler) handleActivateNextPlan(c *gin.Context) {
 	if err := h.store.InvalidateNodeConfigPayload(ctx); err != nil {
 		h.logger.Warn("invalidate node config cache", "error", err)
 	}
+	h.attachUserLinks(ctx, updated, &resp)
 	c.JSON(http.StatusOK, resp)
 }
