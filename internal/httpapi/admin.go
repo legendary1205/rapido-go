@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/legendary1205/rapido-go/internal/auth"
+	"github.com/legendary1205/rapido-go/internal/cache"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
 
@@ -65,6 +67,31 @@ func validateDiscordWebhook(v *string) error {
 	return nil
 }
 
+// loginRateLimitWindow/Max bound POST /api/admin/token per source IP -
+// neither this panel nor the real Python original has ever had any login
+// rate limit at all (a real, documented gap, not a deliberate scope cut),
+// which in practice let a single misbehaving or brute-forcing client hammer
+// this endpoint indefinitely, one bcrypt comparison at a time. 10/minute is
+// generous for a real interactive admin (who logs in once and gets a
+// 24-hour token) while still catching any client retrying every few
+// seconds - the exact pattern that motivated adding this.
+const (
+	loginRateLimitWindow = time.Minute
+	loginRateLimitMax    = 10
+)
+
+// loginRateLimited checks and bumps the per-IP counter, failing OPEN (never
+// blocking a real login) if Redis itself is unreachable - availability of
+// the login path matters more than this specific defense-in-depth layer.
+func (h *Handler) loginRateLimited(ctx context.Context, ip string) bool {
+	count, err := h.store.Cache.Incr(ctx, cache.LoginAttemptsKey(ip), loginRateLimitWindow)
+	if err != nil {
+		h.logger.Warn("login rate limit check", "error", err)
+		return false
+	}
+	return count > loginRateLimitMax
+}
+
 // handleLogin implements POST /api/admin/token, matching the current
 // OAuth2PasswordRequestForm contract (form-encoded username/password).
 // The env-bootstrapped sudo account is checked first, in plaintext, with no
@@ -75,6 +102,11 @@ func (h *Handler) handleLogin(c *gin.Context) {
 	password := c.PostForm("password")
 	ip := clientIP(c)
 	ctx := c.Request.Context()
+
+	if h.loginRateLimited(ctx, ip) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"detail": "Too many login attempts, please try again later"})
+		return
+	}
 
 	var isSudo bool
 	switch {

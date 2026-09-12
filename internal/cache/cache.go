@@ -93,6 +93,12 @@ const (
 	// itself is what's being wiped.
 	nsMaintenance = "rapido:maintenance"
 
+	// nsLoginAttempts backs a fixed-window per-IP rate limit on
+	// POST /api/admin/token (see internal/httpapi/admin.go's handleLogin) -
+	// neither this panel nor the Python original ever had one, a real gap
+	// (login brute-force possible) rather than a deliberate scope cut.
+	nsLoginAttempts = "rapido:login_attempts"
+
 	// nsGatewayPeerStatus caches one peer's last-fetched GET .../gateway/status
 	// response (crowdedness + real hosts) - see internal/gatewayjob, the
 	// periodic BACKEND-only writer, and internal/httpapi/subscription.go's
@@ -122,6 +128,8 @@ func InboundCountKey(tag string) string { return fmt.Sprintf("%s:%s", nsInboundC
 
 func PortConnKey(port int) string { return fmt.Sprintf("%s:%d", nsPortConn, port) }
 
+func LoginAttemptsKey(ip string) string { return fmt.Sprintf("%s:%s", nsLoginAttempts, ip) }
+
 func GatewayPeerStatusKey(peerID int32) string {
 	return fmt.Sprintf("%s:%d", nsGatewayPeerStatus, peerID)
 }
@@ -142,6 +150,26 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 
 func (c *Client) Del(ctx context.Context, keys ...string) error {
 	return c.rdb.Del(ctx, keys...).Err()
+}
+
+// Incr implements a standard fixed-window counter: increments key by 1 and,
+// only on the very first increment of a window (the count that just made it
+// 1), sets its expiry to ttl - every later call in the same window just
+// bumps the count without touching the TTL Redis already has running. The
+// returned count is only meaningful up to the caller's own comparison
+// threshold; there's no separate "reset" operation since the key simply
+// expires on its own.
+func (c *Client) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	n, err := c.rdb.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if n == 1 {
+		if err := c.rdb.Expire(ctx, key, ttl).Err(); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // FlushAll wipes the entire Redis logical DB this client is connected to.
