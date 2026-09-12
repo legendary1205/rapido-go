@@ -31,17 +31,36 @@ type captureWriter struct {
 	body *bytes.Buffer
 }
 
-func (w *captureWriter) Write(b []byte) (int, error) {
-	if w.body.Len() < maxLoggedBody {
-		w.body.Write(b)
+// capture copies at most the first maxLoggedBody bytes, and only for a
+// response that already failed.
+//
+// Both conditions matter for cost. Only error bodies are ever logged, so
+// buffering a successful one is pure waste - and this runs on /api/users,
+// which a reseller bot pages through in 100-user chunks (tens of KB per
+// response, continuously). The length check must also slice: writing the
+// whole chunk whenever the buffer is merely under the cap copied entire
+// multi-KB bodies, one full allocation per request.
+func (w *captureWriter) capture(b []byte) {
+	if w.ResponseWriter.Status() < 400 {
+		return
 	}
+	remaining := maxLoggedBody - w.body.Len()
+	if remaining <= 0 {
+		return
+	}
+	if len(b) > remaining {
+		b = b[:remaining]
+	}
+	w.body.Write(b)
+}
+
+func (w *captureWriter) Write(b []byte) (int, error) {
+	w.capture(b)
 	return w.ResponseWriter.Write(b)
 }
 
 func (w *captureWriter) WriteString(s string) (int, error) {
-	if w.body.Len() < maxLoggedBody {
-		w.body.WriteString(s)
-	}
+	w.capture([]byte(s))
 	return w.ResponseWriter.WriteString(s)
 }
 

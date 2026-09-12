@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +36,13 @@ type Handler struct {
 	loginNotifyWhitelist []string
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
+
+	// Memoized direct host read for GET /api/system - see cachedHostSample.
+	hostSampleMu    sync.Mutex
+	hostSampleAt    time.Time
+	hostSampleTotal int64
+	hostSampleUsed  int64
+	hostSampleCores int
 
 	databaseURL     string
 	backupDir       string

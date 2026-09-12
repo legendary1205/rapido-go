@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -17,6 +18,10 @@ import (
 // (UsersTable's lastSeenOf) so the Overview hero stat and each row's
 // presence dot always agree on what "online" means.
 const onlineWindow = 180 * time.Second
+
+// hostSampleTTL bounds how often GET /api/system may read this host
+// directly - see cachedHostSample.
+const hostSampleTTL = 30 * time.Second
 
 // marzbanCompatVersion is a static, zero-cost compatibility value - external
 // fleet-management bots (e.g. Mirza-bot-style panels, which "get_user" style
@@ -64,13 +69,6 @@ type systemStatsDTO struct {
 // "Panel" host. A panel running without that loop yet simply reports
 // zeroes rather than omitting the fields.
 func (h *Handler) fillHostResources(c *gin.Context, stats *systemStatsDTO) {
-	sample := hostmetrics.Collect(false, "")
-	stats.MemTotal = sample.MemTotalBytes
-	if sample.MemTotalBytes > 0 && sample.MemAvailableBytes <= sample.MemTotalBytes {
-		stats.MemUsed = sample.MemTotalBytes - sample.MemAvailableBytes
-	}
-	stats.CPUCores = sample.CPUCores
-
 	latest, err := h.store.Queries.GetLatestHostMetricPerNode(c.Request.Context())
 	if err != nil {
 		return
@@ -89,8 +87,51 @@ func (h *Handler) fillHostResources(c *gin.Context, stats *systemStatsDTO) {
 		if m.TxRate.Valid {
 			stats.OutgoingBandwidthSpeed = m.TxRate.Int64
 		}
-		return
+		// The absolute figures live in the stored sample's own payload, so
+		// serving them costs nothing beyond the read already being done.
+		if m.Payload.Valid && m.Payload.String != "" {
+			var p struct {
+				CPUCores          int   `json:"cpu_cores"`
+				MemTotalBytes     int64 `json:"mem_total_bytes"`
+				MemAvailableBytes int64 `json:"mem_available_bytes"`
+			}
+			if err := json.Unmarshal([]byte(m.Payload.String), &p); err == nil {
+				stats.CPUCores = p.CPUCores
+				stats.MemTotal = p.MemTotalBytes
+				if p.MemTotalBytes > 0 && p.MemAvailableBytes <= p.MemTotalBytes {
+					stats.MemUsed = p.MemTotalBytes - p.MemAvailableBytes
+				}
+			}
+		}
+		if stats.MemTotal > 0 {
+			return
+		}
+		break
 	}
+
+	// Only when no stored sample carries them (a panel whose backend
+	// self-sample loop hasn't run yet) is the host read directly - and at
+	// most once every 30s, because collecting walks /proc/net/tcp and
+	// shells out to `wg`. Doing that per request made GET /api/system,
+	// which the dashboard and every bot poll, one of the most expensive
+	// calls on the panel.
+	stats.MemTotal, stats.MemUsed, stats.CPUCores = h.cachedHostSample()
+}
+
+// cachedHostSample memoizes a direct host read for hostSampleTTL.
+func (h *Handler) cachedHostSample() (memTotal, memUsed int64, cores int) {
+	h.hostSampleMu.Lock()
+	defer h.hostSampleMu.Unlock()
+	if time.Since(h.hostSampleAt) < hostSampleTTL && h.hostSampleTotal > 0 {
+		return h.hostSampleTotal, h.hostSampleUsed, h.hostSampleCores
+	}
+	s := hostmetrics.Collect(false, "")
+	h.hostSampleAt = time.Now()
+	h.hostSampleTotal, h.hostSampleCores = s.MemTotalBytes, s.CPUCores
+	if s.MemTotalBytes > 0 && s.MemAvailableBytes <= s.MemTotalBytes {
+		h.hostSampleUsed = s.MemTotalBytes - s.MemAvailableBytes
+	}
+	return h.hostSampleTotal, h.hostSampleUsed, h.hostSampleCores
 }
 
 // handleGetSystemStats implements GET /api/system, scoped like
