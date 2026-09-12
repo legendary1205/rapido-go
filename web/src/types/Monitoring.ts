@@ -8,15 +8,23 @@ export type MonitoringHost = {
   /** null identifies the panel's own self-sample (name is literally "Panel"). */
   node_id: number | null;
   name: string;
-  /** Omitted by the backend (json:",omitempty") for the panel's own row. */
-  address?: string;
+  /** null for the panel's own row. */
+  address: string | null;
   /**
-   * True once this host has ever pushed a report. False means no
-   * host_metrics row exists at all yet - every numeric field below is then
-   * null, and that must render as a distinct "no data yet" state, never as
-   * zeros.
+   * True only while this host is reporting healthily RIGHT NOW (healthy
+   * and not stale) - the same meaning the reference panel gives it, so a
+   * host whose collector died reads as unreachable instead of staying
+   * "up" forever on an hour-old sample. Use has_metrics to tell "never
+   * reported" apart from "was reporting, now silent": with has_metrics
+   * false every numeric field below is null and must render as a distinct
+   * "no data yet" state, never as zeros.
    */
   reachable: boolean;
+  has_metrics?: boolean;
+  uptime?: number | null;
+  load_1m?: number | null;
+  xray_running?: boolean | null;
+  xray_version?: string | null;
   collected_at: string | null;
   /** The last report is more than 2 minutes old - show the last-known
    * numbers, but dimmed/flagged, not hidden. */

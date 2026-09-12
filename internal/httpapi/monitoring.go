@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,33 +16,80 @@ import (
 // the collector's 30s interval).
 const staleAfter = 2 * time.Minute
 
+// monitoringTunnelDTO is one WireGuard tunnel as the real panel reports
+// it - a list of objects, not just the two counts this used to expose, so
+// a client can name the tunnel that is down instead of only knowing that
+// one of N is.
+type monitoringTunnelDTO struct {
+	Name          string `json:"name"`
+	Up            bool   `json:"up"`
+	RxBytes       int64  `json:"rx_bytes"`
+	TxBytes       int64  `json:"tx_bytes"`
+	LastHandshake int64  `json:"last_handshake"`
+}
+
 type monitoringHostDTO struct {
-	NodeID       *int32     `json:"node_id"`
-	Name         string     `json:"name"`
-	Address      string     `json:"address,omitempty"`
-	Reachable    bool       `json:"reachable"`
-	CollectedAt  *time.Time `json:"collected_at"`
-	Stale        bool       `json:"stale"`
-	CPUPercent   *float64   `json:"cpu_percent"`
-	MemPercent   *float64   `json:"mem_percent"`
-	DiskPercent  *float64   `json:"disk_percent"`
-	RxRate       *int64     `json:"rx_rate"`
-	TxRate       *int64     `json:"tx_rate"`
-	Connections  *int32     `json:"connections"`
-	TunnelsUp    *int32     `json:"tunnels_up"`
-	TunnelsTotal *int32     `json:"tunnels_total"`
-	Healthy      bool       `json:"healthy"`
+	NodeID      *int32     `json:"node_id"`
+	Name        string     `json:"name"`
+	Address     *string    `json:"address"`
+	Reachable   bool       `json:"reachable"`
+	CollectedAt *time.Time `json:"collected_at"`
+	Stale       bool       `json:"stale"`
+	CPUPercent  *float64   `json:"cpu_percent"`
+	MemPercent  *float64   `json:"mem_percent"`
+	DiskPercent *float64   `json:"disk_percent"`
+	RxRate      *int64     `json:"rx_rate"`
+	TxRate      *int64     `json:"tx_rate"`
+	Connections *int32     `json:"connections"`
+
+	Uptime      *float64 `json:"uptime"`
+	Load1m      *float64 `json:"load_1m"`
+	XrayRunning *bool    `json:"xray_running"`
+	XrayVersion *string  `json:"xray_version"`
+
+	Tunnels    []monitoringTunnelDTO `json:"tunnels"`
+	HasMetrics bool                  `json:"has_metrics"`
+
+	// Kept alongside the fields above: this panel's own dashboard reads
+	// them, and extra keys break no one.
+	TunnelsUp    *int32 `json:"tunnels_up"`
+	TunnelsTotal *int32 `json:"tunnels_total"`
+	Healthy      bool   `json:"healthy"`
+}
+
+// hostMetricPayload is the subset of a stored sample the monitoring
+// response exposes beyond the summarized columns.
+type hostMetricPayload struct {
+	UptimeSeconds float64 `json:"uptime_seconds"`
+	Load1m        float64 `json:"load_1m"`
+	XrayRunning   bool    `json:"xray_running"`
+	XrayVersion   string  `json:"xray_version"`
+	Tunnels       []struct {
+		Name              string `json:"name"`
+		LastHandshakeUnix int64  `json:"last_handshake"`
+		RxBytes           int64  `json:"rx_bytes"`
+		TxBytes           int64  `json:"tx_bytes"`
+		Up                bool   `json:"up"`
+	} `json:"tunnels"`
 }
 
 func toMonitoringHostDTO(name, address string, nodeID *int32, m *generated.HostMetric) monitoringHostDTO {
-	dto := monitoringHostDTO{NodeID: nodeID, Name: name, Address: address}
+	dto := monitoringHostDTO{NodeID: nodeID, Name: name, Tunnels: []monitoringTunnelDTO{}}
+	if address != "" {
+		dto.Address = &address
+	}
 	if m == nil {
 		return dto
 	}
-	dto.Reachable = true
 	collectedAt := m.CollectedAt.Time
 	dto.CollectedAt = &collectedAt
 	dto.Stale = time.Since(collectedAt) > staleAfter
+	// reachable means "reporting healthily right now", matching the real
+	// panel's `row.healthy and not stale`. Treating the mere existence of
+	// an old sample as reachable meant a node whose collector died an hour
+	// ago still showed as up, so every "node is down" alert keyed on this
+	// field stopped firing entirely.
+	dto.Reachable = m.Healthy && !dto.Stale
 	dto.CPUPercent = pgFloat8ToPtr(m.CpuPercent)
 	dto.MemPercent = pgFloat8ToPtr(m.MemPercent)
 	dto.DiskPercent = pgFloat8ToPtr(m.DiskPercent)
@@ -51,6 +99,26 @@ func toMonitoringHostDTO(name, address string, nodeID *int32, m *generated.HostM
 	dto.TunnelsUp = pgInt4ToPtr(m.TunnelsUp)
 	dto.TunnelsTotal = pgInt4ToPtr(m.TunnelsTotal)
 	dto.Healthy = m.Healthy
+	dto.HasMetrics = m.Payload.Valid && m.Payload.String != ""
+
+	if dto.HasMetrics {
+		var p hostMetricPayload
+		if err := json.Unmarshal([]byte(m.Payload.String), &p); err == nil {
+			uptime, load := p.UptimeSeconds, p.Load1m
+			dto.Uptime, dto.Load1m = &uptime, &load
+			running := p.XrayRunning
+			dto.XrayRunning = &running
+			if p.XrayVersion != "" {
+				version := p.XrayVersion
+				dto.XrayVersion = &version
+			}
+			for _, t := range p.Tunnels {
+				dto.Tunnels = append(dto.Tunnels, monitoringTunnelDTO{
+					Name: t.Name, Up: t.Up, RxBytes: t.RxBytes, TxBytes: t.TxBytes, LastHandshake: t.LastHandshakeUnix,
+				})
+			}
+		}
+	}
 	return dto
 }
 

@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestUnknownRouteAnswersJSON is the fix for what looked like a total
@@ -553,6 +555,78 @@ func TestCoreConfigIsRedactedForNonSudo(t *testing.T) {
 	} {
 		if got := doRequest(t, router, w.method, w.path, resellerToken, map[string]interface{}{}); got.Code != http.StatusForbidden {
 			t.Errorf("%s %s as a reseller = %d, want 403", w.method, w.path, got.Code)
+		}
+	}
+}
+
+// TestMonitoringReachableMeansReportingNow is the fix for a silent
+// monitoring failure: reachable used to mean "has ever reported", so a
+// node whose collector died an hour ago still showed as up and every
+// "node is down" alert keyed on that field stopped firing.
+func TestMonitoringReachableMeansReportingNow(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+	nodeID, secret := createTestNode(t, router, token, "reachable-node")
+
+	// A node that has never reported is not reachable, and is flagged as
+	// having no metrics at all rather than looking like a host at zero.
+	before := doRequest(t, router, "GET", "/api/monitoring", token, nil)
+	for _, h := range before.Body["hosts"].([]interface{}) {
+		host := h.(map[string]interface{})
+		if host["name"] != "reachable-node" {
+			continue
+		}
+		if host["reachable"] != false || host["has_metrics"] != false {
+			t.Errorf("never-reported node = %v, want reachable:false has_metrics:false", host)
+		}
+		if _, ok := host["address"]; !ok {
+			t.Error("address is missing - the real HostStatus always carries it, null for the panel row")
+		}
+	}
+
+	// One real report makes it reachable.
+	report := doRequest(t, router, "POST", "/api/internal/node-report", secret, map[string]interface{}{
+		"metrics": map[string]interface{}{
+			"collected_at": time.Now().UTC().Format(time.RFC3339),
+			"cpu_cores":    2, "mem_total_bytes": 100, "mem_available_bytes": 50,
+		},
+		"users": []interface{}{},
+	})
+	if report.Code != http.StatusOK {
+		t.Fatalf("node report: %d %v", report.Code, report.Body)
+	}
+	live := doRequest(t, router, "GET", "/api/monitoring", token, nil)
+	found := false
+	for _, h := range live.Body["hosts"].([]interface{}) {
+		host := h.(map[string]interface{})
+		if host["name"] != "reachable-node" {
+			continue
+		}
+		found = true
+		if host["reachable"] != true {
+			t.Errorf("just-reported node = %v, want reachable:true", host)
+		}
+	}
+	if !found {
+		t.Fatal("the node disappeared from /api/monitoring")
+	}
+
+	// Age its only sample past the staleness cutoff: still has data, but
+	// must no longer read as reachable.
+	if _, err := handler.store.Pool.Exec(context.Background(),
+		"UPDATE host_metrics SET collected_at = now() - interval '1 hour' WHERE node_id = $1", nodeID); err != nil {
+		t.Fatalf("age the sample: %v", err)
+	}
+	stale := doRequest(t, router, "GET", "/api/monitoring", token, nil)
+	for _, h := range stale.Body["hosts"].([]interface{}) {
+		host := h.(map[string]interface{})
+		if host["name"] != "reachable-node" {
+			continue
+		}
+		if host["stale"] != true {
+			t.Errorf("hour-old sample = %v, want stale:true", host)
+		}
+		if host["reachable"] != false {
+			t.Errorf("hour-old sample = %v, want reachable:false - this is what silenced down-node alerts", host)
 		}
 	}
 }
