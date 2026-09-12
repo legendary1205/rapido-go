@@ -155,18 +155,41 @@ func ClashProxy(remark, address string, in EffectiveInbound, settings proxysetti
 	return node, nil
 }
 
-// ClashConfig renders the full YAML document: a minimal skeleton (proxies +
-// empty proxy-groups + rules, the same three top-level keys the Python
-// template always carries - some clients fail to load a Clash profile
-// missing "rules") - deliberately no DNS/rule-provider boilerplate, matching
-// this project's already-established "sing-box config is deliberately
-// minimal" precedent (SingBoxConfig's own doc comment) applied the same way
-// here.
+// ClashConfig renders the full YAML document.
+//
+// This used to ship "proxies" with a bare, empty "proxy-groups"/"rules"
+// (see git history) - reading Python's ClashConfiguration.__init__, which
+// starts from that exact same empty skeleton, and assuming that was the
+// final shape. It isn't: Python's .render() renders that skeleton through
+// a Jinja2 template (config.py's CLASH_SUBSCRIPTION_TEMPLATE, defaulting
+// to app/templates/clash/default.yml) that adds a real "select"
+// proxy-group listing every proxy_remark and a routing rule set ending in
+// a catch-all MATCH - the empty skeleton alone was never what real
+// clients received. Without them, Clash/Clash Meta clients (this was
+// found via a real one, FlClash) have proxies to look at but nothing
+// selecting or routing through any of them - every connection fails,
+// which is indistinguishable from "the network is down" to the person
+// using the app.
+//
+// This port keeps it to the minimum that makes the profile actually
+// route traffic - one "PROXY" select group and a MATCH catch-all - rather
+// than also porting the specific operator's IR rule-provider set and
+// "Net Shield" branding baked into that one template file, which belongs
+// in a per-installation customization mechanism (not yet built), not the
+// shared default every rapido-go install gets.
 func ClashConfig(proxies []map[string]any) ([]byte, error) {
+	names := make([]string, 0, len(proxies))
+	for _, p := range proxies {
+		if name, ok := p["name"].(string); ok {
+			names = append(names, name)
+		}
+	}
 	doc := map[string]any{
-		"proxies":      proxies,
-		"proxy-groups": []any{},
-		"rules":        []any{},
+		"proxies": proxies,
+		"proxy-groups": []any{
+			map[string]any{"name": "PROXY", "type": "select", "proxies": names},
+		},
+		"rules": []any{"MATCH,PROXY"},
 	}
 	return yaml.Marshal(doc)
 }
