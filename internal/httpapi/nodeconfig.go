@@ -53,6 +53,26 @@ type nodeConfigInboundSpec struct {
 	TLS        *nodeConfigTLSSpec   `json:"tls,omitempty"`
 }
 
+// nodeConfigInboundWire is nodeConfigInboundSpec with the user list already
+// encoded. Same fields in the same order, so it marshals to byte-identical
+// JSON - the only difference is where the bytes come from.
+//
+// It exists because every inbound of a protocol carries that protocol's
+// ENTIRE user list, and production runs 15 vless inbounds over ~9,900
+// users: encoding the spec form re-serialises the same 10k-element array
+// fifteen times, which profiling showed to be ~80% of this endpoint's CPU.
+// Encoding that array once per protocol and splicing the result into each
+// inbound turns fourteen of those fifteen passes into a memmove.
+// TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload is what keeps
+// the two forms honest.
+type nodeConfigInboundWire struct {
+	Tag        string             `json:"tag"`
+	Protocol   string             `json:"protocol"`
+	ListenPort uint16             `json:"listen_port"`
+	Users      json.RawMessage    `json:"users"`
+	TLS        *nodeConfigTLSSpec `json:"tls,omitempty"`
+}
+
 // nodeConfigResponse is the full payload a node self-applies - see
 // cmd/node/main.go's pull loop. Every node in the fleet is served the
 // identical payload (this schema has no per-node inbound assignment, same
@@ -150,10 +170,36 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 	core := toCoreConfigDTO(coreRow)
 
 	payload := nodeConfigResponse{Inbounds: inbounds, Core: core}
+
+	// One encode per protocol, reused by every inbound of that protocol -
+	// see nodeConfigInboundWire for why. emptyUsers matches what the spec
+	// form emits for the `if spec.Users == nil` case set above.
+	emptyUsers := json.RawMessage("[]")
+	usersJSON := make(map[string]json.RawMessage, len(usersByProtocol))
+	for proto, list := range usersByProtocol {
+		raw, mErr := json.Marshal(list)
+		if mErr != nil {
+			return nodeConfigResponse{}, nil, mErr
+		}
+		usersJSON[proto] = raw
+	}
+	wire := make([]nodeConfigInboundWire, 0, len(inbounds))
+	for i := range inbounds {
+		in := &inbounds[i]
+		users, ok := usersJSON[in.Protocol]
+		if !ok {
+			users = emptyUsers
+		}
+		wire = append(wire, nodeConfigInboundWire{
+			Tag: in.Tag, Protocol: in.Protocol, ListenPort: in.ListenPort,
+			Users: users, TLS: in.TLS,
+		})
+	}
+
 	canonical, err := json.Marshal(struct {
-		Inbounds []nodeConfigInboundSpec `json:"inbounds"`
+		Inbounds []nodeConfigInboundWire `json:"inbounds"`
 		Core     coreConfigDTO           `json:"core"`
-	}{inbounds, core})
+	}{wire, core})
 	if err != nil {
 		return nodeConfigResponse{}, nil, err
 	}
