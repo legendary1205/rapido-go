@@ -73,7 +73,7 @@ func newTestRouter(t *testing.T) (http.Handler, string) {
 // dumpDatabaseFn's doc comment in backup.go). Mutating h.dumpDatabase after
 // the router is built still takes effect: every route calls a method on
 // the same *Handler at request time, not at registration time.
-func newTestRouterAndHandler(t *testing.T) (http.Handler, string, *Handler) {
+func newTestRouterAndHandler(t testing.TB) (http.Handler, string, *Handler) {
 	t.Helper()
 	pool := testPool(t)
 	truncateAll(t, pool)
@@ -128,7 +128,7 @@ func newTestRouterAndHandler(t *testing.T) (http.Handler, string, *Handler) {
 // test built on newTestRouter now needs Redis too, since Store always
 // holds a Cache field; this is an accepted, deliberate consequence of the
 // caching work, not an oversight.
-func testCache(t *testing.T) *cache.Client {
+func testCache(t testing.TB) *cache.Client {
 	t.Helper()
 	addr := os.Getenv("TEST_REDIS_ADDR")
 	if addr == "" {
@@ -153,7 +153,7 @@ func testCache(t *testing.T) *cache.Client {
 // instead, since wiping the CA out from under a test that runs concurrently
 // with... (tests in this package run sequentially, but re-generating a
 // 4096-bit RSA CA per test is needlessly slow) is both unnecessary and slow.
-func truncateAll(t *testing.T, pool *pgxpool.Pool) {
+func truncateAll(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
 		"TRUNCATE admin_usage_logs, users, admins, inbounds, hosts, user_templates, nodes, gateway_peers, gateway_settings RESTART IDENTITY CASCADE")
@@ -167,7 +167,7 @@ func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 // idempotent-reset treatment as ensureTestCA gives the tls row, since this
 // is also a seeded singleton a TRUNCATE would need to re-seed rather than
 // just clear.
-func resetIntegrationSettings(t *testing.T, pool *pgxpool.Pool) {
+func resetIntegrationSettings(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `UPDATE integration_settings SET
 		kirbot_secret = NULL, kirbot_url = NULL, kirbot_license = NULL,
@@ -183,7 +183,7 @@ func resetIntegrationSettings(t *testing.T, pool *pgxpool.Pool) {
 // migration-seeded defaults before each test - same reasoning as
 // resetIntegrationSettings: a TRUNCATE would need to re-seed a singleton
 // rather than just clear it, so a plain UPDATE is simpler.
-func resetCoreConfig(t *testing.T, pool *pgxpool.Pool) {
+func resetCoreConfig(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `UPDATE core_config SET
 		log_level = 'warn', sniff_enabled = true, outbounds = '[]', routing_rules = '[]', dns_servers = '[]', updated_at = now()`)
@@ -197,7 +197,7 @@ func resetCoreConfig(t *testing.T, pool *pgxpool.Pool) {
 // the reverse import would cycle): the tls table's one row doubles as the
 // Rapido CA node certificates are issued from, so node tests need it to
 // exist same as a real deployment does after its first boot.
-func ensureTestCA(t *testing.T, store *Store) {
+func ensureTestCA(t testing.TB, store *Store) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := store.Queries.GetTLS(ctx); err == nil {

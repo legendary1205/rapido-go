@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -67,14 +68,21 @@ type nodeConfigResponse struct {
 // XRayConfig.include_db_users(): groups every active/on_hold user's proxy
 // credentials by protocol, and stuffs them into every auto-sync-eligible
 // inbound of that protocol.
-func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigResponse, error) {
+//
+// It returns the canonical bytes it hashed to produce Version alongside the
+// payload, because those bytes are the response body bar its first field -
+// see buildNodeConfigBody. Marshalling this structure is expensive enough
+// (~14 MB in production) that handing the result back is worth the slightly
+// wider signature; the alternative was marshalling it a second time purely
+// to reproduce what this function already had in hand.
+func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigResponse, []byte, error) {
 	inboundRows, err := h.store.Queries.ListAutoSyncInbounds(ctx)
 	if err != nil {
-		return nodeConfigResponse{}, err
+		return nodeConfigResponse{}, nil, err
 	}
 	proxyRows, err := h.store.Queries.ListActiveUserProxiesForNodeConfig(ctx)
 	if err != nil {
-		return nodeConfigResponse{}, err
+		return nodeConfigResponse{}, nil, err
 	}
 
 	usersByProtocol := make(map[string][]nodeConfigUserSpec)
@@ -137,7 +145,7 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 
 	coreRow, err := h.store.CachedGetCoreConfig(ctx)
 	if err != nil {
-		return nodeConfigResponse{}, err
+		return nodeConfigResponse{}, nil, err
 	}
 	core := toCoreConfigDTO(coreRow)
 
@@ -147,11 +155,52 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 		Core     coreConfigDTO           `json:"core"`
 	}{inbounds, core})
 	if err != nil {
-		return nodeConfigResponse{}, err
+		return nodeConfigResponse{}, nil, err
 	}
 	sum := sha256.Sum256(canonical)
 	payload.Version = hex.EncodeToString(sum[:])
-	return payload, nil
+	return payload, canonical, nil
+}
+
+// buildNodeConfigBody returns the exact bytes GET /api/internal/node-config
+// answers with - identical JSON to marshalling buildNodeConfigPayload's
+// result, produced with ONE marshal instead of three.
+//
+// Why that matters: this body is ~14 MB on the production fleet (every
+// active user's credentials, repeated once per inbound of their protocol),
+// and four nodes re-pull it every few seconds. The previous shape marshalled
+// it three times per rebuild - once for the version hash, once for the cache
+// entry, once for the response - and on a cache HIT still paid a full
+// unmarshal into Go structs plus a fresh marshal out, because the cache
+// stored a typed value rather than the bytes. Measured on production, that
+// made this single endpoint 662 ms per call and the panel's largest CPU
+// consumer by far (79 s of CPU per 5 minutes, ~4x the entire user-list
+// traffic of every reseller bot combined).
+//
+// The splice is exact rather than clever: the canonical struct always
+// marshals both fields, so it always begins `{"inbounds":` - putting
+// `"version":"..."` directly after the opening brace yields byte-for-byte
+// what marshalling nodeConfigResponse produces, since Version is its first
+// field. The guard covers the impossible case rather than trusting it.
+func (h *Handler) buildNodeConfigBody(ctx context.Context) (string, error) {
+	payload, canonical, err := h.buildNodeConfigPayload(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(canonical) < 2 || canonical[0] != '{' || canonical[1] != '"' {
+		full, mErr := json.Marshal(payload)
+		if mErr != nil {
+			return "", mErr
+		}
+		return string(full), nil
+	}
+	var b strings.Builder
+	b.Grow(len(canonical) + len(payload.Version) + 14)
+	b.WriteString(`{"version":"`)
+	b.WriteString(payload.Version)
+	b.WriteString(`",`)
+	b.Write(canonical[1:])
+	return b.String(), nil
 }
 
 // handleGetNodeConfig implements GET /api/internal/node-config - a node's
@@ -160,12 +209,16 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 // (requireNodeSecret), but every node receives the identical payload -
 // there's no per-node inbound assignment in this architecture, so the
 // secret only proves "this is a real node," not "which one."
+//
+// The cache holds the finished response body, so a hit writes bytes
+// straight to the wire - no decode, no re-encode. See buildNodeConfigBody.
 func (h *Handler) handleGetNodeConfig(c *gin.Context) {
-	payload, err := cache.GetOrSet(c.Request.Context(), h.store.Cache, cache.NodeConfigKey(), nodeConfigCacheTTL,
-		h.buildNodeConfigPayload)
+	ctx := c.Request.Context()
+	body, err := cache.GetOrSetString(ctx, h.store.Cache, cache.NodeConfigKey(), nodeConfigCacheTTL,
+		h.buildNodeConfigBody)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build node config"})
 		return
 	}
-	c.JSON(http.StatusOK, payload)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
 }

@@ -40,3 +40,32 @@ func GetOrSet[T any](ctx context.Context, c *Client, key string, ttl time.Durati
 	}
 	return v, nil
 }
+
+// GetOrSetString is GetOrSet for a value that is ALREADY the exact string to
+// be served - no JSON round-trip in either direction.
+//
+// GetOrSet is the right shape when the caller needs a typed value it will go
+// on to inspect. It is the wrong shape when the caller only ever writes the
+// value to a response, because then a cache hit pays a full decode into Go
+// structs followed immediately by a full re-encode - work that exists purely
+// to undo itself. On the node-config body (~14 MB, re-pulled by every node
+// every few seconds) that round-trip was the panel's single largest CPU
+// cost. Everything else here is deliberately identical to GetOrSet: Redis
+// errors degrade to an uncached fetch rather than failing the request, and
+// fetch's own error propagates unchanged and is never cached.
+func GetOrSetString(ctx context.Context, c *Client, key string, ttl time.Duration, fetch func(context.Context) (string, error)) (string, error) {
+	if raw, err := c.Get(ctx, key); err == nil {
+		return raw, nil
+	} else if !errors.Is(err, ErrNil) {
+		c.logger.Warn("cache get failed, falling back to source of truth", "key", key, "error", err)
+	}
+
+	v, err := fetch(ctx)
+	if err != nil {
+		return "", err
+	}
+	if sErr := c.Set(ctx, key, v, ttl); sErr != nil {
+		c.logger.Warn("cache set failed", "key", key, "error", sErr)
+	}
+	return v, nil
+}

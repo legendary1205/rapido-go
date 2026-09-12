@@ -15,7 +15,7 @@ import (
 // 00001_init_schema.sql migration - point TEST_DATABASE_URL at the
 // docker-compose postgres service (see docker-compose.yml). Skips instead
 // of failing when unset, so `go test ./...` still runs everywhere else.
-func testPool(t *testing.T) *pgxpool.Pool {
+func testPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

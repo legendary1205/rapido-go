@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +166,91 @@ func TestGetNodeConfigIncludesCoreConfigAndRealHostChangeBustsCache(t *testing.T
 	inbounds := second.Body["inbounds"].([]interface{})
 	if len(inbounds) != 1 {
 		t.Fatalf("inbounds = %v, want 1 after adding VLESS TCP", inbounds)
+	}
+}
+
+// TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload pins the one
+// assumption buildNodeConfigBody's splice rests on: that writing
+// `"version":"<hash>"` straight after the opening brace of the canonical
+// bytes produces exactly what marshalling nodeConfigResponse would have.
+// If a field is ever added to nodeConfigResponse ahead of Version, or the
+// canonical struct stops matching its remaining fields, every node in the
+// fleet would start applying a subtly different config - this fails first.
+func TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "VLESS TCP", "protocol": "vless"},
+		{"tag": "TROJAN WS", "protocol": "trojan", "network": "ws"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"VLESS TCP": []map[string]interface{}{{"remark": "n1", "address": "1.2.3.4", "port": 8443}},
+		"TROJAN WS": []map[string]interface{}{{"remark": "n2", "address": "1.2.3.4", "port": 2087}},
+	})
+	for _, name := range []string{"nc_bytes_a", "nc_bytes_b"} {
+		resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+			"username": name,
+			"proxies":  map[string]interface{}{"vless": map[string]interface{}{}, "trojan": map[string]interface{}{}},
+		})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %v", name, resp.Code, resp.Body)
+		}
+	}
+
+	ctx := context.Background()
+	payload, _, err := handler.buildNodeConfigPayload(ctx)
+	if err != nil {
+		t.Fatalf("buildNodeConfigPayload: %v", err)
+	}
+	want, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	got, err := handler.buildNodeConfigBody(ctx)
+	if err != nil {
+		t.Fatalf("buildNodeConfigBody: %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("spliced body differs from the marshalled payload\n got: %.200s\nwant: %.200s", got, want)
+	}
+	if !strings.Contains(got, `"version":"`+payload.Version+`"`) {
+		t.Errorf("body does not carry the payload's own version %q", payload.Version)
+	}
+}
+
+// TestGetNodeConfigServesTheCachedBodyUnchanged covers the other half of the
+// change: a second call inside the cache TTL is answered straight from the
+// stored bytes, and must still be the same valid JSON the first call was -
+// a hit no longer round-trips through Go structs, so nothing re-validates it.
+func TestGetNodeConfigServesTheCachedBodyUnchanged(t *testing.T) {
+	router, token := newTestRouter(t)
+	_, secret := createTestNode(t, router, token, "config-cache-node")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "VLESS TCP", "protocol": "vless"}})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"VLESS TCP": []map[string]interface{}{{"remark": "n1", "address": "1.2.3.4", "port": 8443}},
+	})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "nc_cached_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+
+	first := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first get: %d %v", first.Code, first.Body)
+	}
+	second := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second get: %d %v", second.Code, second.Body)
+	}
+	if first.Body["version"] != second.Body["version"] {
+		t.Errorf("version changed between a build and a cache hit: %v vs %v", first.Body["version"], second.Body["version"])
+	}
+	inbounds, ok := second.Body["inbounds"].([]interface{})
+	if !ok || len(inbounds) != 1 {
+		t.Fatalf("cached body inbounds = %v, want 1", second.Body["inbounds"])
+	}
+	users := inbounds[0].(map[string]interface{})["users"].([]interface{})
+	if len(users) != 1 || users[0].(map[string]interface{})["name"] != "nc_cached_user" {
+		t.Errorf("cached body users = %v, want [nc_cached_user]", users)
 	}
 }
