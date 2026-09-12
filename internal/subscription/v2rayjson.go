@@ -95,9 +95,15 @@ func V2rayJSONConfig(remark, address string, in EffectiveInbound, settings proxy
 		// comment on why: only the JSON formats carry mux at all, a vless://
 		// share link never does, which is why the same host works when added
 		// by hand but not through a mux-enabled JSON subscription).
-		// Values match mux/default.json's own "v2ray" entry exactly - this
-		// used to omit xudpConcurrency/xudpProxyUDP443 entirely.
-		outbound["mux"] = map[string]any{"enabled": true, "concurrency": 8, "xudpConcurrency": 8, "xudpProxyUDP443": "reject"}
+		//
+		// xudpProxyUDP443 deliberately omitted: mux/default.json's real
+		// "v2ray" entry does carry it, but it's a newer Xray-core Mux field
+		// - a real client (v2box) rejected the whole config outright with
+		// `infra/conf: unknown "xudpProxyUDP443"` the moment it appeared,
+		// because its bundled core predates the field. Losing this one
+		// UDP-over-port-443 tuning knob on older clients is a far smaller
+		// cost than every proxy on the subscription refusing to parse.
+		outbound["mux"] = map[string]any{"enabled": true, "concurrency": 8, "xudpConcurrency": 8}
 	}
 
 	if template != nil {

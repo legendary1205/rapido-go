@@ -100,6 +100,31 @@ func TestV2rayJSONConfigMuxSkippedWithVisionFlow(t *testing.T) {
 	}
 }
 
+// TestV2rayJSONConfigMuxOmitsUnsupportedXudpField is a regression test for
+// a real production incident: mux/default.json's real "v2ray" entry
+// carries "xudpProxyUDP443", but a real client (v2box) rejected the
+// WHOLE config outright with `infra/conf: unknown "xudpProxyUDP443"` -
+// its bundled Xray-core predates that Mux field. Faithfully copying every
+// value from the real template is not a goal in itself when a specific
+// value breaks real, still-in-use clients outright.
+func TestV2rayJSONConfigMuxOmitsUnsupportedXudpField(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com", MuxEnable: true}
+	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "u"}}
+
+	cfg, err := V2rayJSONConfig("t", "1.2.3.4", in, settings, nil)
+	if err != nil {
+		t.Fatalf("V2rayJSONConfig: %v", err)
+	}
+	outbounds := cfg["outbounds"].([]map[string]any)
+	mux, ok := outbounds[0]["mux"].(map[string]any)
+	if !ok {
+		t.Fatal("expected a mux block")
+	}
+	if _, has := mux["xudpProxyUDP443"]; has {
+		t.Errorf("mux block must not carry xudpProxyUDP443 - a real client (v2box) refuses to parse the whole config with it present: %+v", mux)
+	}
+}
+
 func TestV2rayJSONArrayIsRealJSONArray(t *testing.T) {
 	raw, err := V2rayJSONArray([]map[string]any{{"remarks": "a"}, {"remarks": "b"}})
 	if err != nil {
