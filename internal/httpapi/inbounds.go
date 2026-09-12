@@ -20,30 +20,73 @@ import (
 // parsed xray/sing-box config; here, from the inbounds table until the
 // node-agent phase syncs it from a live proxy core config for real - see
 // 00002_inbound_protocol.sql).
+// proxyInboundDTO mirrors app/models/proxy.py's ProxyInbound exactly - all
+// five fields, always present. The earlier shape here was a bare tag
+// string per entry, which is a real incompatibility rather than a
+// simplification: every Marzban-ecosystem client iterates this map and
+// reads inbound["tag"] (plus port/network to build a config), and a string
+// is not indexable, so such a client sees zero usable inbounds. One real
+// reseller bot's symptom for that is refusing to sync "to avoid deleting
+// tags by mistake" - it found no tags it could parse.
+type proxyInboundDTO struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
+	Network  string `json:"network"`
+	TLS      string `json:"tls"`
+	Port     int32  `json:"port"`
+}
+
 func (h *Handler) handleListInbounds(c *gin.Context) {
 	ctx := c.Request.Context()
-	rows, err := h.store.Queries.ListInbounds(ctx)
+	rows, err := h.store.Queries.ListInboundsWithPort(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not list inbounds"})
 		return
 	}
-	out := map[string][]string{}
+
+	byTag := make(map[string]proxyInboundDTO, len(rows))
+	tagsByProtocol := map[string][]string{}
 	for _, r := range rows {
-		out[r.Protocol] = append(out[r.Protocol], r.Tag)
+		byTag[r.Tag] = proxyInboundDTO{
+			Tag: r.Tag, Protocol: r.Protocol, Network: r.Network,
+			// The real panel calls this field "tls" and puts the security
+			// mode in it ("none"/"tls"/"reality"), which is what this
+			// column already holds.
+			TLS:  r.Security,
+			Port: r.Port.Int32,
+		}
+		tagsByProtocol[r.Protocol] = append(tagsByProtocol[r.Protocol], r.Tag)
 	}
 
 	// KirBot inbound filtering (app/kirbot/manager.py's get_configs, called
 	// from app/routers/system.py's get_inbounds): a reseller only sees the
 	// inbounds their external bot allows. Sudo always sees everything -
-	// KirBot is never even called for a sudo admin.
+	// KirBot is never even called for a sudo admin. It filters tags, so it
+	// runs on the tag map and the result is expanded back into objects.
 	identity := auth.CurrentIdentity(c)
 	if !identity.IsSudo {
 		settings, _, err := h.resolveIntegrationSettings(c)
 		if err == nil {
-			if filtered := h.kirbot.GetConfigs(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, identity.Username, out); len(filtered) > 0 {
-				out = filtered
+			if filtered := h.kirbot.GetConfigs(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, identity.Username, tagsByProtocol); len(filtered) > 0 {
+				tagsByProtocol = filtered
 			}
 		}
+	}
+
+	out := make(map[string][]proxyInboundDTO, len(tagsByProtocol))
+	for protocol, tags := range tagsByProtocol {
+		entries := make([]proxyInboundDTO, 0, len(tags))
+		for _, tag := range tags {
+			if entry, ok := byTag[tag]; ok {
+				entries = append(entries, entry)
+				continue
+			}
+			// A tag KirBot returned that this panel doesn't have: keep it
+			// visible rather than dropping it silently, with the protocol
+			// it was filed under.
+			entries = append(entries, proxyInboundDTO{Tag: tag, Protocol: protocol, Network: "tcp", TLS: "none"})
+		}
+		out[protocol] = entries
 	}
 
 	c.JSON(http.StatusOK, out)

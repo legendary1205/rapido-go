@@ -75,6 +75,143 @@ func TestCoreStatsIsReachableByANonSudoAdmin(t *testing.T) {
 	}
 }
 
+// TestInboundsAreProxyInboundObjects pins the shape every third-party
+// client indexes: the real panel's GET /api/inbounds is
+// Dict[protocol, List[ProxyInbound]], and a ProxyInbound always carries
+// tag/protocol/network/tls/port. This used to be a list of bare tag
+// strings here, which is unindexable - a client reading entry["tag"] found
+// nothing and concluded the panel had no inbounds at all.
+func TestInboundsAreProxyInboundObjects(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "Shape VLESS", "protocol": "vless", "network": "tcp", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "example.test"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"Shape VLESS": []map[string]interface{}{{"remark": "h", "address": "1.2.3.4", "port": 8443}},
+	})
+
+	resp := doRequest(t, router, "GET", "/api/inbounds", token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get inbounds: %d %v", resp.Code, resp.Body)
+	}
+	entries, ok := resp.Body["vless"].([]interface{})
+	if !ok || len(entries) == 0 {
+		t.Fatalf("vless entries = %v, want a non-empty list", resp.Body["vless"])
+	}
+	var found map[string]interface{}
+	for _, e := range entries {
+		obj, ok := e.(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry is %T, want an object - a bare string is what broke real clients", e)
+		}
+		if obj["tag"] == "Shape VLESS" {
+			found = obj
+		}
+	}
+	if found == nil {
+		t.Fatalf("Shape VLESS not found: %v", entries)
+	}
+	if found["protocol"] != "vless" || found["network"] != "tcp" || found["tls"] != "tls" {
+		t.Errorf("entry = %v, want protocol=vless network=tcp tls=tls", found)
+	}
+	if port, ok := found["port"].(float64); !ok || int(port) != 8443 {
+		t.Errorf("port = %v, want 8443 (from the inbound's primary host)", found["port"])
+	}
+}
+
+// TestSystemStatsCarriesEveryRequiredField pins the host-resource half of
+// SystemStats. Every field on that model is required, so a client built
+// from it (SystemStats(**r.json()), or any generated client) rejects the
+// whole response when one is missing - and the CPU/RAM/throughput widgets
+// on every bot dashboard read exactly these.
+func TestSystemStatsCarriesEveryRequiredField(t *testing.T) {
+	router, token := newTestRouter(t)
+
+	resp := doRequest(t, router, "GET", "/api/system", token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get system: %d %v", resp.Code, resp.Body)
+	}
+	for _, key := range []string{
+		"version", "mem_total", "mem_used", "cpu_cores", "cpu_usage",
+		"total_user", "online_users", "users_active", "users_on_hold",
+		"users_disabled", "users_expired", "users_limited",
+		"incoming_bandwidth", "outgoing_bandwidth",
+		"incoming_bandwidth_speed", "outgoing_bandwidth_speed",
+	} {
+		if _, ok := resp.Body[key]; !ok {
+			t.Errorf("SystemStats is missing required field %q", key)
+		}
+	}
+}
+
+// TestCreateNodeDefaultsPortsAndReturnsItFlat covers two separate
+// incompatibilities on the same call: the real panel defaults
+// port/api_port (a client may post only name+address) and answers with the
+// node's own fields at the top level, so resp["id"] is how every client
+// learns the new node's id.
+func TestCreateNodeDefaultsPortsAndReturnsItFlat(t *testing.T) {
+	router, token := newTestRouter(t)
+
+	resp := doRequest(t, router, "POST", "/api/node", token, map[string]interface{}{
+		"name": "minimal-node", "address": "10.9.9.9",
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("create node with the minimal body: %d %v", resp.Code, resp.Body)
+	}
+	if id, ok := resp.Body["id"].(float64); !ok || id == 0 {
+		t.Errorf("id = %v, want the new node's id at the top level", resp.Body["id"])
+	}
+	if port, _ := resp.Body["port"].(float64); int(port) != defaultNodePort {
+		t.Errorf("port = %v, want the default %d", resp.Body["port"], defaultNodePort)
+	}
+	if apiPort, _ := resp.Body["api_port"].(float64); int(apiPort) != defaultNodeAPIPort {
+		t.Errorf("api_port = %v, want the default %d", resp.Body["api_port"], defaultNodeAPIPort)
+	}
+	for _, key := range []string{"xray_version", "message", "status", "usage_coefficient"} {
+		if _, ok := resp.Body[key]; !ok {
+			t.Errorf("NodeResponse is missing %q", key)
+		}
+	}
+	// The dashboard's own one-time reveal panel still needs its bundle.
+	if _, ok := resp.Body["setup_blob"]; !ok {
+		t.Error("setup_blob disappeared from the create-node response")
+	}
+}
+
+// TestUpdateNodeIsPartialAndAcceptsStatus pins the documented way to
+// disable a node - PUT {"status":"disabled"} - and that a partial body
+// leaves everything else alone instead of 422ing.
+func TestUpdateNodeIsPartialAndAcceptsStatus(t *testing.T) {
+	router, token := newTestRouter(t)
+	nodeID, _ := createTestNode(t, router, token, "partial-update-node")
+	idPath := "/api/node/" + strconv.Itoa(int(nodeID))
+
+	coeff := doRequest(t, router, "PUT", idPath, token, map[string]interface{}{"usage_coefficient": 2.5})
+	if coeff.Code != http.StatusOK {
+		t.Fatalf("partial update = %d %v, want 200", coeff.Code, coeff.Body)
+	}
+	if coeff.Body["name"] != "partial-update-node" {
+		t.Errorf("name = %v, want it untouched by a partial update", coeff.Body["name"])
+	}
+	if coeff.Body["usage_coefficient"] != 2.5 {
+		t.Errorf("usage_coefficient = %v, want 2.5", coeff.Body["usage_coefficient"])
+	}
+
+	disabled := doRequest(t, router, "PUT", idPath, token, map[string]interface{}{"status": "disabled"})
+	if disabled.Code != http.StatusOK {
+		t.Fatalf("status=disabled update: %d %v", disabled.Code, disabled.Body)
+	}
+	if disabled.Body["status"] != "disabled" {
+		t.Errorf("status = %v, want disabled - PUT {\"status\":\"disabled\"} is the documented way to switch a node off", disabled.Body["status"])
+	}
+
+	back := doRequest(t, router, "PUT", idPath, token, map[string]interface{}{"status": "connecting"})
+	if back.Body["status"] == "disabled" {
+		t.Errorf("status = %v, want the node re-enabled", back.Body["status"])
+	}
+}
+
 func TestGetUserUsageReturnsMasterAndEveryNode(t *testing.T) {
 	router, token := newTestRouter(t)
 	createTestNode(t, router, token, "usage-node-1")

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -15,12 +16,50 @@ func (h *Handler) handleSubscriptionInfo(c *gin.Context) {
 	if !ok {
 		return
 	}
-	data, err := h.buildRapidoData(c.Request.Context(), user)
+	ctx := c.Request.Context()
+	data, err := h.buildRapidoData(ctx, user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read subscription info"})
 		return
 	}
-	c.JSON(http.StatusOK, data)
+	// The real panel answers this route with a full user object
+	// (SubscriptionUserResponse: used_traffic, data_limit,
+	// data_limit_reset_strategy, proxies, created_at, subscription_url,
+	// on_hold_*, next_plan, ...), while this page's own poll wants the
+	// compact camelCase shape above. Both are emitted: the documented
+	// fields so any client written against the real panel works, plus this
+	// page's own keys, which are simply extra keys to anyone else.
+	full, err := h.buildUserResponse(ctx, user)
+	if err != nil {
+		c.JSON(http.StatusOK, data)
+		return
+	}
+	merged, err := mergeJSONObjects(full, data)
+	if err != nil {
+		c.JSON(http.StatusOK, data)
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", merged)
+}
+
+// mergeJSONObjects marshals each value and folds the results into one JSON
+// object, later values winning on a key collision.
+func mergeJSONObjects(values ...any) ([]byte, error) {
+	merged := map[string]json.RawMessage{}
+	for _, v := range values {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, err
+		}
+		for k, val := range fields {
+			merged[k] = val
+		}
+	}
+	return json.Marshal(merged)
 }
 
 const (

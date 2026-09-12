@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -208,11 +207,8 @@ func TestInboundsFilteredByKirbotForNonSudo(t *testing.T) {
 	if resp.Code != 200 {
 		t.Fatalf("get inbounds as reseller: %d %v", resp.Code, resp.Body)
 	}
-	var filtered map[string][]string
-	if err := json.Unmarshal(resp.Raw, &filtered); err != nil {
-		t.Fatalf("decode filtered inbounds: %v", err)
-	}
-	if len(filtered["vmess"]) != 1 || filtered["vmess"][0] != "VMess TCP" {
+	filtered := inboundTagsOf(t, resp, "vmess")
+	if len(filtered) != 1 || filtered[0] != "VMess TCP" {
 		t.Errorf("filtered inbounds = %v, want only VMess TCP (KirBot's stubbed response)", filtered)
 	}
 
@@ -220,11 +216,8 @@ func TestInboundsFilteredByKirbotForNonSudo(t *testing.T) {
 	if resp.Code != 200 {
 		t.Fatalf("get inbounds as sudo: %d %v", resp.Code, resp.Body)
 	}
-	var unfiltered map[string][]string
-	if err := json.Unmarshal(resp.Raw, &unfiltered); err != nil {
-		t.Fatalf("decode unfiltered inbounds: %v", err)
-	}
-	if len(unfiltered["vmess"]) != 2 {
+	unfiltered := inboundTagsOf(t, resp, "vmess")
+	if len(unfiltered) != 2 {
 		t.Errorf("sudo's inbounds = %v, want both tags (KirBot must never filter sudo)", unfiltered)
 	}
 }

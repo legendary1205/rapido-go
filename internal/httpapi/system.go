@@ -10,6 +10,7 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
+	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 )
 
 // onlineWindow mirrors the dashboard's own 180s "online" presence window
@@ -26,17 +27,70 @@ const onlineWindow = 180 * time.Second
 // version this rewrite is pinned to or will ever bump.
 const marzbanCompatVersion = "0.8.4"
 
+// systemStatsDTO mirrors app/models/system.py's SystemStats field for
+// field. Every field is REQUIRED there, so a client that validates the
+// response against that model (or simply indexes the key) breaks on any
+// omission - the host-resource half used to be missing here entirely,
+// which is every bot dashboard's CPU/RAM widget and every live-throughput
+// readout. None of these carry omitempty for the same reason: a real zero
+// must still appear on the wire.
 type systemStatsDTO struct {
-	Version           string `json:"version"`
-	TotalUser         int64  `json:"total_user"`
-	OnlineUsers       int64  `json:"online_users"`
-	UsersActive       int64  `json:"users_active"`
-	UsersOnHold       int64  `json:"users_on_hold"`
-	UsersDisabled     int64  `json:"users_disabled"`
-	UsersExpired      int64  `json:"users_expired"`
-	UsersLimited      int64  `json:"users_limited"`
-	IncomingBandwidth int64  `json:"incoming_bandwidth"`
-	OutgoingBandwidth int64  `json:"outgoing_bandwidth"`
+	Version                string  `json:"version"`
+	MemTotal               int64   `json:"mem_total"`
+	MemUsed                int64   `json:"mem_used"`
+	CPUCores               int     `json:"cpu_cores"`
+	CPUUsage               float64 `json:"cpu_usage"`
+	TotalUser              int64   `json:"total_user"`
+	OnlineUsers            int64   `json:"online_users"`
+	UsersActive            int64   `json:"users_active"`
+	UsersOnHold            int64   `json:"users_on_hold"`
+	UsersDisabled          int64   `json:"users_disabled"`
+	UsersExpired           int64   `json:"users_expired"`
+	UsersLimited           int64   `json:"users_limited"`
+	IncomingBandwidth      int64   `json:"incoming_bandwidth"`
+	OutgoingBandwidth      int64   `json:"outgoing_bandwidth"`
+	IncomingBandwidthSpeed int64   `json:"incoming_bandwidth_speed"`
+	OutgoingBandwidthSpeed int64   `json:"outgoing_bandwidth_speed"`
+}
+
+// fillHostResources populates the CPU/RAM/throughput half of SystemStats.
+//
+// The absolute values (total/used bytes, core count) are read straight off
+// this host, since they need no history to be correct. The two rates and
+// the CPU percentage are derived quantities - they only exist as a delta
+// between two samples - so they come from the panel's own stored
+// self-sample (the node_id IS NULL row written by the backend's
+// PanelSelfSampleLoop), the same numbers /api/monitoring shows for the
+// "Panel" host. A panel running without that loop yet simply reports
+// zeroes rather than omitting the fields.
+func (h *Handler) fillHostResources(c *gin.Context, stats *systemStatsDTO) {
+	sample := hostmetrics.Collect(false, "")
+	stats.MemTotal = sample.MemTotalBytes
+	if sample.MemTotalBytes > 0 && sample.MemAvailableBytes <= sample.MemTotalBytes {
+		stats.MemUsed = sample.MemTotalBytes - sample.MemAvailableBytes
+	}
+	stats.CPUCores = sample.CPUCores
+
+	latest, err := h.store.Queries.GetLatestHostMetricPerNode(c.Request.Context())
+	if err != nil {
+		return
+	}
+	for i := range latest {
+		m := &latest[i]
+		if m.NodeID.Valid {
+			continue // a node's sample, not the panel's own
+		}
+		if m.CpuPercent.Valid {
+			stats.CPUUsage = m.CpuPercent.Float64
+		}
+		if m.RxRate.Valid {
+			stats.IncomingBandwidthSpeed = m.RxRate.Int64
+		}
+		if m.TxRate.Valid {
+			stats.OutgoingBandwidthSpeed = m.TxRate.Int64
+		}
+		return
+	}
 }
 
 // handleGetSystemStats implements GET /api/system, scoped like
@@ -73,6 +127,7 @@ func (h *Handler) handleGetSystemStats(c *gin.Context) {
 	}
 
 	stats := systemStatsDTO{Version: marzbanCompatVersion, TotalUser: total, OnlineUsers: online}
+	h.fillHostResources(c, &stats)
 	if sys, err := h.store.Queries.GetSystem(ctx); err == nil {
 		stats.IncomingBandwidth = pgInt8ToInt64(sys.Uplink)
 		stats.OutgoingBandwidth = pgInt8ToInt64(sys.Downlink)

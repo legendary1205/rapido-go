@@ -11,10 +11,24 @@ import { queryKeys } from "utils/queryClient";
 // Inbound management itself (create/edit/delete) now lives entirely in the
 // merged Xray Config page (rapido-ui/XrayConfigAdmin.tsx, hooks/
 // useXrayConfigQuery.ts) - this hook is read-only from here on.
+// The API itself returns one object per inbound ({tag, protocol, network,
+// tls, port}), matching the real Marzban panel that every third-party
+// client is written against. Nothing in this dashboard needs more than the
+// tag, so the objects are flattened to tags here, in one place, instead of
+// reshaping every consumer.
 export const useInboundsQuery = () =>
   useQuery({
     queryKey: queryKeys.inbounds,
-    queryFn: () => fetch<InboundsByProtocol>("/inbounds"),
+    queryFn: async () => {
+      const raw = await fetch<Record<string, Array<{ tag: string } | string>>>("/inbounds");
+      const byProtocol: InboundsByProtocol = {};
+      for (const [protocol, entries] of Object.entries(raw ?? {})) {
+        byProtocol[protocol] = (entries ?? []).map((entry) =>
+          typeof entry === "string" ? entry : entry.tag
+        );
+      }
+      return byProtocol;
+    },
   });
 
 // POST /api/inbounds/import-xray - called twice per real import: once

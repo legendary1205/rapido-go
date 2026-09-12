@@ -26,11 +26,20 @@ func generateReportSecret() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
+// defaultNodePort/defaultNodeAPIPort mirror NodeCreate's own defaults on
+// the real panel - a client that posts only {name, address} (the
+// documented minimal body) must succeed there, so port/api_port cannot be
+// required here either.
+const (
+	defaultNodePort    = 62050
+	defaultNodeAPIPort = 62051
+)
+
 type nodeCreateRequest struct {
 	Name             string   `json:"name" binding:"required"`
 	Address          string   `json:"address" binding:"required"`
-	Port             int32    `json:"port" binding:"required"`
-	APIPort          int32    `json:"api_port" binding:"required"`
+	Port             int32    `json:"port"`
+	APIPort          int32    `json:"api_port"`
 	UsageCoefficient *float64 `json:"usage_coefficient"`
 	// PanelURL is optional and used for nothing but embedding in the setup
 	// blob below - the admin already knows how this node should reach the
@@ -65,21 +74,36 @@ func buildNodeSetupBlob(cert, key, ca, secret, panelURL string) (string, error) 
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
+// nodeDTO mirrors app/models/node.py's NodeResponse. xray_version and
+// message are nullable there but always present - a monitoring client
+// reads message to find out WHY a node isn't connected, and omitting the
+// key entirely turns that into a KeyError instead of a null.
 type nodeDTO struct {
 	ID               int32   `json:"id"`
 	Name             string  `json:"name"`
 	Address          string  `json:"address"`
 	Port             int32   `json:"port"`
 	APIPort          int32   `json:"api_port"`
+	XrayVersion      *string `json:"xray_version"`
 	Status           string  `json:"status"`
+	Message          *string `json:"message"`
 	UsageCoefficient float64 `json:"usage_coefficient"`
 }
 
 func toNodeDTO(n generated.Node) nodeDTO {
-	return nodeDTO{
+	dto := nodeDTO{
 		ID: n.ID, Name: n.Name, Address: n.Address, Port: n.Port, APIPort: n.ApiPort,
 		Status: n.Status, UsageCoefficient: n.UsageCoefficient,
 	}
+	if n.XrayVersion.Valid {
+		v := n.XrayVersion.String
+		dto.XrayVersion = &v
+	}
+	if n.Message.Valid {
+		m := n.Message.String
+		dto.Message = &m
+	}
+	return dto
 }
 
 // handleCreateNode implements POST /api/node (sudo only). Unlike the
@@ -111,6 +135,12 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 	usageCoefficient := 1.0
 	if req.UsageCoefficient != nil {
 		usageCoefficient = *req.UsageCoefficient
+	}
+	if req.Port == 0 {
+		req.Port = defaultNodePort
+	}
+	if req.APIPort == 0 {
+		req.APIPort = defaultNodeAPIPort
 	}
 
 	ctx := c.Request.Context()
@@ -161,7 +191,12 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 	// four raw fields stay in the response for a manual/scripted setup or
 	// for inspecting what's actually inside the blob, not because the
 	// dashboard still shows them as the primary flow.
-	c.JSON(http.StatusOK, gin.H{
+	//
+	// The node's own fields are emitted at the TOP level, matching the real
+	// panel's NodeResponse - a client doing resp["id"] right after creating
+	// a node must find it there. The nested "node" key is kept as well so
+	// this panel's own dashboard keeps working; extra keys break nobody.
+	merged, err := mergeJSONObjects(toNodeDTO(node), gin.H{
 		"node":           toNodeDTO(node),
 		"setup_blob":     setupBlob,
 		"certificate":    nodeCert.CertPEM,
@@ -169,15 +204,28 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 		"ca_certificate": ca.Certificate,
 		"report_secret":  reportSecret,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build the node response"})
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", merged)
 }
 
+// nodeUpdateRequest is fully optional, field by field: the real panel's
+// NodeModify has no required fields at all, so PUT {"usage_coefficient":2}
+// or PUT {"status":"disabled"} - the documented way to disable a node - has
+// to work without resending the whole object.
 type nodeUpdateRequest struct {
-	Name             string   `json:"name" binding:"required"`
-	Address          string   `json:"address" binding:"required"`
-	Port             int32    `json:"port" binding:"required"`
-	APIPort          int32    `json:"api_port" binding:"required"`
+	Name             *string  `json:"name"`
+	Address          *string  `json:"address"`
+	Port             *int32   `json:"port"`
+	APIPort          *int32   `json:"api_port"`
 	UsageCoefficient *float64 `json:"usage_coefficient"`
-	Disabled         *bool    `json:"disabled"`
+	// Status is the real panel's own spelling ("disabled" switches a node
+	// off, anything else puts it back to connecting); Disabled is this
+	// panel's older boolean, kept working for its own dashboard.
+	Status   *string `json:"status"`
+	Disabled *bool   `json:"disabled"`
 }
 
 // handleUpdateNode implements PUT /api/node/:id (sudo only). A full-field
@@ -196,6 +244,28 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+	// Every field is optional, so the stored row is the base and only what
+	// the caller actually sent is overlaid onto it.
+	current, err := h.store.Queries.GetNodeByID(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Node not found"})
+		return
+	}
+	name, address, port, apiPort := current.Name, current.Address, current.Port, current.ApiPort
+	if req.Name != nil {
+		name = *req.Name
+	}
+	if req.Address != nil {
+		address = *req.Address
+	}
+	if req.Port != nil {
+		port = *req.Port
+	}
+	if req.APIPort != nil {
+		apiPort = *req.APIPort
+	}
+
 	var usageCoefficient pgtype.Float8
 	if req.UsageCoefficient != nil {
 		usageCoefficient = pgtype.Float8{Float64: *req.UsageCoefficient, Valid: true}
@@ -204,9 +274,15 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 	if req.Disabled != nil {
 		disabled = pgtype.Bool{Bool: *req.Disabled, Valid: true}
 	}
+	// status wins over disabled when both are sent - it's the documented
+	// field, and the two can't disagree without the caller contradicting
+	// itself.
+	if req.Status != nil {
+		disabled = pgtype.Bool{Bool: *req.Status == "disabled", Valid: true}
+	}
 
-	node, err := h.store.Queries.UpdateNode(c.Request.Context(), generated.UpdateNodeParams{
-		ID: id, Name: req.Name, Address: req.Address, Port: req.Port, ApiPort: req.APIPort,
+	node, err := h.store.Queries.UpdateNode(ctx, generated.UpdateNodeParams{
+		ID: id, Name: name, Address: address, Port: port, ApiPort: apiPort,
 		UsageCoefficient: usageCoefficient, Disabled: disabled,
 	})
 	if err != nil {

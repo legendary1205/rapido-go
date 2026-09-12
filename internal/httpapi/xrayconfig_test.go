@@ -64,9 +64,8 @@ func TestUpdateXrayConfigAcceptsANewInboundAndARuleTargetingItInOneRequest(t *te
 	// The inbound must actually exist for real afterward, not just echoed
 	// back in this one response - confirm via the plain inbounds list.
 	listResp := doRequest(t, router, "GET", "/api/inbounds", token, nil)
-	vlessTags, _ := listResp.Body["vless"].([]interface{})
 	found := false
-	for _, tag := range vlessTags {
+	for _, tag := range inboundTagsOf(t, listResp, "vless") {
 		if tag == "Brand New VLESS" {
 			found = true
 		}

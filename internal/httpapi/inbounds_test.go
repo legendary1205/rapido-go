@@ -152,13 +152,31 @@ func TestDeleteInboundRemovesItAndCascadesItsHosts(t *testing.T) {
 	}
 
 	getInboundsResp := doRequest(t, router, "GET", "/api/inbounds", token, nil)
-	if tags, ok := getInboundsResp.Body["vless"].([]interface{}); ok {
-		for _, tag := range tags {
-			if tag == "To Delete" {
-				t.Errorf("deleted inbound tag still present in GET /api/inbounds: %v", tags)
-			}
+	for _, tag := range inboundTagsOf(t, getInboundsResp, "vless") {
+		if tag == "To Delete" {
+			t.Errorf("deleted inbound tag still present in GET /api/inbounds: %v", getInboundsResp.Body)
 		}
 	}
+}
+
+// inboundTagsOf pulls the tags for one protocol out of GET /api/inbounds,
+// whose entries are ProxyInbound objects ({tag, protocol, network, tls,
+// port}) exactly as the real panel returns - see handleListInbounds.
+func inboundTagsOf(t *testing.T, resp apiResponse, protocol string) []string {
+	t.Helper()
+	entries, ok := resp.Body[protocol].([]interface{})
+	if !ok {
+		return nil
+	}
+	tags := make([]string, 0, len(entries))
+	for _, e := range entries {
+		obj, ok := e.(map[string]interface{})
+		if !ok {
+			t.Fatalf("GET /api/inbounds entry is %T, want an object with a tag field: %v", e, e)
+		}
+		tags = append(tags, obj["tag"].(string))
+	}
+	return tags
 }
 
 func TestDeleteInboundNotFound(t *testing.T) {

@@ -37,6 +37,20 @@ SELECT * FROM inbounds WHERE tag = ANY(sqlc.arg('tags')::text[]);
 -- name: ListInbounds :many
 SELECT * FROM inbounds ORDER BY protocol, tag;
 
+-- name: ListInboundsWithPort :many
+-- GET /api/inbounds returns one object per inbound carrying the transport
+-- shape AND the port a client would actually connect to, which lives on the
+-- inbound's primary host (lowest id with a real port), not on the inbound
+-- row itself. Same "primary host" rule ListAutoSyncInbounds uses, but
+-- without its auto-sync eligibility filter: this endpoint lists every
+-- inbound an admin has, configured or not.
+SELECT i.tag, i.protocol, i.network, i.security,
+       (SELECT h.port FROM hosts h
+        WHERE h.inbound_tag = i.tag AND h.port IS NOT NULL
+        ORDER BY h.id LIMIT 1) AS port
+FROM inbounds i
+ORDER BY i.protocol, i.tag;
+
 -- name: ListInboundTagsByProtocol :many
 SELECT tag FROM inbounds WHERE protocol = $1 ORDER BY tag;
 
