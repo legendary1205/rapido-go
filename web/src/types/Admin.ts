@@ -5,6 +5,12 @@ export type Admin = {
   id?: number;
   username: string;
   is_sudo: boolean;
+  // One tier above sudo - can grant/revoke sudo (even on other sudo
+  // admins) and appoint/remove other owners. See handleUpdateAdmin's own
+  // comment for why granting/revoking either flag needed a real
+  // permission check instead of the old "sudo can only ever be granted,
+  // never revoked" workaround.
+  is_owner: boolean;
   telegram_id: number | null;
   discord_webhook: string | null;
   users_usage: number | null;
@@ -18,12 +24,14 @@ export type AdminCreatePayload = {
   discord_webhook?: string | null;
 };
 
-// PUT /api/admin/:username: crud.update_admin's truthy-overwrite semantics
-// (see admin.go's handleUpdateAdmin) - a falsy/omitted field here leaves the
-// stored value untouched rather than clearing it, so every field is optional.
+// PUT /api/admin/:username: is_sudo/is_owner are real tri-state fields here
+// (omit = leave unchanged, true/false = set) - unlike every other field,
+// which keeps the old truthy-overwrite semantics (a falsy/omitted value
+// leaves the stored value untouched rather than clearing it).
 export type AdminModifyPayload = {
   password?: string;
   is_sudo?: boolean;
+  is_owner?: boolean;
   telegram_id?: number | null;
   discord_webhook?: string | null;
 };

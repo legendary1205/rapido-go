@@ -18,13 +18,19 @@ type Identity struct {
 	AdminID  int32
 	Username string
 	IsSudo   bool
+	// IsOwner is the one tier above sudo - can grant/revoke sudo (including
+	// on other sudo admins) and appoint/remove other owners. The
+	// env-bootstrapped sudo account is always treated as owner too: it is
+	// the only way into a panel with zero admin rows, so it needs the
+	// authority to create the very first real owner.
+	IsOwner bool
 }
 
-// Resolver looks up a DB-backed admin's id, current sudo flag and
+// Resolver looks up a DB-backed admin's id, current sudo/owner flags and
 // password-reset timestamp by username. Implemented by internal/httpapi's
 // admin store.
 type Resolver interface {
-	ResolveAdmin(ctx context.Context, username string) (adminID int32, isSudo bool, passwordResetAt *time.Time, found bool, err error)
+	ResolveAdmin(ctx context.Context, username string) (adminID int32, isSudo bool, isOwner bool, passwordResetAt *time.Time, found bool, err error)
 }
 
 // RequireAdmin accepts any valid, still-live token - equivalent to the
@@ -79,10 +85,10 @@ func resolve(c *gin.Context, issuer *TokenIssuer, resolver Resolver, sudoUsernam
 	}
 
 	if claims.IsSudo() && sudoUsername != "" && claims.Username == sudoUsername {
-		return &Identity{Username: claims.Username, IsSudo: true}, nil
+		return &Identity{Username: claims.Username, IsSudo: true, IsOwner: true}, nil
 	}
 
-	adminID, isSudo, passwordResetAt, found, err := resolver.ResolveAdmin(c.Request.Context(), claims.Username)
+	adminID, isSudo, isOwner, passwordResetAt, found, err := resolver.ResolveAdmin(c.Request.Context(), claims.Username)
 	if err != nil || !found {
 		return nil, ErrInvalidToken
 	}
@@ -91,7 +97,7 @@ func resolve(c *gin.Context, issuer *TokenIssuer, resolver Resolver, sudoUsernam
 			return nil, ErrInvalidToken
 		}
 	}
-	return &Identity{AdminID: adminID, Username: claims.Username, IsSudo: isSudo}, nil
+	return &Identity{AdminID: adminID, Username: claims.Username, IsSudo: isSudo, IsOwner: isOwner}, nil
 }
 
 func unauthorized(c *gin.Context) {

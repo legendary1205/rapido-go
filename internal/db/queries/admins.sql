@@ -19,13 +19,18 @@ ORDER BY id
 LIMIT sqlc.narg('limit')::int OFFSET sqlc.narg('offset')::int;
 
 -- name: UpdateAdmin :one
+-- is_owner is included alongside is_sudo (not a separate query) because the
+-- same "who's allowed to set this" decision (see handleUpdateAdmin) already
+-- has to load and re-save the whole row either way - a second UPDATE would
+-- just be two round trips for one logical change.
 UPDATE admins
 SET
     is_sudo = $2,
     hashed_password = $3,
     password_reset_at = $4,
     telegram_id = $5,
-    discord_webhook = $6
+    discord_webhook = $6,
+    is_owner = $7
 WHERE id = $1
 RETURNING *;
 

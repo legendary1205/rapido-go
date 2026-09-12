@@ -18,6 +18,7 @@ type adminDTO struct {
 	ID             int32   `json:"id"`
 	Username       string  `json:"username"`
 	IsSudo         bool    `json:"is_sudo"`
+	IsOwner        bool    `json:"is_owner"`
 	TelegramID     *int64  `json:"telegram_id"`
 	DiscordWebhook *string `json:"discord_webhook"`
 	UsersUsage     *int64  `json:"users_usage"`
@@ -29,6 +30,7 @@ func toAdminDTO(a generated.Admin) adminDTO {
 		ID:             a.ID,
 		Username:       a.Username,
 		IsSudo:         a.IsSudo,
+		IsOwner:        a.IsOwner,
 		TelegramID:     int8ToPtr(a.TelegramID),
 		DiscordWebhook: textToPtr(a.DiscordWebhook),
 		UsersUsage:     &usage,
@@ -43,9 +45,15 @@ type adminCreateRequest struct {
 	DiscordWebhook *string `json:"discord_webhook"`
 }
 
+// IsSudo/IsOwner are *bool (not bool) specifically so "omitted" and
+// "explicitly false" are distinguishable - see handleUpdateAdmin's own
+// comment on why that distinction is the whole point: revoking either flag
+// is owner-only, but leaving a field out of the request must never revoke
+// it by accident just because Go's bool zero value is false.
 type adminModifyRequest struct {
 	Password       *string `json:"password"`
-	IsSudo         bool    `json:"is_sudo"`
+	IsSudo         *bool   `json:"is_sudo"`
+	IsOwner        *bool   `json:"is_owner"`
 	TelegramID     *int64  `json:"telegram_id"`
 	DiscordWebhook *string `json:"discord_webhook"`
 }
@@ -119,7 +127,7 @@ func contains(list []string, v string) bool {
 func (h *Handler) handleGetCurrentAdmin(c *gin.Context) {
 	identity := auth.CurrentIdentity(c)
 	if h.sudoUsername != "" && identity.Username == h.sudoUsername && identity.IsSudo {
-		c.JSON(http.StatusOK, adminDTO{Username: identity.Username, IsSudo: true})
+		c.JSON(http.StatusOK, adminDTO{Username: identity.Username, IsSudo: true, IsOwner: true})
 		return
 	}
 	admin, err := h.store.CachedGetAdminByUsername(c.Request.Context(), identity.Username)
@@ -193,7 +201,8 @@ func (h *Handler) handleListAdmins(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// handleUpdateAdmin implements PUT /api/admin/{username} (sudo only).
+// handleUpdateAdmin implements PUT /api/admin/{username} (sudo only, with
+// extra owner-only powers layered on top - see the guards below).
 func (h *Handler) handleUpdateAdmin(c *gin.Context) {
 	username := c.Param("username")
 	current := auth.CurrentIdentity(c)
@@ -203,7 +212,11 @@ func (h *Handler) handleUpdateAdmin(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Admin not found"})
 		return
 	}
-	if admin.Username != current.Username && admin.IsSudo {
+	// An owner is the one caller allowed past this: everyone else, sudo or
+	// not, is still refused outright from touching another sudo account at
+	// all - matching the existing password/telegram/discord protection
+	// sudo accounts have always had from each other.
+	if admin.Username != current.Username && admin.IsSudo && !current.IsOwner {
 		c.JSON(http.StatusForbidden, gin.H{"detail": "You're not allowed to edit another sudoer's account. Use rapido-cli instead."})
 		return
 	}
@@ -225,13 +238,45 @@ func (h *Handler) handleUpdateAdmin(c *gin.Context) {
 		PasswordResetAt: admin.PasswordResetAt,
 		TelegramID:      admin.TelegramID,
 		DiscordWebhook:  admin.DiscordWebhook,
+		IsOwner:         admin.IsOwner,
 	}
-	// Mirrors crud.update_admin's exact (and slightly quirky) semantics:
-	// each field only overwrites if truthy, so is_sudo can be turned on but
-	// never back off through this endpoint, and an empty telegram_id/webhook
-	// leaves the existing value untouched.
-	if req.IsSudo {
-		params.IsSudo = true
+	// req.IsSudo/IsOwner are *bool precisely so "omitted" (nil, leave
+	// unchanged) is distinguishable from "explicitly false" (revoke) - but
+	// only an ACTUAL change triggers a permission check at all. The
+	// AdminForm always sends is_sudo (its checkbox has no third "don't
+	// touch" state), so a non-owner admin saving someone who is already
+	// non-sudo must stay a harmless no-op, not a spurious 403 just because
+	// the wire value happens to be `false`.
+	//
+	// Granting either flag is allowed for anyone who reached this far
+	// (this route already requires sudo, and only an owner gets past the
+	// guard above for someone else's sudo account), but REVOKING either is
+	// owner-only, full stop, even on your own account: sudo status used to
+	// be one-way (crud.update_admin's old "only overwrite if truthy"
+	// semantics meant nobody, ever, could turn it back off through this
+	// endpoint) - the ask this replaces was specifically for a way to
+	// reverse that, gated behind a real permission check rather than left
+	// impossible for everyone.
+	if req.IsSudo != nil && *req.IsSudo != admin.IsSudo {
+		if *req.IsSudo {
+			params.IsSudo = true
+		} else if current.IsOwner {
+			params.IsSudo = false
+		} else {
+			c.JSON(http.StatusForbidden, gin.H{"detail": "Only an owner can revoke sudo access"})
+			return
+		}
+	}
+	if req.IsOwner != nil && *req.IsOwner != admin.IsOwner {
+		if !current.IsOwner {
+			c.JSON(http.StatusForbidden, gin.H{"detail": "Only an owner can grant or revoke owner access"})
+			return
+		}
+		if admin.Username == current.Username && !*req.IsOwner {
+			c.JSON(http.StatusForbidden, gin.H{"detail": "An owner cannot remove their own owner access - have another owner do it"})
+			return
+		}
+		params.IsOwner = *req.IsOwner
 	}
 	if req.Password != nil && *req.Password != "" {
 		hashed, err := auth.HashPassword(*req.Password)

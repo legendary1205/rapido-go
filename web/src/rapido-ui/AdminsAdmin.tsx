@@ -25,13 +25,21 @@ import { formatBytes } from "utils/formatByte";
 
 const AdminForm: FC<{
   initial: Admin | null;
+  /** Whether the logged-in admin viewing this form is themselves an owner -
+   * only an owner can grant/revoke owner access, or revoke (not grant)
+   * sudo access, so the Owner checkbox only renders for one, and is_owner
+   * is only ever sent by one (see handleUpdateAdmin's own permission
+   * checks - this is a UI convenience, not the real enforcement). */
+  viewerIsOwner: boolean;
+  viewerUsername: string | undefined;
   onClose: () => void;
-}> = ({ initial, onClose }) => {
+}> = ({ initial, viewerIsOwner, viewerUsername, onClose }) => {
   const { t } = useTranslation();
   const isEdit = !!initial;
   const [username, setUsername] = useState(initial?.username ?? "");
   const [password, setPassword] = useState("");
   const [isSudo, setIsSudo] = useState(initial?.is_sudo ?? false);
+  const [isOwner, setIsOwner] = useState(initial?.is_owner ?? false);
   const [telegramId, setTelegramId] = useState(
     initial?.telegram_id != null ? String(initial.telegram_id) : ""
   );
@@ -49,6 +57,11 @@ const AdminForm: FC<{
           username: initial!.username,
           body: {
             is_sudo: isSudo,
+            // Omitted entirely for a non-owner viewer, not just left at its
+            // starting value - the backend treats "field present" as "I
+            // intend to touch this" for is_owner specifically (see its own
+            // comment), so a non-owner must never send it at all.
+            is_owner: viewerIsOwner ? isOwner : undefined,
             telegram_id: telegramId ? Number(telegramId) : null,
             // Left blank on edit means "keep the current password" - sending
             // an empty string would hash it and lock the admin out.
@@ -101,11 +114,40 @@ const AdminForm: FC<{
 
         <Checkbox
           checked={isSudo}
+          disabled={isEdit && !!initial?.is_sudo && !viewerIsOwner}
           onChange={(e) => setIsSudo(e.target.checked)}
           label={t("rapido.admins.isSudo")}
         />
         {isSudo && (
           <p className="-mt-1 text-xs text-amber-400">{t("rapido.admins.sudoWarning")}</p>
+        )}
+        {isEdit && initial?.is_sudo && !viewerIsOwner && (
+          <p className="-mt-1 text-xs text-rapido-muted">{t("rapido.admins.onlyOwnerRevokesSudo")}</p>
+        )}
+
+        {viewerIsOwner && (
+          <>
+            {(() => {
+              const editingSelf = isEdit && initial?.username === viewerUsername;
+              const lockedOwner = !!initial?.is_owner && editingSelf;
+              return (
+                <>
+                  <Checkbox
+                    checked={isOwner}
+                    disabled={lockedOwner}
+                    onChange={(e) => setIsOwner(e.target.checked)}
+                    label={t("rapido.admins.isOwner")}
+                  />
+                  {isOwner && (
+                    <p className="-mt-1 text-xs text-amber-400">{t("rapido.admins.ownerWarning")}</p>
+                  )}
+                  {lockedOwner && (
+                    <p className="-mt-1 text-xs text-rapido-muted">{t("rapido.admins.cannotSelfRemoveOwner")}</p>
+                  )}
+                </>
+              );
+            })()}
+          </>
         )}
 
         <label className="flex flex-col gap-1">
@@ -203,9 +245,11 @@ const AdminCard: FC<{
     <Card
       className={classNames(
         "p-4",
-        row.is_sudo
-          ? "!border-rapido-accent/60 bg-rapido-accent/[0.04]"
-          : "!border-sky-500/60 bg-sky-500/[0.04]"
+        row.is_owner
+          ? "!border-orange-500/60 bg-orange-500/[0.04]"
+          : row.is_sudo
+            ? "!border-rapido-accent/60 bg-rapido-accent/[0.04]"
+            : "!border-sky-500/60 bg-sky-500/[0.04]"
       )}
     >
       <div className="flex flex-col gap-3">
@@ -217,6 +261,7 @@ const AdminCard: FC<{
             <Badge tone={row.is_sudo ? "brand" : "sky"}>
               {row.is_sudo ? t("rapido.admins.sudo") : t("rapido.admins.reseller")}
             </Badge>
+            {row.is_owner && <Badge tone="orange">{t("rapido.admins.owner")}</Badge>}
             {isSelf && <Badge tone="gray">{t("rapido.admins.you")}</Badge>}
           </div>
           <span className="text-xs text-rapido-muted">
@@ -267,16 +312,16 @@ const AdminCard: FC<{
               </Button>
             </>
           ) : (
-            <Button variant="chip" onClick={() => setConfirmDisable(true)}>
+            <Button variant="chip" tone="red" onClick={() => setConfirmDisable(true)}>
               {t("rapido.admins.disableUsers")}
             </Button>
           )}
 
-          <Button variant="chip" disabled={activateUsers.isPending} onClick={activate}>
+          <Button variant="chip" tone="sky" disabled={activateUsers.isPending} onClick={activate}>
             {t("rapido.admins.activateUsers")}
           </Button>
 
-          <Button variant="chip" disabled={resetUsage.isPending} onClick={doResetUsage}>
+          <Button variant="chip" tone="amber" disabled={resetUsage.isPending} onClick={doResetUsage}>
             {t("rapido.admins.resetUsage")}
           </Button>
 
@@ -351,7 +396,12 @@ export const AdminsAdmin: FC = () => {
       )}
 
       {editing !== undefined && (
-        <AdminForm initial={editing} onClose={() => setEditing(undefined)} />
+        <AdminForm
+          initial={editing}
+          viewerIsOwner={!!currentAdmin?.is_owner}
+          viewerUsername={currentAdmin?.username}
+          onClose={() => setEditing(undefined)}
+        />
       )}
     </div>
   );

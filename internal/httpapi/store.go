@@ -54,19 +54,19 @@ func NewStore(pool *pgxpool.Pool, cacheClient *cache.Client) *Store {
 // ResolveAdmin implements auth.Resolver against the real admins table -
 // cached, since this runs on nearly every authenticated request (see
 // RequireAdmin/RequireSudo).
-func (s *Store) ResolveAdmin(ctx context.Context, username string) (adminID int32, isSudo bool, passwordResetAt *time.Time, found bool, err error) {
+func (s *Store) ResolveAdmin(ctx context.Context, username string) (adminID int32, isSudo bool, isOwner bool, passwordResetAt *time.Time, found bool, err error) {
 	admin, err := s.CachedGetAdminByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, false, nil, false, nil
+			return 0, false, false, nil, false, nil
 		}
-		return 0, false, nil, false, err
+		return 0, false, false, nil, false, err
 	}
 	if admin.PasswordResetAt.Valid {
 		t := admin.PasswordResetAt.Time
 		passwordResetAt = &t
 	}
-	return admin.ID, admin.IsSudo, passwordResetAt, true, nil
+	return admin.ID, admin.IsSudo, admin.IsOwner, passwordResetAt, true, nil
 }
 
 // CachedGetAdminByUsername and CachedGetAdminByID share one cache entry per
