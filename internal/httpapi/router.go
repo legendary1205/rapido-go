@@ -14,7 +14,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
-	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/report"
 )
 
@@ -32,7 +32,7 @@ type Handler struct {
 	subBranding          SubscriptionBranding
 	envDefaults          integrationsettings.Values
 	reports              *report.Dispatcher
-	kirbot               *kirbot.Client
+	resellerapi               *resellerapi.Client
 	loginNotifyWhitelist []string
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
@@ -78,7 +78,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 	publicIP, subURLPrefix, clashTemplatePath, v2rayTemplatePath string, formatFlags SubscriptionFormatFlags,
 	subBranding SubscriptionBranding,
 	envDefaults integrationsettings.Values, reports *report.Dispatcher,
-	kirbotClient *kirbot.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
+	resellerAPIClient *resellerapi.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
 	databaseURL, backupDir string, backupKeep int,
 	logger *slog.Logger) *Handler {
 	return &Handler{
@@ -86,7 +86,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
 		clashTemplatePath: clashTemplatePath, v2rayTemplatePath: v2rayTemplatePath, formatFlags: formatFlags,
 		subBranding: subBranding.withDefaults(),
-		envDefaults: envDefaults, reports: reports, kirbot: kirbotClient,
+		envDefaults: envDefaults, reports: reports, resellerapi: resellerAPIClient,
 		loginNotifyWhitelist: loginNotifyWhitelist, hostMetricsTracker: hostMetricsTracker,
 		databaseURL: databaseURL, backupDir: backupDir, backupKeep: backupKeep,
 		dumpDatabase:    func(ctx context.Context, w *os.File) error { return execPgDump(ctx, databaseURL, w) },

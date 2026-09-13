@@ -15,7 +15,7 @@ import (
 )
 
 // captureServer is a real local HTTP server standing in for the real
-// Telegram Bot API / Discord webhook endpoint / KirBot bot - not a mock of
+// Telegram Bot API / Discord webhook endpoint / the reseller API bot - not a mock of
 // this package's own logic, matching the rest of this project's tests.
 type captureServer struct {
 	*httptest.Server
@@ -55,8 +55,8 @@ func (s *captureServer) bodies() []string {
 // "https://discord.com" - a local httptest.Server URL could never pass
 // that check, but the point of these tests is proving the settings ->
 // cache -> report.Dispatcher wiring works, not re-testing that validator
-// (already covered by TestKirbotUserLimitRejectsNonSudoOverCap and friends
-// going through the real endpoint with kirbot_url, which has no such
+// (already covered by TestResellerAPIUserLimitRejectsNonSudoOverCap and friends
+// going through the real endpoint with reseller_api_url, which has no such
 // format restriction). Connects independently of newTestRouter's pool,
 // matching testPool's own TEST_DATABASE_URL convention.
 func setDiscordWebhookDirect(t *testing.T, url string) {
@@ -135,24 +135,24 @@ func TestLoginFailureNotifiesWithoutPassword(t *testing.T) {
 	}
 }
 
-// TestKirbotUserLimitRejectsNonSudoOverCap drives the full chain: a stub
-// KirBot server capping a reseller at 1 user, configured via the real
+// TestResellerAPIUserLimitRejectsNonSudoOverCap drives the full chain: a stub
+// the reseller API server capping a reseller at 1 user, configured via the real
 // settings API, actually blocks that reseller's 2nd user creation while
 // leaving a sudo admin uncapped.
-func TestKirbotUserLimitRejectsNonSudoOverCap(t *testing.T) {
+func TestResellerAPIUserLimitRejectsNonSudoOverCap(t *testing.T) {
 	router, sudoToken := newTestRouter(t)
 
-	kirbotServer := newCaptureServer(t, func(w http.ResponseWriter, body []byte) {
+	resellerapiServer := newCaptureServer(t, func(w http.ResponseWriter, body []byte) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"users_limit": 1}`))
 	})
 
 	resp := doRequest(t, router, "PUT", "/api/settings/integrations", sudoToken, map[string]interface{}{
-		"kirbot_secret": "test-secret", "kirbot_url": kirbotServer.URL,
+		"reseller_api_secret": "test-secret", "reseller_api_url": resellerapiServer.URL,
 	})
 	if resp.Code != 200 {
-		t.Fatalf("set kirbot settings: %d %v", resp.Code, resp.Body)
+		t.Fatalf("set resellerapi settings: %d %v", resp.Code, resp.Body)
 	}
 
 	doRequest(t, router, "POST", "/api/inbounds/sync", sudoToken, []map[string]string{{"tag": "VMess TCP", "protocol": "vmess"}})
@@ -170,31 +170,31 @@ func TestKirbotUserLimitRejectsNonSudoOverCap(t *testing.T) {
 		"username": "capped_user_2", "proxies": map[string]interface{}{"vmess": map[string]interface{}{}},
 	})
 	if resp.Code != 400 {
-		t.Fatalf("expected 400 for a reseller at their KirBot cap, got %d %v", resp.Code, resp.Body)
+		t.Fatalf("expected 400 for a reseller at their the reseller API cap, got %d %v", resp.Code, resp.Body)
 	}
 
 	resp = doRequest(t, router, "POST", "/api/user", sudoToken, map[string]interface{}{
 		"username": "uncapped_sudo_user", "proxies": map[string]interface{}{"vmess": map[string]interface{}{}},
 	})
 	if resp.Code != 200 {
-		t.Fatalf("sudo must never be capped by KirBot, got %d %v", resp.Code, resp.Body)
+		t.Fatalf("sudo must never be capped by the reseller API, got %d %v", resp.Code, resp.Body)
 	}
 }
 
-// TestInboundsFilteredByKirbotForNonSudo proves handleListInbounds actually
-// calls out to KirBot and uses its filtered result for a non-sudo admin,
+// TestInboundsFilteredByResellerAPIForNonSudo proves handleListInbounds actually
+// calls out to the reseller API and uses its filtered result for a non-sudo admin,
 // while sudo always sees the unfiltered list (and never triggers a call).
-func TestInboundsFilteredByKirbotForNonSudo(t *testing.T) {
+func TestInboundsFilteredByResellerAPIForNonSudo(t *testing.T) {
 	router, sudoToken := newTestRouter(t)
 
-	kirbotServer := newCaptureServer(t, func(w http.ResponseWriter, body []byte) {
+	resellerapiServer := newCaptureServer(t, func(w http.ResponseWriter, body []byte) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"vmess": ["VMess TCP"]}`))
 	})
 
 	doRequest(t, router, "PUT", "/api/settings/integrations", sudoToken, map[string]interface{}{
-		"kirbot_secret": "test-secret", "kirbot_url": kirbotServer.URL,
+		"reseller_api_secret": "test-secret", "reseller_api_url": resellerapiServer.URL,
 	})
 	doRequest(t, router, "POST", "/api/inbounds/sync", sudoToken, []map[string]string{
 		{"tag": "VMess TCP", "protocol": "vmess"},
@@ -209,7 +209,7 @@ func TestInboundsFilteredByKirbotForNonSudo(t *testing.T) {
 	}
 	filtered := inboundTagsOf(t, resp, "vmess")
 	if len(filtered) != 1 || filtered[0] != "VMess TCP" {
-		t.Errorf("filtered inbounds = %v, want only VMess TCP (KirBot's stubbed response)", filtered)
+		t.Errorf("filtered inbounds = %v, want only VMess TCP (the reseller API's stubbed response)", filtered)
 	}
 
 	resp = doRequest(t, router, "GET", "/api/inbounds", sudoToken, nil)
@@ -218,6 +218,6 @@ func TestInboundsFilteredByKirbotForNonSudo(t *testing.T) {
 	}
 	unfiltered := inboundTagsOf(t, resp, "vmess")
 	if len(unfiltered) != 2 {
-		t.Errorf("sudo's inbounds = %v, want both tags (KirBot must never filter sudo)", unfiltered)
+		t.Errorf("sudo's inbounds = %v, want both tags (the reseller API must never filter sudo)", unfiltered)
 	}
 }

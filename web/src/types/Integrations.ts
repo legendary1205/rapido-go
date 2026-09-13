@@ -1,9 +1,9 @@
 // Mirrors internal/httpapi/settings.go's integrationSettingsDTO.
 export type IntegrationSettingsStatus = {
-  kirbot_enabled: boolean;
-  kirbot_secret?: string | null; // masked
-  kirbot_url?: string | null;
-  kirbot_license?: string | null; // masked
+  reseller_api_enabled: boolean;
+  reseller_api_secret?: string | null; // masked
+  reseller_api_url?: string | null;
+  reseller_api_license?: string | null; // masked
   telegram_enabled: boolean;
   telegram_api_token?: string | null; // masked
   telegram_admin_ids: number[];

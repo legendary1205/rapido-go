@@ -48,12 +48,6 @@ const DISCORD_FIELDS: FieldConfig[] = [
   { key: "discord_webhook_url", labelKey: "rapido.integrations.discordWebhookUrl", kind: "password" },
 ];
 
-const KIRBOT_FIELDS: FieldConfig[] = [
-  { key: "kirbot_secret", labelKey: "rapido.integrations.kirbotSecret", kind: "password" },
-  { key: "kirbot_url", labelKey: "rapido.integrations.kirbotUrl", kind: "text" },
-  { key: "kirbot_license", labelKey: "rapido.integrations.kirbotLicense", kind: "password" },
-];
-
 const WEBHOOK_FIELDS: FieldConfig[] = [
   { key: "webhook_addresses", labelKey: "rapido.integrations.webhookAddresses", kind: "strArray" },
   { key: "webhook_secret", labelKey: "rapido.integrations.webhookSecret", kind: "password" },
@@ -202,7 +196,7 @@ export const IntegrationsForm: FC = () => {
     setSaveOk(false);
   };
 
-  const allFields = [...TELEGRAM_FIELDS, ...DISCORD_FIELDS, ...KIRBOT_FIELDS, ...WEBHOOK_FIELDS];
+  const allFields = [...TELEGRAM_FIELDS, ...DISCORD_FIELDS, ...WEBHOOK_FIELDS];
 
   const hasChanges =
     clearedKeys.size > 0 || allFields.some((f) => (drafts[f.key] ?? "").trim() !== "");
@@ -263,17 +257,6 @@ export const IntegrationsForm: FC = () => {
       <IntegrationGroup
         titleKey="rapido.integrations.discord"
         fields={DISCORD_FIELDS}
-        status={status}
-        drafts={drafts}
-        clearedKeys={clearedKeys}
-        onDraftChange={onDraftChange}
-        onToggleClear={onToggleClear}
-      />
-
-      <IntegrationGroup
-        titleKey="rapido.integrations.kirbot"
-        enabled={status.kirbot_enabled}
-        fields={KIRBOT_FIELDS}
         status={status}
         drafts={drafts}
         clearedKeys={clearedKeys}

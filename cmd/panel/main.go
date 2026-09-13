@@ -32,7 +32,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
-	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/reviewjob"
 	"github.com/legendary1205/rapido-go/internal/telegram"
@@ -89,7 +89,7 @@ func run(logger *slog.Logger) error {
 	store := httpapi.NewStore(pool, redisClient)
 
 	envDefaults := integrationsettings.Values{
-		KirbotSecret: cfg.KirbotSecret, KirbotURL: cfg.KirbotURL, KirbotLicense: cfg.KirbotLicense,
+		ResellerApiSecret: cfg.ResellerApiSecret, ResellerApiUrl: cfg.ResellerApiUrl, ResellerApiLicense: cfg.ResellerApiLicense,
 		TelegramAPIToken: cfg.TelegramAPIToken, TelegramAdminIDs: cfg.TelegramAdminIDs, TelegramProxyURL: cfg.TelegramProxyURL,
 		TelegramLoggerChannelID: cfg.TelegramLoggerChannelID, TelegramLoggerTopicID: cfg.TelegramLoggerTopicID,
 		TelegramDefaultVlessFlow: cfg.TelegramDefaultVlessFlow,
@@ -108,7 +108,7 @@ func run(logger *slog.Logger) error {
 		UserDeleted: cfg.NotifyUserDeleted, UserDataUsedReset: cfg.NotifyUserDataUsedReset,
 		UserSubRevoked: cfg.NotifyUserSubRevoked, Login: cfg.NotifyLogin,
 	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
-	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 3 * time.Second})
+	resellerAPIClient := resellerapi.NewClient(&http.Client{Timeout: 3 * time.Second})
 	hostMetricsTracker := hostmetrics.NewPreviousTracker()
 
 	if cfg.Role == config.RoleBackend {
@@ -124,7 +124,7 @@ func run(logger *slog.Logger) error {
 	}
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
 		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags, subBranding,
-		envDefaults, dispatcher, kirbotClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
+		envDefaults, dispatcher, resellerAPIClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
 		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)

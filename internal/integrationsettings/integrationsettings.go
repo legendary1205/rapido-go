@@ -16,7 +16,7 @@ import (
 // fallback. Used both as the env-defaults input to Resolve and as its
 // merged output.
 type Values struct {
-	KirbotSecret, KirbotURL, KirbotLicense string
+	ResellerApiSecret, ResellerApiUrl, ResellerApiLicense string
 
 	TelegramAPIToken         string
 	TelegramAdminIDs         []int64
@@ -36,14 +36,14 @@ type Values struct {
 func Resolve(row generated.IntegrationSetting, env Values) Values {
 	out := env
 
-	if row.KirbotSecret.Valid && row.KirbotSecret.String != "" {
-		out.KirbotSecret = row.KirbotSecret.String
+	if row.ResellerApiSecret.Valid && row.ResellerApiSecret.String != "" {
+		out.ResellerApiSecret = row.ResellerApiSecret.String
 	}
-	if row.KirbotUrl.Valid && row.KirbotUrl.String != "" {
-		out.KirbotURL = row.KirbotUrl.String
+	if row.ResellerApiUrl.Valid && row.ResellerApiUrl.String != "" {
+		out.ResellerApiUrl = row.ResellerApiUrl.String
 	}
-	if row.KirbotLicense.Valid && row.KirbotLicense.String != "" {
-		out.KirbotLicense = row.KirbotLicense.String
+	if row.ResellerApiLicense.Valid && row.ResellerApiLicense.String != "" {
+		out.ResellerApiLicense = row.ResellerApiLicense.String
 	}
 	if row.TelegramApiToken.Valid && row.TelegramApiToken.String != "" {
 		out.TelegramAPIToken = row.TelegramApiToken.String

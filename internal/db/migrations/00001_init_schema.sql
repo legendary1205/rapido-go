@@ -195,9 +195,9 @@ CREATE TABLE tls (
 -- env at startup. NULL in any column means "use the env value".
 CREATE TABLE integration_settings (
     id                              SERIAL PRIMARY KEY,
-    kirbot_secret                   VARCHAR(256),
-    kirbot_url                      VARCHAR(512),
-    kirbot_license                  VARCHAR(256),
+    reseller_api_secret                   VARCHAR(256),
+    reseller_api_url                      VARCHAR(512),
+    reseller_api_license                  VARCHAR(256),
     telegram_api_token              VARCHAR(256),
     telegram_admin_ids              JSONB,
     telegram_proxy_url              VARCHAR(512),

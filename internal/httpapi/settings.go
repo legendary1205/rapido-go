@@ -12,10 +12,10 @@ import (
 )
 
 type integrationSettingsDTO struct {
-	KirbotEnabled            bool       `json:"kirbot_enabled"`
-	KirbotSecret             *string    `json:"kirbot_secret"` // masked
-	KirbotURL                *string    `json:"kirbot_url"`
-	KirbotLicense            *string    `json:"kirbot_license"` // masked
+	ResellerApiEnabled            bool       `json:"reseller_api_enabled"`
+	ResellerApiSecret             *string    `json:"reseller_api_secret"` // masked
+	ResellerApiUrl                *string    `json:"reseller_api_url"`
+	ResellerApiLicense            *string    `json:"reseller_api_license"` // masked
 	TelegramEnabled          bool       `json:"telegram_enabled"`
 	TelegramAPIToken         *string    `json:"telegram_api_token"` // masked
 	TelegramAdminIDs         []int64    `json:"telegram_admin_ids"`
@@ -61,10 +61,10 @@ func (h *Handler) resolveIntegrationSettings(ctx *gin.Context) (integrationsetti
 
 func toIntegrationSettingsDTO(vals integrationsettings.Values, row generated.IntegrationSetting) integrationSettingsDTO {
 	dto := integrationSettingsDTO{
-		KirbotEnabled:            vals.KirbotSecret != "",
-		KirbotSecret:             maskedPtr(vals.KirbotSecret),
-		KirbotURL:                plainPtr(vals.KirbotURL),
-		KirbotLicense:            maskedPtr(vals.KirbotLicense),
+		ResellerApiEnabled:            vals.ResellerApiSecret != "",
+		ResellerApiSecret:             maskedPtr(vals.ResellerApiSecret),
+		ResellerApiUrl:                plainPtr(vals.ResellerApiUrl),
+		ResellerApiLicense:            maskedPtr(vals.ResellerApiLicense),
 		TelegramEnabled:          vals.TelegramAPIToken != "",
 		TelegramAPIToken:         maskedPtr(vals.TelegramAPIToken),
 		TelegramAdminIDs:         vals.TelegramAdminIDs,
@@ -123,9 +123,9 @@ func (h *Handler) handleUpdateIntegrationSettings(c *gin.Context) {
 	}
 
 	params := generated.UpdateIntegrationSettingsParams{
-		KirbotSecret:             current.KirbotSecret,
-		KirbotUrl:                current.KirbotUrl,
-		KirbotLicense:            current.KirbotLicense,
+		ResellerApiSecret:             current.ResellerApiSecret,
+		ResellerApiUrl:                current.ResellerApiUrl,
+		ResellerApiLicense:            current.ResellerApiLicense,
 		TelegramApiToken:         current.TelegramApiToken,
 		TelegramAdminIds:         current.TelegramAdminIds,
 		TelegramProxyUrl:         current.TelegramProxyUrl,
@@ -137,29 +137,29 @@ func (h *Handler) handleUpdateIntegrationSettings(c *gin.Context) {
 		DiscordWebhookUrl:        current.DiscordWebhookUrl,
 	}
 
-	if raw, ok := body["kirbot_secret"]; ok {
+	if raw, ok := body["reseller_api_secret"]; ok {
 		var v *string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid kirbot_secret"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid reseller_api_secret"})
 			return
 		}
-		params.KirbotSecret = textFromPtr(v)
+		params.ResellerApiSecret = textFromPtr(v)
 	}
-	if raw, ok := body["kirbot_url"]; ok {
+	if raw, ok := body["reseller_api_url"]; ok {
 		var v *string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid kirbot_url"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid reseller_api_url"})
 			return
 		}
-		params.KirbotUrl = textFromPtr(v)
+		params.ResellerApiUrl = textFromPtr(v)
 	}
-	if raw, ok := body["kirbot_license"]; ok {
+	if raw, ok := body["reseller_api_license"]; ok {
 		var v *string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid kirbot_license"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "invalid reseller_api_license"})
 			return
 		}
-		params.KirbotLicense = textFromPtr(v)
+		params.ResellerApiLicense = textFromPtr(v)
 	}
 	if raw, ok := body["telegram_api_token"]; ok {
 		var v *string

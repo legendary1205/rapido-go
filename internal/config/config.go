@@ -101,9 +101,9 @@ type Config struct {
 
 	// --- Integration env defaults (overridable per-row via PUT
 	// /api/settings/integrations - see internal/integrationsettings) ---
-	KirbotSecret  string
-	KirbotURL     string
-	KirbotLicense string
+	ResellerApiSecret  string
+	ResellerApiUrl     string
+	ResellerApiLicense string
 
 	TelegramAPIToken         string
 	TelegramAdminIDs         []int64
@@ -154,9 +154,9 @@ func Load() (*Config, error) {
 		DashboardDir:                  getEnv("DASHBOARD_DIR", "./web/dist"),
 		BackupDir:                     getEnv("BACKUP_DIR", "./db_backups"),
 
-		KirbotSecret:  getEnv("KIRBOT_SECRET", ""),
-		KirbotURL:     getEnv("KIRBOT_URL", "http://127.0.0.1:8080"),
-		KirbotLicense: getEnv("KIRBOT_LICENSE", ""),
+		ResellerApiSecret:  getEnv("RESELLER_API_SECRET", ""),
+		ResellerApiUrl:     getEnv("RESELLER_API_URL", "http://127.0.0.1:8080"),
+		ResellerApiLicense: getEnv("RESELLER_API_LICENSE", ""),
 
 		TelegramAPIToken:         getEnv("TELEGRAM_API_TOKEN", ""),
 		TelegramAdminIDs:         parseInt64CSV(getEnv("TELEGRAM_ADMIN_ID", "")),

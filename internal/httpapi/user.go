@@ -17,7 +17,7 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
-	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/subscription"
@@ -157,12 +157,12 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 		return
 	}
 
-	// KirBot per-admin active-user cap (app/kirbot/manager.py's get_users_limit,
+	// the reseller API per-admin active-user cap (app/resellerapi/manager.py's get_users_limit,
 	// enforced the same way as app/routers/user.py's add_user): only checked
 	// for non-sudo admins, and only if the bot actually returns a limit - a
 	// disabled/unreachable bot or an uncapped reseller never blocks creation.
 	if !identity.IsSudo {
-		if ok := h.enforceKirbotUserLimit(c, identity.Username, identity.AdminID); !ok {
+		if ok := h.enforceResellerAPIUserLimit(c, identity.Username, identity.AdminID); !ok {
 			return
 		}
 	}
@@ -447,12 +447,12 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// KirBot per-admin active-user cap, enforced only when this edit would
+	// the reseller API per-admin active-user cap, enforced only when this edit would
 	// reactivate a disabled user (app/routers/user.py's modify_user's exact
-	// 4-condition guard) - unlike Python, the HTTP call to KirBot itself is
+	// 4-condition guard) - unlike Python, the HTTP call to the reseller API itself is
 	// only made when this guard could possibly matter, not on every edit.
 	if !identity.IsSudo && dbuser.Status == statusDisabled && req.Status != nil && (*req.Status == statusActive || *req.Status == statusOnHold) {
-		if ok := h.enforceKirbotUserLimit(c, identity.Username, identity.AdminID); !ok {
+		if ok := h.enforceResellerAPIUserLimit(c, identity.Username, identity.AdminID); !ok {
 			return
 		}
 	}
@@ -1132,20 +1132,20 @@ func (h *Handler) resolveAdminRef(ctx context.Context, adminID pgtype.Int4) *rep
 	return &ref
 }
 
-// enforceKirbotUserLimit mirrors the shared guard in
-// app/routers/user.py's add_user/modify_user: ask KirBot for this admin's
+// enforceResellerAPIUserLimit mirrors the shared guard in
+// app/routers/user.py's add_user/modify_user: ask the reseller API for this admin's
 // active-user cap, and if it returns one, reject when the admin is already
 // at or over it. Returns false (response already written) when the request
 // should stop here.
-func (h *Handler) enforceKirbotUserLimit(c *gin.Context, adminUsername string, adminID int32) bool {
+func (h *Handler) enforceResellerAPIUserLimit(c *gin.Context, adminUsername string, adminID int32) bool {
 	ctx := c.Request.Context()
 	settings, _, err := h.resolveIntegrationSettings(c)
 	if err != nil {
 		// A settings-read failure here must not block user creation/editing -
-		// KirBot is advisory, not a hard dependency.
+		// the reseller API is advisory, not a hard dependency.
 		return true
 	}
-	limit := h.kirbot.GetUsersLimit(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, adminUsername)
+	limit := h.resellerapi.GetUsersLimit(ctx, resellerapi.Config{Secret: settings.ResellerApiSecret, URL: settings.ResellerApiUrl}, adminUsername)
 	if limit == nil {
 		return true
 	}

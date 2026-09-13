@@ -10,9 +10,9 @@ SELECT * FROM integration_settings ORDER BY id LIMIT 1;
 -- a column here can be explicitly cleared back to NULL, unlike UpdateAdmin's
 -- simpler "truthy overwrites" rule).
 UPDATE integration_settings SET
-    kirbot_secret = $1,
-    kirbot_url = $2,
-    kirbot_license = $3,
+    reseller_api_secret = $1,
+    reseller_api_url = $2,
+    reseller_api_license = $3,
     telegram_api_token = $4,
     telegram_admin_ids = $5,
     telegram_proxy_url = $6,

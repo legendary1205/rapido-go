@@ -86,7 +86,7 @@ Everything is env-var driven (`internal/config/config.go`), and the installer wr
 | `ALLOWED_ORIGINS` | `*` | CORS allow-list - lock this down in production. |
 | `XRAY_SUBSCRIPTION_URL_PREFIX` | *(relative)* | Prepended to `/sub/<token>` in generated links. |
 
-Telegram, Discord, webhook and KirBot settings exist as env vars too, but are also editable live from the dashboard's **Integrations** page, which overrides them.
+Telegram, Discord and webhook settings exist as env vars too, but are also editable live from the dashboard's **Integrations** page, which overrides them.
 
 Node settings are separate and almost always come from the setup blob; `NODE_LISTEN_ADDR` (`0.0.0.0:62051`) and `NODE_REPORT_INTERVAL_SECONDS` (`10`) are the only ones usually worth changing.
 

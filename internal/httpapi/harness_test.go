@@ -23,7 +23,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/discord"
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
-	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/telegram"
 )
@@ -87,12 +87,12 @@ func newTestRouterAndHandler(t testing.TB) (http.Handler, string, *Handler) {
 	issuer := auth.NewTokenIssuer(testSecret, time.Hour)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	// Real Dispatcher/kirbot.Client, same as production - with no test env
+	// Real Dispatcher/resellerapi.Client, same as production - with no test env
 	// vars and a freshly-reset (all-NULL) settings row, every method on
 	// both is a documented no-op (see internal/report/report_test.go), so
 	// existing tests get zero new outbound HTTP calls by default. A test
 	// that wants to exercise notifications sets TELEGRAM_*/DISCORD_*/
-	// KIRBOT_* via PUT /api/settings/integrations, typically pointing at a
+	// RESELLER_API_* via PUT /api/settings/integrations, typically pointing at a
 	// local httptest.Server.
 	envDefaults := integrationsettings.Values{}
 	settingsFn := func(ctx context.Context) (integrationsettings.Values, error) {
@@ -107,10 +107,10 @@ func newTestRouterAndHandler(t testing.TB) (http.Handler, string, *Handler) {
 		StatusChange: true, UserCreated: true, UserUpdated: true, UserDeleted: true,
 		UserDataUsedReset: true, UserSubRevoked: true, Login: true,
 	}, settingsFn, telegram.NewSender(notifyHTTPClient, ""), discord.NewSender(notifyHTTPClient), logger)
-	kirbotClient := kirbot.NewClient(&http.Client{Timeout: 5 * time.Second})
+	resellerAPIClient := resellerapi.NewClient(&http.Client{Timeout: 5 * time.Second})
 
 	handler := NewHandler(store, issuer, testSudoUsername, testSudoPassword, testSecret, "203.0.113.1", "", "", "", SubscriptionFormatFlags{}, SubscriptionBranding{},
-		envDefaults, dispatcher, kirbotClient, nil, hostmetrics.NewPreviousTracker(),
+		envDefaults, dispatcher, resellerAPIClient, nil, hostmetrics.NewPreviousTracker(),
 		os.Getenv("TEST_DATABASE_URL"), t.TempDir(), 5, logger)
 	router := NewRouter(handler, logger, []string{"*"})
 
@@ -170,7 +170,7 @@ func truncateAll(t testing.TB, pool *pgxpool.Pool) {
 func resetIntegrationSettings(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `UPDATE integration_settings SET
-		kirbot_secret = NULL, kirbot_url = NULL, kirbot_license = NULL,
+		reseller_api_secret = NULL, reseller_api_url = NULL, reseller_api_license = NULL,
 		telegram_api_token = NULL, telegram_admin_ids = NULL, telegram_proxy_url = NULL,
 		telegram_logger_channel_id = NULL, telegram_logger_topic_id = NULL, telegram_default_vless_flow = NULL,
 		webhook_addresses = NULL, webhook_secret = NULL, discord_webhook_url = NULL, updated_at = NULL`)

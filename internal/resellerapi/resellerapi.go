@@ -1,5 +1,5 @@
-// Package kirbot is an HTTP client for an external reseller/wallet-management
-// bot (panel -> bot, one-way; see app/kirbot/manager.py for the current
+// Package resellerapi is an HTTP client for an external reseller/wallet-management
+// bot (panel -> bot, one-way; see app/resellerapi/manager.py for the current
 // Python implementation this ports). Two of its three Python duties are
 // ported here: GetConfigs (inbound filtering per reseller) and
 // GetUsersLimit (per-admin active-user cap).
@@ -9,7 +9,7 @@
 // yet - Phase 3's Go node agent has no stats-reporting endpoint, and no
 // record_user_usages-equivalent job exists. This is a real, flagged gap,
 // not a stub returning fake numbers.
-package kirbot
+package resellerapi
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ type Config struct {
 	URL    string
 }
 
-// Enabled mirrors Kirbot.is_enabled(): an unset secret means no bot, so
+// Enabled mirrors ResellerAPI.is_enabled(): an unset secret means no bot, so
 // every method below returns immediately with no outbound request at all.
 func (c Config) Enabled() bool {
 	return c.Secret != ""
@@ -45,7 +45,7 @@ func NewClient(httpClient *http.Client) *Client {
 	return &Client{httpClient: httpClient}
 }
 
-// GetConfigs mirrors Kirbot.get_configs: POSTs configs (protocol -> tags) to
+// GetConfigs mirrors ResellerAPI.get_configs: POSTs configs (protocol -> tags) to
 // {url}/api/subscriptions/{secret}/{username}/configs and returns the
 // filtered result. Returns nil on a disabled bot, any network/HTTP/decode
 // error, or a non-2xx response - advisory only, never blocks or fails the
@@ -81,7 +81,7 @@ func (c *Client) GetConfigs(ctx context.Context, cfg Config, username string, co
 	return filtered
 }
 
-// GetUsersLimit mirrors Kirbot.get_users_limit: GETs
+// GetUsersLimit mirrors ResellerAPI.get_users_limit: GETs
 // {url}/api/subscriptions/{secret}/{username}/users_limit, expecting
 // {"users_limit": N}. Returns nil (uncapped/unknown) on a disabled bot, any
 // network/HTTP/decode error, or when the field is absent/null.

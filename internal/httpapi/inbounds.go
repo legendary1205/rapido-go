@@ -12,7 +12,7 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
-	"github.com/legendary1205/rapido-go/internal/kirbot"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 )
 
 // handleListInbounds implements GET /api/inbounds, grouped by protocol like
@@ -58,16 +58,16 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 		tagsByProtocol[r.Protocol] = append(tagsByProtocol[r.Protocol], r.Tag)
 	}
 
-	// KirBot inbound filtering (app/kirbot/manager.py's get_configs, called
+	// the reseller API inbound filtering (app/resellerapi/manager.py's get_configs, called
 	// from app/routers/system.py's get_inbounds): a reseller only sees the
 	// inbounds their external bot allows. Sudo always sees everything -
-	// KirBot is never even called for a sudo admin. It filters tags, so it
+	// the reseller API is never even called for a sudo admin. It filters tags, so it
 	// runs on the tag map and the result is expanded back into objects.
 	identity := auth.CurrentIdentity(c)
 	if !identity.IsSudo {
 		settings, _, err := h.resolveIntegrationSettings(c)
 		if err == nil {
-			if filtered := h.kirbot.GetConfigs(ctx, kirbot.Config{Secret: settings.KirbotSecret, URL: settings.KirbotURL}, identity.Username, tagsByProtocol); len(filtered) > 0 {
+			if filtered := h.resellerapi.GetConfigs(ctx, resellerapi.Config{Secret: settings.ResellerApiSecret, URL: settings.ResellerApiUrl}, identity.Username, tagsByProtocol); len(filtered) > 0 {
 				tagsByProtocol = filtered
 			}
 		}
@@ -81,7 +81,7 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 				entries = append(entries, entry)
 				continue
 			}
-			// A tag KirBot returned that this panel doesn't have: keep it
+			// A tag the reseller API returned that this panel doesn't have: keep it
 			// visible rather than dropping it silently, with the protocol
 			// it was filed under.
 			entries = append(entries, proxyInboundDTO{Tag: tag, Protocol: protocol, Network: "tcp", TLS: "none"})
@@ -95,7 +95,7 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 // inboundDetailDTO is the full-fidelity shape a real "Inbounds" management
 // page needs (tag/protocol/network/security/reality fields) - deliberately
 // a NEW response shape on a NEW route rather than changing GET /api/inbounds
-// itself, which stays the simple map[protocol][]tag shape the KirBot
+// itself, which stays the simple map[protocol][]tag shape the the reseller API
 // filtering logic and InboundsPicker.tsx already depend on.
 type inboundDetailDTO struct {
 	Tag        string `json:"tag"`

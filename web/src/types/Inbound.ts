@@ -4,7 +4,7 @@
 // objects-with-metadata shape (tag/protocol/network/tls/port). Per the plan's
 // key fact #3, this makes inbound selection simpler than before: there is no
 // per-inbound metadata to display, only tags to check off. Still used as-is
-// by InboundsPicker.tsx (Users/User Templates forms) and by the KirBot
+// by InboundsPicker.tsx (Users/User Templates forms) and by the reseller-API
 // filtering logic server-side - the richer Inbound/InboundSyncEntry shapes
 // below are what the merged Xray Config page (rapido-ui/XrayConfigAdmin.tsx,
 // via types/XrayConfig.ts) works with instead.
