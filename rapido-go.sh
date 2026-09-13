@@ -8,50 +8,23 @@
 #
 #  Rapido-Go - installer and management CLI for the panel.
 #
-#  Install (this repository is private, so the very first fetch needs a
-#  token too - a plain `curl raw.githubusercontent.com` 404s on a private
-#  repo before this script ever gets a chance to run):
-#
-#    export RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope>
-#    bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
-#      -H "Accept: application/vnd.github.raw" \
-#      "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go.sh?ref=master") install
-#
-#  If this repository is ever made public, the plain form below also works
-#  and no token is needed for this first fetch:
+#  Install:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install
 #
-#  After installing, the command is available system-wide as `rapido-go`.
+#  Afterwards the command is available system-wide as `rapido-go`.
 #
 #  This script only ever touches Rapido-Go itself - its source, its .env,
 #  its Caddyfile and its containers. It never contains, prompts for or
-#  generates any third-party integration secret; those belong in .env on
-#  the operator's own machine.
+#  generates any third-party integration secret.
 #
 set -euo pipefail
 
 RAPIDO_GO_VERSION="1.0.0"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Private repository / private registry access
-#
-# LEAVE THIS EMPTY in any copy of this script you publish, share, or commit.
-# A token written here is readable by everyone who can read the file and by
-# everyone who runs it - publishing it is the same as publishing the token.
-#
-# If Rapido-Go's repository is private, pass the token in for the duration of
-# a single command instead, so it never lands on disk:
-#
+# Only needed for a PRIVATE fork, or private ghcr.io images - this
+# repository is public, so a normal install needs no token. Never hard-code
+# one here; pass it for a single command so it never lands on disk:
 #     RAPIDO_REPO_TOKEN=github_pat_xxx bash rapido-go.sh install
-#
-# The same token also authenticates the `ghcr.io` image pull (a fine-grained
-# token with read-only "Contents" on this repo already carries read:packages
-# on its own images) - no separate registry credential to manage.
-#
-# If you do choose to paste one into your own private copy, use a
-# fine-grained token limited to this one repository, and rotate it the
-# moment the file leaves your machine.
-# ─────────────────────────────────────────────────────────────────────────────
 RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
 
 # If the token was not passed in, take the one the install saved. Without
@@ -355,7 +328,7 @@ obtain_image() {
             ok "Image ready."
             return 0
         fi
-        warn "Could not pull the prebuilt image; building it here instead."
+        log "No prebuilt image available - building from source instead."
     fi
 
     log "Building the image (this takes a few minutes)..."
@@ -651,7 +624,7 @@ usage() {
     _u_row  "RAPIDO_GO_DATA_DIR"     "Where backups live (/var/lib/rapido-go)"
     _u_row  "RAPIDO_DOMAIN"          "Panel domain, to skip the prompt"
     _u_row  "RAPIDO_NO_FOLLOW=1"     "Do not tail the log after install/restart"
-    _u_row  "RAPIDO_REPO_TOKEN"      "GitHub token, if the repo is private"
+    _u_row  "RAPIDO_REPO_TOKEN"      "Only for a private fork or images"
     _u_row  "RAPIDO_REPO_BRANCH"     "Branch to install from (default: master)"
     _u_row  "RAPIDO_BUILD_LOCALLY=1" "Build here instead of pulling from ghcr.io"
     _u_join

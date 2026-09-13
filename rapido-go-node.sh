@@ -2,17 +2,7 @@
 #
 #  Rapido-Go Node - installer and management CLI.
 #
-#  Install (this repository is private, so the very first fetch needs a
-#  token too - a plain `curl raw.githubusercontent.com` 404s on a private
-#  repo before this script ever gets a chance to run):
-#
-#    export RAPIDO_REPO_TOKEN=<a token with repo + read:packages scope>
-#    bash <(curl -fsSL -H "Authorization: token $RAPIDO_REPO_TOKEN" \
-#      -H "Accept: application/vnd.github.raw" \
-#      "https://api.github.com/repos/legendary1205/rapido-go/contents/rapido-go-node.sh?ref=master") install
-#
-#  If this repository is ever made public, the plain form below also works
-#  and no token is needed for this first fetch:
+#  Install:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go-node.sh) install
 #
 #  Afterwards the command is available system-wide as `rapido-go-node`.
@@ -21,9 +11,8 @@ set -euo pipefail
 
 RAPIDO_GO_NODE_VERSION="1.0.0"
 
-# See the note in rapido-go.sh: leave empty in any copy you publish, and
-# pass the token for one command instead -
-# RAPIDO_REPO_TOKEN=xxx bash rapido-go-node.sh install
+# Only needed for a PRIVATE fork, or private ghcr.io images - this
+# repository is public, so a normal install needs no token.
 RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
 
 load_saved_token() {
@@ -505,7 +494,7 @@ ${C_BOLD}OTHER${C_RESET}
 ${C_BOLD}ENVIRONMENT${C_RESET}
   LISTEN_PORT               Node control port          (default: 62051)
   NODE_SETUP_BLOB           The one-time blob from the panel's Add Node screen
-  RAPIDO_REPO_TOKEN         GitHub token, if the repo is private
+  RAPIDO_REPO_TOKEN         Only for a private fork or images
   RAPIDO_BUILD_LOCALLY=1    Build the image here instead of pulling from ghcr.io
 
 EOF
