@@ -172,3 +172,41 @@ func TestMarshalJSONEmitsBareStruct(t *testing.T) {
 		t.Errorf("marshaled id = %v, want the original uuid", decoded["id"])
 	}
 }
+
+// TestStoredFlowIsNotCoercedToVision pins the difference between the two
+// entry points. The Vision coercion protects a WRITE (a client echoing an
+// empty flow must not downgrade a Vision user); applying it to a READ told
+// every node that a user stored with no flow uses Vision, and sing-box then
+// refused every client on a plain-VLESS panel with "flow mismatch".
+func TestStoredFlowIsNotCoercedToVision(t *testing.T) {
+	const stored = `{"id":"8d00d821-cc52-4d99-9efe-cfc78fbc97b3","flow":""}`
+
+	fromStored, err := FromStored(VLESS, []byte(stored))
+	if err != nil {
+		t.Fatalf("FromStored: %v", err)
+	}
+	if got := fromStored.VLESS.Flow; got != FlowNone {
+		t.Errorf("FromStored flow = %q, want it left empty - the database is the truth on a read", got)
+	}
+
+	// The write path must still coerce, or an API client sending an explicit
+	// empty flow silently downgrades a Vision user.
+	fromWire, err := FromWire(VLESS, []byte(stored))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if got := fromWire.VLESS.Flow; got != FlowVision {
+		t.Errorf("FromWire flow = %q, want %q", got, FlowVision)
+	}
+
+	// A stored Vision user must keep Vision on a read - that is the whole
+	// fleet on the main panel, so this is the regression that would hurt.
+	visionStored := `{"id":"8d00d821-cc52-4d99-9efe-cfc78fbc97b3","flow":"xtls-rprx-vision"}`
+	keep, err := FromStored(VLESS, []byte(visionStored))
+	if err != nil {
+		t.Fatalf("FromStored(vision): %v", err)
+	}
+	if got := keep.VLESS.Flow; got != FlowVision {
+		t.Errorf("stored vision flow = %q, want it preserved", got)
+	}
+}

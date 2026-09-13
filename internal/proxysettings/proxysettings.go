@@ -112,6 +112,12 @@ func hasSettings(raw json.RawMessage) bool {
 // ProxySettings subclasses: a missing/empty id or password is generated,
 // never left blank.
 func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
+	return parse(proxyType, raw, true)
+}
+
+// parse does the work for both entry points. coerceVisionFlow separates
+// them: it belongs on the INPUT path only.
+func parse(proxyType ProxyType, raw json.RawMessage, coerceVisionFlow bool) (Settings, error) {
 	switch proxyType {
 	case VMess:
 		var s VMessSettings
@@ -142,7 +148,7 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 		// a client that copies the old dashboard's payload sends an
 		// explicit empty flow on every update, which would otherwise
 		// silently downgrade users away from Vision.
-		if s.Flow == FlowNone {
+		if coerceVisionFlow && s.Flow == FlowNone {
 			s.Flow = FlowVision
 		}
 		return Settings{Type: VLESS, VLESS: &s}, nil
@@ -181,8 +187,16 @@ func FromWire(proxyType ProxyType, raw json.RawMessage) (Settings, error) {
 
 // FromStored parses a Settings back out of the JSON already persisted in
 // proxies.settings - no defaulting, the row is assumed already valid.
+// FromStored reads what the database actually holds, WITHOUT the Vision
+// coercion above. That distinction is load-bearing: the coercion exists so
+// a client echoing back an empty flow cannot silently downgrade a Vision
+// user, which is about writes. Applying it to reads instead told every node
+// that users stored with no flow at all use Vision - and on a panel that
+// genuinely runs plain VLESS, sing-box then rejected every single client
+// with "flow mismatch: expected xtls-rprx-vision, but got none". Found on a
+// real migrated panel whose 1,563 users were all stored with flow "".
 func FromStored(proxyType ProxyType, raw []byte) (Settings, error) {
-	return FromWire(ProxyType(proxyType), raw)
+	return parse(ProxyType(proxyType), raw, false)
 }
 
 // MarshalJSON emits just the underlying typed struct (matching Python's
