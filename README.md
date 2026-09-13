@@ -62,6 +62,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/mast
 
 Paste the blob when it asks. That one value carries the certificate, key, CA, report secret and panel URL, so there is nothing else to configure.
 
+### Migrating from the Python panel
+
+If you are moving from the older Python/MySQL/Xray Rapido (or Marzban), run this **on the old panel server** once Rapido-Go is installed on the new one:
+
+```bash
+bash migrate-from-rapido.sh --target https://newpanel.example.com --user admin --pass '...'
+```
+
+It moves all three things a migration needs - the database, what each inbound actually is (only the live `xray_config.json` knows), and each host's real address and remark (only the old `hosts` table knows) - and never writes to the old panel, so you can run it as often as you like. Add `--dry-run` to export and report without pushing. Run it once more right before you move DNS: the old panel keeps taking writes until then.
+
 ### Configuration
 
 Everything is env-var driven (`internal/config/config.go`), and the installer writes a working `.env` for you. `DATABASE_URL` is the only required variable; the ones you are most likely to touch:
@@ -157,6 +167,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/mast
 ```
 
 وقتی پرسید، همان blob را بچسبانید. آن یک مقدار، گواهی و کلید و CA و رمز گزارش و آدرس پنل را با خودش دارد، پس چیز دیگری برای تنظیم نمی‌ماند.
+
+### مهاجرت از پنل پایتونی
+
+اگر از رپیدوی قدیمی (پایتون/MySQL/Xray) یا مرزبان مهاجرت می‌کنید، بعد از نصب رپیدو-گو روی سرور جدید، این را **روی سرور پنل قدیمی** اجرا کنید:
+
+```bash
+bash migrate-from-rapido.sh --target https://newpanel.example.com --user admin --pass '...'
+```
+
+هر سه چیزی را که یک مهاجرت لازم دارد منتقل می‌کند: دیتابیس، اینکه هر اینباند واقعاً چیست (فقط `xray_config.json` زنده این را می‌داند)، و آدرس و ریمارک واقعی هر هاست (فقط جدول `hosts` قدیمی این را می‌داند). روی پنل قدیمی چیزی نمی‌نویسد، پس هر چند بار که خواستید می‌توانید اجرایش کنید. با `--dry-run` فقط استخراج و گزارش می‌کند. درست قبل از جابه‌جایی دامنه یک بار دیگر اجرایش کنید، چون پنل قدیمی تا آن لحظه همچنان کاربر جدید می‌سازد.
 
 ### پیکربندی
 
