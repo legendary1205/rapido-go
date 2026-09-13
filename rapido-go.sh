@@ -86,11 +86,17 @@ BIN_PATH="/usr/local/bin/rapido-go"
 PANEL_IMAGE="ghcr.io/${REPO_OWNER}/rapido-go-panel"
 
 # ── output ───────────────────────────────────────────────────────────────────
+# These hold REAL escape bytes, not the literal text \033[... - printf would
+# expand either form, but usage() draws its box with plain string
+# arguments, and anything that is not printf (cat, echo without -e)
+# prints a backslash-033 literally instead of colouring it. Producing
+# the byte once, here, means every caller gets colour however it prints.
 if [ -t 1 ]; then
-    C_RESET='\033[0m'; C_DIM='\033[2m'; C_BOLD='\033[1m'
-    C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'; C_CYAN='\033[0;36m'
+    C_RESET=$(printf '\033[0m');   C_DIM=$(printf '\033[2m');    C_BOLD=$(printf '\033[1m')
+    C_RED=$(printf '\033[0;31m');  C_GREEN=$(printf '\033[0;32m'); C_YELLOW=$(printf '\033[0;33m')
+    C_BLUE=$(printf '\033[1;34m'); C_CYAN=$(printf '\033[0;36m')
 else
-    C_RESET=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''
+    C_RESET=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''
 fi
 
 log()  { printf "${C_CYAN}▶${C_RESET} %s\n" "$*"; }
@@ -579,49 +585,82 @@ cmd_version() {
     return 0
 }
 
+# ── help screen ──────────────────────────────────────────────────────────────
+# The box is drawn at a fixed 78 columns so the vertical rule stays straight
+# down the whole command table. Three numbers hold it together and must move
+# together if any of them changes: the left field is 25 wide, the right one
+# 46, and the borders below carry 27 and 48 dashes either side of their
+# junction (27 = 2 leading spaces + 25, 48 = 1 + 46 + 1).
+#
+# Every cell is passed to printf as an ARGUMENT, never as part of the format
+# string - one description contains a literal % (date +%F) that printf would
+# otherwise try to expand.
+_u_top()  { printf "${C_DIM}╭──────────────────────────────────────────────────────────────────────────────╮${C_RESET}\n"; }
+_u_mid()  { printf "${C_DIM}├───────────────────────────┬──────────────────────────────────────────────────┤${C_RESET}\n"; }
+_u_join() { printf "${C_DIM}├───────────────────────────┴──────────────────────────────────────────────────┤${C_RESET}\n"; }
+_u_end()  { printf "${C_DIM}╰──────────────────────────────────────────────────────────────────────────────╯${C_RESET}\n"; }
+
+# A full-width line (header and examples, where there is no second column).
+_u_wide() { printf "${C_DIM}│${C_RESET}  %-74s  ${C_DIM}│${C_RESET}\n" "$1"; }
+_u_blue() { printf "${C_DIM}│${C_RESET}  ${C_BLUE}%-74s${C_RESET}  ${C_DIM}│${C_RESET}\n" "$1"; }
+
+# A section heading: bold, left of the rule, nothing on the right.
+_u_head() { printf "${C_DIM}│${C_RESET}  ${C_BOLD}%-25s${C_RESET}${C_DIM}│${C_RESET} %-46s ${C_DIM}│${C_RESET}\n" "$1" ""; }
+
+# A command row: the command itself in blue, what it does in yellow.
+_u_row()  { printf "${C_DIM}│${C_RESET}  ${C_BLUE}%-25s${C_RESET}${C_DIM}│${C_RESET} ${C_YELLOW}%-46s${C_RESET} ${C_DIM}│${C_RESET}\n" "  $1" "$2"; }
+
+# An empty row - keeps the vertical rule unbroken between sections.
+_u_gap()  { printf "${C_DIM}│${C_RESET}  %-25s${C_DIM}│${C_RESET} %-46s ${C_DIM}│${C_RESET}\n" "" ""; }
+
 usage() {
     banner
-    cat <<EOF
-${C_BOLD}Rapido-Go${C_RESET} - a self-hosted proxy panel: users, resellers, nodes and
-subscriptions, with per-user traffic accounting.
+    _u_top
+    _u_wide "Rapido-Go $RAPIDO_GO_VERSION"
+    _u_wide "A self-hosted proxy panel: users, resellers, nodes and"
+    _u_wide "subscriptions, with per-user traffic accounting."
+    _u_wide ""
+    _u_wide "Usage:  rapido-go <command> [arguments]"
+    _u_mid
+    _u_head "SETUP"
+    _u_row  "install"   "Install Docker if needed, fetch and start"
+    _u_row  "update"    "Back up, fetch latest source, rebuild, restart"
+    _u_row  "uninstall" "Remove containers and source (backups kept)"
+    _u_gap
 
-${C_BOLD}USAGE${C_RESET}
-  rapido-go <command> [arguments]
+    _u_head "RUNNING"
+    _u_row  "up | down | restart" "Start, stop or restart the stack"
+    _u_row  "status"              "Show what is running"
+    _u_row  "logs [service]"      "Follow all logs, or one service"
+    _u_gap
 
-${C_BOLD}SETUP${C_RESET}
-  install                  Install Docker if needed, fetch, configure and start
-  update                   Back up, fetch the latest source, pull/rebuild and restart
-  uninstall                Remove the containers and source (backups are kept)
+    _u_head "DATA"
+    _u_row  "backup [file]"  "Dump the database to a .sql.gz file"
+    _u_row  "restore <file>" "Replace the database from a dump (asks first)"
+    _u_gap
 
-${C_BOLD}RUNNING${C_RESET}
-  up | down | restart      Start, stop or restart the stack
-  status                   Show what is running
-  logs [service]           Follow the logs of everything, or one service
+    _u_head "ADMIN"
+    _u_row  "edit-env" "Open .env in \$EDITOR"
+    _u_row  "version"  "Show the installed version"
+    _u_gap
 
-${C_BOLD}DATA${C_RESET}
-  backup [file]            Dump the database to a .sql.gz file
-  restore <file>           Replace the database from a dump (asks first)
+    _u_head "ENVIRONMENT"
+    _u_row  "RAPIDO_GO_APP_DIR"      "Where the source lives (/opt/rapido-go)"
+    _u_row  "RAPIDO_GO_DATA_DIR"     "Where backups live (/var/lib/rapido-go)"
+    _u_row  "RAPIDO_DOMAIN"          "Panel domain, to skip the prompt"
+    _u_row  "RAPIDO_NO_FOLLOW=1"     "Do not tail the log after install/restart"
+    _u_row  "RAPIDO_REPO_TOKEN"      "GitHub token, if the repo is private"
+    _u_row  "RAPIDO_REPO_BRANCH"     "Branch to install from (default: master)"
+    _u_row  "RAPIDO_BUILD_LOCALLY=1" "Build here instead of pulling from ghcr.io"
+    _u_join
 
-${C_BOLD}ADMIN${C_RESET}
-  edit-env                 Open .env in \$EDITOR
-  version                  Show the installed version
-
-${C_BOLD}ENVIRONMENT${C_RESET}
-  RAPIDO_GO_APP_DIR         Where the source lives          (default: /opt/rapido-go)
-  RAPIDO_GO_DATA_DIR        Where backups live               (default: /var/lib/rapido-go)
-  RAPIDO_DOMAIN             Panel domain, to skip the prompt
-  RAPIDO_NO_FOLLOW=1        Do not tail the log after install/restart
-  RAPIDO_REPO_TOKEN         GitHub token, if the repo is private
-  RAPIDO_REPO_BRANCH        Branch to install from           (default: master)
-  RAPIDO_BUILD_LOCALLY=1    Build the image here instead of pulling from ghcr.io
-
-${C_BOLD}EXAMPLES${C_RESET}
-  rapido-go install
-  RAPIDO_DOMAIN=panel.example.com rapido-go install
-  rapido-go logs panel
-  rapido-go backup /root/rapido-go-\$(date +%F).sql.gz
-
-EOF
+    _u_wide "EXAMPLES"
+    _u_blue "  rapido-go install"
+    _u_blue "  RAPIDO_DOMAIN=panel.example.com rapido-go install"
+    _u_blue "  rapido-go logs panel"
+    _u_blue "  rapido-go backup /root/rapido-go-\$(date +%F).sql.gz"
+    _u_end
+    printf "\n"
 }
 
 main() {
