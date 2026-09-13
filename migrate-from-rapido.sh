@@ -298,6 +298,37 @@ PY
     echo "$res" | grep -q '"applied":true' || die "Xray import failed: $res"
     printf "     %s\n" "$res"
 
+    # The database dump faithfully carries inbound rows that the live Xray
+    # config abandoned long ago (a protocol the fleet stopped using, a tag
+    # renamed years back). Left in place they show up in the dashboard as
+    # real inbounds and their hosts land in customers' clients as dead
+    # entries - and they collide with the unique priorities set below.
+    log "Removing inbounds the live Xray config no longer has..."
+    local live removed=0 tag
+    live=$(python3 -c "
+import json,sys
+print(' '.join(i.get('tag','') for i in json.load(open(sys.argv[1], encoding='utf-8')).get('inbounds',[])))
+" "$XRAY_FILE")
+    # GET /api/inbounds is keyed by PROTOCOL, each value a list of inbound
+    # objects - the tags are inside those, not in the dict's keys. Reading
+    # the keys as tags silently compared "vless" against the real tag list
+    # and so removed nothing at all.
+    for tag in $(api GET "/api/inbounds" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+items=[x for v in d.values() for x in v] if isinstance(d,dict) else d
+tags=[x.get('tag') if isinstance(x,dict) else x for x in items]
+print(' '.join(t.replace(' ','%20') for t in tags if t))
+" 2>/dev/null); do
+        local plain="${tag//\%20/ }"
+        case " $live " in
+            *" $plain "*) ;;
+            *) api DELETE "/api/inbounds/$tag" >/dev/null 2>&1 && { removed=$((removed+1)); printf "     removed stale inbound: %s
+" "$plain"; } ;;
+        esac
+    done
+    [ "$removed" -eq 0 ] && ok "No stale inbounds." || ok "$removed stale inbound(s) removed."
+
     log "3/3  Restoring the real host addresses and remarks..."
     res=$(api PUT "/api/hosts" -H "Content-Type: application/json" --data-binary "@$HOSTS_FILE")
     echo "$res" | grep -q '"detail"' && die "Host import failed: $res"
