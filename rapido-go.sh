@@ -32,16 +32,16 @@ RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
 # username prompt, and an update that cannot run unattended is an update
 # that does not happen.
 load_saved_token() {
-    [ -n "$RAPIDO_REPO_TOKEN" ] && return
-    [ -f "$APP_DIR/.env" ] || return
+    [ -n "$RAPIDO_REPO_TOKEN" ] && return 0
+    [ -f "$APP_DIR/.env" ] || return 0
     RAPIDO_REPO_TOKEN="$(grep -E '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" 2>/dev/null \
         | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 }
 
 save_token() {
-    [ -n "$RAPIDO_REPO_TOKEN" ] || return
-    [ -f "$APP_DIR/.env" ] || return
-    grep -qE '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" && return
+    [ -n "$RAPIDO_REPO_TOKEN" ] || return 0
+    [ -f "$APP_DIR/.env" ] || return 0
+    grep -qE '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" && return 0
     printf '\n# Used to fetch updates from the private repository and pull\n# private images from ghcr.io.\nRAPIDO_REPO_TOKEN="%s"\n' \
         "$RAPIDO_REPO_TOKEN" >> "$APP_DIR/.env"
     chmod 600 "$APP_DIR/.env"

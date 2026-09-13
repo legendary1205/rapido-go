@@ -10,6 +10,16 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  installer-scripts:
+    # The installer is shipped by curl, not by the image, so nothing else in
+    # this pipeline would ever catch a break in it. See scripts/installer_test.sh
+    # for the specific failure this guards.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n rapido-go.sh && bash -n rapido-go-node.sh && bash -n migrate-from-rapido.sh
+      - run: bash scripts/installer_test.sh
+
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
