@@ -589,8 +589,10 @@ cmd_version() {
 # The box is drawn at a fixed 78 columns so the vertical rule stays straight
 # down the whole command table. Three numbers hold it together and must move
 # together if any of them changes: the left field is 25 wide, the right one
-# 46, and the borders below carry 27 and 48 dashes either side of their
-# junction (27 = 2 leading spaces + 25, 48 = 1 + 46 + 1).
+# 48, and the borders below carry 27 and 50 dashes either side of their
+# junction. They are generated from those numbers, not counted by hand -
+# an earlier version had 80-wide borders around 78-wide rows because the
+# dashes were typed out and miscounted.
 #
 # Every cell is passed to printf as an ARGUMENT, never as part of the format
 # string - one description contains a literal % (date +%F) that printf would
@@ -605,13 +607,13 @@ _u_wide() { printf "${C_DIM}│${C_RESET}  %-74s  ${C_DIM}│${C_RESET}\n" "$1";
 _u_blue() { printf "${C_DIM}│${C_RESET}  ${C_BLUE}%-74s${C_RESET}  ${C_DIM}│${C_RESET}\n" "$1"; }
 
 # A section heading: bold, left of the rule, nothing on the right.
-_u_head() { printf "${C_DIM}│${C_RESET}  ${C_BOLD}%-25s${C_RESET}${C_DIM}│${C_RESET} %-46s ${C_DIM}│${C_RESET}\n" "$1" ""; }
+_u_head() { printf "${C_DIM}│${C_RESET}  ${C_BOLD}%-25s${C_RESET}${C_DIM}│${C_RESET} %-48s ${C_DIM}│${C_RESET}\n" "$1" ""; }
 
 # A command row: the command itself in blue, what it does in yellow.
-_u_row()  { printf "${C_DIM}│${C_RESET}  ${C_BLUE}%-25s${C_RESET}${C_DIM}│${C_RESET} ${C_YELLOW}%-46s${C_RESET} ${C_DIM}│${C_RESET}\n" "  $1" "$2"; }
+_u_row()  { printf "${C_DIM}│${C_RESET}  ${C_BLUE}%-25s${C_RESET}${C_DIM}│${C_RESET} ${C_YELLOW}%-48s${C_RESET} ${C_DIM}│${C_RESET}\n" "  $1" "$2"; }
 
 # An empty row - keeps the vertical rule unbroken between sections.
-_u_gap()  { printf "${C_DIM}│${C_RESET}  %-25s${C_DIM}│${C_RESET} %-46s ${C_DIM}│${C_RESET}\n" "" ""; }
+_u_gap()  { printf "${C_DIM}│${C_RESET}  %-25s${C_DIM}│${C_RESET} %-48s ${C_DIM}│${C_RESET}\n" "" ""; }
 
 usage() {
     banner
