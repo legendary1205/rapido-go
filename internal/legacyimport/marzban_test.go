@@ -265,3 +265,41 @@ func TestFromMarzbanMySQLDumpRealSample(t *testing.T) {
 		t.Logf("warning: %s", w)
 	}
 }
+
+// TestMarzbanImportCarriesTheSubscriptionSigningKey pins the one thing that
+// decides whether a migration is invisible to customers or hands every
+// single one of them a dead link: the source panel's signing key. A
+// subscription token is an HMAC over "<username>,<ts>" with that key, so a
+// panel that keeps its own freshly generated key 404s every /sub/<token>
+// URL already installed in a client app.
+func TestMarzbanImportCarriesTheSubscriptionSigningKey(t *testing.T) {
+	// A double-quoted literal, not a raw one, so the backticks a real
+	// mysqldump puts around identifiers can appear verbatim.
+	const dumpSQL = "CREATE TABLE `jwt` (\n" +
+		"  `id` int NOT NULL AUTO_INCREMENT,\n" +
+		"  `secret_key` varchar(64) NOT NULL,\n" +
+		"  PRIMARY KEY (`id`)\n" +
+		") ENGINE=InnoDB;\n" +
+		"INSERT INTO `jwt` VALUES (1,'1d1dd973586250eb49b2af8a0ea541e7b5da0d1a0b95d70fc952772490597e98');\n"
+
+	dump, err := ParseMySQLDump(strings.NewReader(dumpSQL))
+	if err != nil {
+		t.Fatalf("ParseMySQLDump: %v", err)
+	}
+	const want = "1d1dd973586250eb49b2af8a0ea541e7b5da0d1a0b95d70fc952772490597e98"
+	if got := FromMarzbanMySQLDump(dump).SubscriptionSecret; got != want {
+		t.Errorf("SubscriptionSecret = %q, want the source panel's key %q", got, want)
+	}
+}
+
+// A dump with no jwt table at all must leave the field empty rather than
+// invent a key - the caller uses "empty" to mean "keep this panel's own".
+func TestMarzbanImportWithoutAJWTTableCarriesNoKey(t *testing.T) {
+	dump, err := ParseMySQLDump(strings.NewReader("INSERT INTO `admins` VALUES (1,'a','h',0,NULL,NULL,NULL,NULL);\n"))
+	if err != nil {
+		t.Fatalf("ParseMySQLDump: %v", err)
+	}
+	if got := FromMarzbanMySQLDump(dump).SubscriptionSecret; got != "" {
+		t.Errorf("SubscriptionSecret = %q, want empty", got)
+	}
+}

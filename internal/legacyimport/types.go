@@ -16,6 +16,15 @@ type ImportedData struct {
 	Inbounds      []Inbound
 	NextPlans     []NextPlan
 
+	// SubscriptionSecret is the source panel's own signing key, empty when
+	// the dump has none. Carrying it over is what keeps every subscriber's
+	// EXISTING /sub/<token> link working after a migration: the token is
+	// an HMAC over "<username>,<ts>" with this key, so a panel that
+	// generates a fresh key instead silently invalidates every link already
+	// installed in a customer's client app - they all 404 and every single
+	// customer has to be handed a new URL.
+	SubscriptionSecret string
+
 	// Warnings surfaces anything the source panel had that couldn't be
 	// carried over faithfully (an unrecognized proxy type, a malformed
 	// JSON settings blob, a foreign key pointing at a row that turned out

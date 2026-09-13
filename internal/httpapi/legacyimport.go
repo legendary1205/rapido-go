@@ -181,6 +181,19 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 
 	warnings := append([]string{}, data.Warnings...)
 
+	// Adopt the source panel's signing key before anything else, so every
+	// subscription link already sitting in a customer's client app keeps
+	// validating. Skipped when the export carries no key (a Hiddify JSON
+	// export, or a dump taken without the jwt table) - this panel then
+	// keeps its own, and every subscriber needs a fresh link.
+	if data.SubscriptionSecret != "" {
+		if err := h.store.Queries.ReplaceJWTSecret(ctx, data.SubscriptionSecret); err != nil {
+			warnings = append(warnings, "could not adopt the source panel's subscription signing key - existing subscription links will not work: "+err.Error())
+		} else {
+			warnings = append(warnings, "adopted the source panel's subscription signing key, so existing subscription links keep working - RESTART the panel for it to take effect (rapido-go restart)")
+		}
+	}
+
 	adminIDMap := make(map[int64]int32, len(data.Admins))
 	for _, a := range data.Admins {
 		created, err := h.store.Queries.ImportAdmin(ctx, generated.ImportAdminParams{

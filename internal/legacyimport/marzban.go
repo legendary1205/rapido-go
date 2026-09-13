@@ -28,6 +28,18 @@ var marzbanProxyTypeMap = map[string]string{
 func FromMarzbanMySQLDump(dump *MySQLDump) ImportedData {
 	var out ImportedData
 
+	// Marzban keeps its signing key as the single row of the `jwt` table,
+	// stored as a 64-char hex string - the same shape rapido-go's
+	// jwt_secrets uses, so it transfers verbatim.
+	if rows, ok := dump.Row("jwt"); ok {
+		for _, r := range rows {
+			if v := optStringPtr(r, "secret_key"); v != nil && *v != "" {
+				out.SubscriptionSecret = *v
+				break
+			}
+		}
+	}
+
 	adminsByID := map[int64]struct{}{}
 	if rows, ok := dump.Row("admins"); ok {
 		for _, r := range rows {
