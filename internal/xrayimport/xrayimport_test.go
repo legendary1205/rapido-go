@@ -268,3 +268,50 @@ func TestParseXrayConfigRejectsEmptyConfig(t *testing.T) {
 		t.Error("expected an error for a config with no inbounds or outbounds at all")
 	}
 }
+
+// TestParseXrayConfigAcceptsInboundTagAsAStringOrAList pins both spellings
+// Xray itself accepts for a routing rule's inboundTag. Only the list form
+// used to parse, so a real panel whose rules each name one tag as a plain
+// string failed the entire import with a raw json unmarshal error and no
+// hint about which field was at fault.
+func TestParseXrayConfigAcceptsInboundTagAsAStringOrAList(t *testing.T) {
+	const asString = `{
+      "inbounds": [{"tag":"de","protocol":"vless","port":20000,
+        "streamSettings":{"network":"tcp","security":"none"},
+        "settings":{"clients":[]}}],
+      "outbounds": [{"tag":"de","protocol":"freedom"}],
+      "routing": {"rules":[{"type":"field","inboundTag":"de","outboundTag":"de"}]}
+    }`
+	const asList = `{
+      "inbounds": [{"tag":"de","protocol":"vless","port":20000,
+        "streamSettings":{"network":"tcp","security":"none"},
+        "settings":{"clients":[]}}],
+      "outbounds": [{"tag":"de","protocol":"freedom"}],
+      "routing": {"rules":[{"type":"field","inboundTag":["de"],"outboundTag":"de"}]}
+    }`
+
+	fromString, err := ParseXrayConfig([]byte(asString))
+	if err != nil {
+		t.Fatalf("inboundTag as a bare string should parse: %v", err)
+	}
+	fromList, err := ParseXrayConfig([]byte(asList))
+	if err != nil {
+		t.Fatalf("inboundTag as a list should parse: %v", err)
+	}
+
+	if len(fromString.RoutingRules) != 1 || len(fromList.RoutingRules) != 1 {
+		t.Fatalf("rules: string form gave %d, list form gave %d, want 1 each",
+			len(fromString.RoutingRules), len(fromList.RoutingRules))
+	}
+	gotString := fromString.RoutingRules[0].Inbound
+	gotList := fromList.RoutingRules[0].Inbound
+	if len(gotString) != 1 || len(gotList) != 1 || gotString[0] != gotList[0] {
+		t.Errorf("the two spellings produced different rules: %v vs %v", gotString, gotList)
+	}
+	if len(gotString) == 1 && gotString[0] != "de" {
+		t.Errorf("inbound tag = %q, want de", gotString[0])
+	}
+	if fromString.RoutingRules[0].OutboundTag != "de" {
+		t.Errorf("outbound tag = %q, want de", fromString.RoutingRules[0].OutboundTag)
+	}
+}

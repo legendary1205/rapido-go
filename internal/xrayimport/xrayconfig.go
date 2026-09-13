@@ -1,6 +1,9 @@
 package xrayimport
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // The structs below mirror Xray-core's own real config JSON shape (not
 // this codebase's own DTOs) - deliberately permissive (most fields
@@ -131,7 +134,38 @@ type xrayRouting struct {
 
 type xrayRoutingRule struct {
 	Type        string          `json:"type"`
-	InboundTag  []string        `json:"inboundTag"`
+	InboundTag  stringOrList    `json:"inboundTag"`
 	LocalPort   json.RawMessage `json:"localPort"`
 	OutboundTag string          `json:"outboundTag"`
+}
+
+// stringOrList accepts either form Xray itself accepts for a routing rule's
+// inboundTag: a bare string for one tag, or an array for several. Only the
+// array form was handled before, so importing a config written the other way
+// failed the whole import with a raw json unmarshal error - and a
+// single-tag-per-rule config is the normal shape for a per-node panel, not
+// an exotic one (found on a real customer panel whose five rules were all
+// written as plain strings).
+type stringOrList []string
+
+func (s *stringOrList) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*s = nil
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var one string
+		if err := json.Unmarshal(trimmed, &one); err != nil {
+			return err
+		}
+		*s = stringOrList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(trimmed, &many); err != nil {
+		return err
+	}
+	*s = stringOrList(many)
+	return nil
 }

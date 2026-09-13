@@ -89,11 +89,22 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found (used to read the X
 # "marzban", "rapido", one container or three, across the installs this has
 # to handle.
 discover() {
+    # Identify the old panel by what it IS, not what it is called. Matching
+    # on the name finds the wrong container the moment Rapido-Go is
+    # installed on this same server (its own caddy/panel/backend all match
+    # "rapido" too) - which is the normal case for an in-place migration.
+    # The Python panel is the only container carrying XRAY_JSON or
+    # SQLALCHEMY_DATABASE_URL in its environment.
     if [ -z "$PANEL_CONTAINER" ]; then
-        PANEL_CONTAINER=$(docker ps --format '{{.Names}}' \
-            | grep -iE '(rapido|marzban)' | grep -viE 'mysql|node|phpmyadmin|nats' | head -1 || true)
+        local c
+        for c in $(docker ps --format '{{.Names}}'); do
+            if docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+                 | grep -qE '^(XRAY_JSON|SQLALCHEMY_DATABASE_URL)='; then
+                PANEL_CONTAINER="$c"; break
+            fi
+        done
     fi
-    [ -n "$PANEL_CONTAINER" ] || die "Could not find the old panel container - pass --panel NAME."
+    [ -n "$PANEL_CONTAINER" ] || die "Could not find the old Python panel container - pass --panel NAME."
 
     if [ -z "$MYSQL_CONTAINER" ]; then
         MYSQL_CONTAINER=$(docker ps --format '{{.Names}}' | grep -iE 'mysql|mariadb' | head -1 || true)
@@ -102,7 +113,7 @@ discover() {
 
     if [ -z "$DB_NAME" ]; then
         DB_NAME=$(docker inspect "$PANEL_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-            | sed -n 's#^SQLALCHEMY_DATABASE_URL=.*/\([A-Za-z0-9_]*\).*#\1#p' | head -1)
+        | sed -n 's#^SQLALCHEMY_DATABASE_URL=.*/\([A-Za-z0-9_]*\).*#\1#p' | head -1 || true)
     fi
     [ -n "$DB_NAME" ] || DB_NAME="rapido"
 
