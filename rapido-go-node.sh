@@ -18,8 +18,12 @@ RAPIDO_REPO_TOKEN="${RAPIDO_REPO_TOKEN:-}"
 load_saved_token() {
     [ -n "$RAPIDO_REPO_TOKEN" ] && return 0
     [ -f "$APP_DIR/.env" ] || return 0
+    # `|| true` is load-bearing, not defensive noise: with `pipefail`, a
+    # grep that simply finds nothing (the normal case - no token on a
+    # public install) fails the whole pipeline, the assignment inherits
+    # that status, and `set -e` kills the installer mid-run, silently.
     RAPIDO_REPO_TOKEN="$(grep -E '^RAPIDO_REPO_TOKEN=' "$APP_DIR/.env" 2>/dev/null \
-        | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+        | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
 }
 
 save_token() {
