@@ -47,9 +47,13 @@ BIN_PATH="/usr/local/bin/rapido-go-node"
 NODE_IMAGE="ghcr.io/${REPO_OWNER}/rapido-go-node"
 LISTEN_PORT="${LISTEN_PORT:-62051}"
 
+# Real escape bytes, not the literal text - printf expands either, but
+# usage() prints through `cat`, which does not, and would show [1m
+# verbatim. Producing the byte once here fixes every caller at once.
 if [ -t 1 ]; then
-    C_RESET='\033[0m'; C_DIM='\033[2m'; C_BOLD='\033[1m'
-    C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'; C_CYAN='\033[0;36m'
+    C_RESET=$(printf '\033[0m');  C_DIM=$(printf '\033[2m');    C_BOLD=$(printf '\033[1m')
+    C_RED=$(printf '\033[0;31m'); C_GREEN=$(printf '\033[0;32m'); C_YELLOW=$(printf '\033[0;33m')
+    C_CYAN=$(printf '\033[0;36m')
 else
     C_RESET=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''
 fi
@@ -206,7 +210,7 @@ port_in_use() { ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
 prompt_port() {
     if [ -f "$APP_DIR/.env" ] && [ -z "${RAPIDO_GO_NODE_PORT_SET:-}" ]; then
         local from_env
-        from_env="$(grep -E '^LISTEN_PORT=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+        from_env="$(grep -E '^LISTEN_PORT=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
         [ -n "$from_env" ] && { LISTEN_PORT="$from_env"; ok "Using the port already in .env: $LISTEN_PORT"; return; }
     fi
     printf "\n${C_BOLD}Port${C_RESET}\n"
@@ -349,7 +353,7 @@ cmd_install() {
     fi
 
     local ip
-    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}' || true)"
     printf "\n${C_GREEN}${C_BOLD}Rapido-Go Node is running.${C_RESET}\n\n"
     printf "  If you have not already added it in the panel:\n"
     printf "    Nodes -> Add Node -> Address ${C_BOLD}%s${C_RESET}, Port ${C_BOLD}%s${C_RESET}\n\n" "$ip" "$LISTEN_PORT"
@@ -418,7 +422,7 @@ cmd_tunnels() {
     for f in $confs; do
         n=$(basename "$f" .conf)
         printf "  %-14s " "$n"
-        out=$(curl -fsS --max-time 20 --interface "$n" https://api.ipify.org 2>&1)
+        out=$(curl -fsS --max-time 20 --interface "$n" https://api.ipify.org 2>&1 || true)
         case "$out" in
             *[0-9].[0-9]*) printf "%s\n" "$out" ;;
             *) printf "${C_YELLOW}no answer${C_RESET}\n" ;;
@@ -443,13 +447,13 @@ cmd_update() {
 cmd_edit_env() {
     require_installed
     local before after
-    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1 || true)"
     "${EDITOR:-nano}" "$APP_DIR/.env"
-    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1 || true)"
     if [ "$before" != "$after" ]; then
         printf "\n"
         warn "Configuration changed. Apply it now? [Y/n] "
-        local answer; read -r answer
+        local answer; read -r answer || answer=""
         case "${answer:-y}" in
             [Nn]*) warn "Not applied. Run 'rapido-go-node restart' when ready." ;;
             *) cmd_restart ;;
@@ -464,7 +468,7 @@ cmd_uninstall() {
     warn "Certificates in $DATA_DIR are KEPT - deleting them would force you to"
     warn "re-add this node in the panel."
     printf "Type 'yes' to continue: "
-    local answer; read -r answer
+    local answer; read -r answer || answer=""
     [ "$answer" = "yes" ] || die "Aborted."
     compose down --remove-orphans || true
     rm -rf "$APP_DIR"

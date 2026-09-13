@@ -100,7 +100,11 @@ require_installed() { [ -d "$APP_DIR" ] || die "Rapido-Go is not installed at $A
 
 # ── prerequisites ────────────────────────────────────────────────────────────
 pkg_install() {
-    if   command -v apt-get >/dev/null 2>&1; then apt-get update -y >/dev/null && apt-get install -y "$@" >/dev/null
+    if   command -v apt-get >/dev/null 2>&1; then
+        # A failing `apt-get update` (one stale third-party list is enough)
+        # must not abort the install - only the install step itself matters.
+        apt-get update -y >/dev/null 2>&1 || true
+        apt-get install -y "$@" >/dev/null || die "Could not install: $*"
     elif command -v dnf     >/dev/null 2>&1; then dnf install -y "$@" >/dev/null
     elif command -v yum     >/dev/null 2>&1; then yum install -y "$@" >/dev/null
     else die "No supported package manager found (need apt-get, dnf or yum)."
@@ -121,8 +125,19 @@ ensure_prereqs() {
 # success even when the daemon is dead - `docker info` is the one that
 # actually talks to it.
 docker_ready() {
-    command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 \
-        && docker compose version >/dev/null 2>&1
+    command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+# Kept out of docker_ready deliberately: a healthy daemon with no compose
+# plugin used to fail that same check, so the installer sent the operator
+# off to debug a daemon that every suggested command reports as running.
+# The plugin is its own package and its own fix.
+ensure_compose() {
+    docker compose version >/dev/null 2>&1 && return 0
+    log "Installing the Docker Compose plugin..."
+    pkg_install docker-compose-plugin >/dev/null 2>&1 || true
+    docker compose version >/dev/null 2>&1 \
+        || die "Docker is running but the 'docker compose' plugin is missing and could not be installed (try: apt-get install docker-compose-plugin)."
 }
 
 ensure_docker() {
@@ -147,7 +162,10 @@ ensure_docker() {
     fi
 
     log "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh >/dev/null
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh \
+        || die "Could not download the Docker installer - check this server's outbound network."
+    sh /tmp/get-docker.sh >/dev/null || die "The Docker installer failed - see the output above."
+    rm -f /tmp/get-docker.sh
     systemctl enable --now docker >/dev/null 2>&1 || true
     sleep 3
     docker_ready || die "Docker installed but the daemon is not responding. Check: journalctl -u docker -n 30"
@@ -200,8 +218,8 @@ fetch_source() {
         # happens with no token at all - found by actually running an install
         # non-interactively over SSH, not assumed).
         GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth 1 --branch "$REPO_BRANCH" \
-            "$(repo_url)" "$APP_DIR" >/dev/null 2>&1 \
-            || die "Could not clone the repository. If it is private, set RAPIDO_REPO_TOKEN."
+            "$(repo_url)" "$APP_DIR" >/dev/null \
+            || die "Could not clone the repository (git's own reason is above). If $APP_DIR already exists from an interrupted install, remove it and retry."
         scrub_remote
     fi
     ok "Source ready ($(git -C "$APP_DIR" rev-parse --short HEAD))."
@@ -220,7 +238,7 @@ _valid_host() { printf '%s' "$1" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-
 prompt_domain() {
     if [ -f "$APP_DIR/.env" ] && [ -z "${RAPIDO_DOMAIN:-}" ]; then
         local from_env
-        from_env="$(grep -E '^RAPIDO_DOMAIN=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+        from_env="$(grep -E '^RAPIDO_DOMAIN=' "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
         if [ -n "$from_env" ]; then
             RAPIDO_DOMAIN="$from_env"
             ok "Using the domain already in $APP_DIR/.env: $RAPIDO_DOMAIN"
@@ -233,6 +251,10 @@ prompt_domain() {
     printf "  It must already point at this server - Caddy requests a real\n"
     printf "  certificate for it and that check is done by connecting to the\n"
     printf "  name over the internet.${C_RESET}\n\n"
+    # With no terminal, `read` returns instantly on EOF and the variable
+    # stays empty - the loop below would spin forever printing the prompt.
+    # A non-interactive install must say what to do, not hang.
+    [ -t 0 ] || die "No terminal to ask on - pass the domain instead: RAPIDO_DOMAIN=panel.example.com rapido-go install"
     while [ -z "${RAPIDO_DOMAIN:-}" ]; do
         printf "  Panel domain: "
         read -r RAPIDO_DOMAIN || RAPIDO_DOMAIN=""
@@ -267,7 +289,7 @@ EOF
 size_for_machine() {
     local cores ram_mb
     cores="$(nproc 2>/dev/null || echo 2)"
-    ram_mb="$(free -m 2>/dev/null | awk '/Mem:/{print $2}')"
+    ram_mb="$(free -m 2>/dev/null | awk '/Mem:/{print $2}' || true)"
     [ -n "$ram_mb" ] || ram_mb=2048
     log "This machine: ${cores} cores, ${ram_mb}MB RAM"
 }
@@ -282,7 +304,7 @@ generate_env() {
     local db_pass sudo_pass ip
     db_pass="$(random_secret)"
     sudo_pass="$(random_secret)"
-    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}' || true)"
     mkdir -p "$DATA_DIR"
 
     cat > "$env_file" <<EOF
@@ -408,6 +430,7 @@ verify_stack() {
     local want got missing=""
     want="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" config --services 2>/dev/null)"
     got="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" --env-file .env ps --services --filter status=running 2>/dev/null)"
+    [ -n "$want" ] || { err "Could not read the service list from the compose file."; return 1; }
     for svc in $want; do
         [ "$svc" = "migrate" ] && continue # exits 0 on purpose once done
         printf '%s\n' "$got" | grep -qx "$svc" || missing="$missing $svc"
@@ -432,6 +455,7 @@ cmd_install() {
     banner
     ensure_prereqs
     ensure_docker
+    ensure_compose
     fetch_source
     prompt_domain
     generate_env
@@ -447,6 +471,12 @@ cmd_install() {
 
     printf "\n${C_GREEN}${C_BOLD}Rapido-Go is installed.${C_RESET}\n\n"
     printf "  Panel    ${C_BOLD}https://%s/dashboard/${C_RESET}\n" "$RAPIDO_DOMAIN"
+    if [ -z "${ADMIN_PASSWORD:-}" ]; then
+        printf "  Username ${C_BOLD}admin${C_RESET}
+"
+        printf "  Password ${C_DIM}(already set - see SUDO_PASSWORD in %s/.env)${C_RESET}
+" "$APP_DIR"
+    fi
     if [ -n "${ADMIN_PASSWORD:-}" ]; then
         printf "  Username ${C_BOLD}admin${C_RESET}\n"
         printf "  Password ${C_BOLD}%s${C_RESET}\n" "$ADMIN_PASSWORD"
@@ -491,7 +521,7 @@ cmd_update() {
     restart_panel
     wait_healthy
     docker image prune -f >/dev/null 2>&1 || true
-    ls -1t "$DATA_DIR"/backup-*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+    ls -1t "$DATA_DIR"/backup-*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f || true
     verify_stack || die "The stack did not come back cleanly after the update."
     ok "Updated."
     follow_logs
@@ -502,8 +532,18 @@ cmd_backup() {
     local dest="${1:-$DATA_DIR/backup-$(date +%Y%m%d-%H%M%S).sql.gz}"
     mkdir -p "$(dirname "$dest")"
     log "Dumping the database to $dest..."
-    compose exec -T postgres sh -c 'exec pg_dump -U rapido rapido' | gzip > "$dest"
-    [ -s "$dest" ] || { rm -f "$dest"; die "Backup produced an empty file - nothing was written."; }
+    # Check the DUMP, not the file. gzip of a failed or empty pg_dump still
+    # writes a valid ~20-byte stream, so `[ -s "$dest" ]` is true and the
+    # old guard never fired - `rapido-go update` would then report a
+    # successful backup and go on to rebuild on top of nothing.
+    if ! compose exec -T postgres sh -c 'exec pg_dump -U rapido rapido' | gzip > "$dest"; then
+        rm -f "$dest"
+        die "pg_dump failed - nothing was written. Is the database up? (rapido-go status)"
+    fi
+    if ! gunzip -c "$dest" 2>/dev/null | head -c 1 | grep -q .; then
+        rm -f "$dest"
+        die "The backup came out empty - nothing was written."
+    fi
     ok "Backup written: $dest ($(du -h "$dest" | cut -f1))"
 }
 
@@ -515,7 +555,7 @@ cmd_restore() {
     [ -f "$src" ] || die "No such file: $src"
     warn "This REPLACES the current database with the contents of $src."
     printf "Type 'yes' to continue: "
-    local answer; read -r answer
+    local answer; read -r answer || answer=""
     [ "$answer" = "yes" ] || die "Aborted."
     # Panel/backend hold open connections that would fight a restore.
     compose stop panel backend
@@ -528,13 +568,13 @@ cmd_restore() {
 cmd_edit_env() {
     require_installed
     local before after
-    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    before="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1 || true)"
     "${EDITOR:-nano}" "$APP_DIR/.env"
-    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1)"
+    after="$(md5sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1 || true)"
     if [ "$before" != "$after" ]; then
         printf "\n"
         warn "Configuration changed. Apply it now? [Y/n] "
-        local answer; read -r answer
+        local answer; read -r answer || answer=""
         case "${answer:-y}" in
             [Nn]*) warn "Not applied. Run 'rapido-go restart' when ready." ;;
             *) cmd_restart ;;
@@ -548,7 +588,7 @@ cmd_uninstall() {
     warn "This stops and removes Rapido-Go's containers and its source at $APP_DIR."
     warn "Your data in $DATA_DIR (database backups) is KEPT."
     printf "Type 'yes' to continue: "
-    local answer; read -r answer
+    local answer; read -r answer || answer=""
     [ "$answer" = "yes" ] || die "Aborted."
     compose down --remove-orphans --volumes || true
     rm -rf "$APP_DIR"
@@ -649,7 +689,9 @@ main() {
         install)
             while [ $# -gt 0 ]; do
                 case "$1" in
-                    --domain) RAPIDO_DOMAIN="${2:-}"; shift 2 ;;
+                    --domain)
+                        [ $# -ge 2 ] || die "--domain needs a value, e.g. --domain panel.example.com"
+                        RAPIDO_DOMAIN="$2"; shift 2 ;;
                     *) die "Unknown option for install: $1" ;;
                 esac
             done
