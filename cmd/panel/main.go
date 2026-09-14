@@ -33,6 +33,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/httpapi"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
 	"github.com/legendary1205/rapido-go/internal/resellerapi"
+	"github.com/legendary1205/rapido-go/internal/resellerusagejob"
 	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/reviewjob"
 	"github.com/legendary1205/rapido-go/internal/telegram"
@@ -112,7 +113,10 @@ func run(logger *slog.Logger) error {
 	hostMetricsTracker := hostmetrics.NewPreviousTracker()
 
 	if cfg.Role == config.RoleBackend {
-		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, logger)
+		// Its own client: see internal/resellerusagejob for why a usage
+		// report must not share the 3s timeout of the per-request lookups.
+		usageReporter := resellerapi.NewClient(&http.Client{Timeout: 30 * time.Second})
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, usageReporter, settingsFn, logger)
 	}
 
 	formatFlags := httpapi.SubscriptionFormatFlags{
@@ -167,7 +171,7 @@ func run(logger *slog.Logger) error {
 // as long as its holding connection does, and a pool connection can be
 // silently recycled or closed at any time, which would release the lock
 // out from under this process without it noticing.
-func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, redisClient *cache.Client, logger *slog.Logger) {
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, redisClient *cache.Client, usageReporter *resellerapi.Client, settingsFn resellerusagejob.SettingsFunc, logger *slog.Logger) {
 	const retryInterval = 10 * time.Second
 	for {
 		select {
@@ -211,6 +215,9 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		// subscription fetch never waits on a network call to another
 		// panel - see internal/gatewayjob's own doc comment.
 		go gatewayjob.Run(ctx, queries, redisClient, logger, 2*time.Minute)
+		// Bills resellers through the reseller bot. Singleton-only so the
+		// same queued traffic is never sent by two processes at once.
+		go resellerusagejob.Run(ctx, queries, usageReporter, settingsFn, redisClient, logger, 10*time.Second)
 		reviewjob.Run(ctx, queries, dispatcher, redisClient, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -

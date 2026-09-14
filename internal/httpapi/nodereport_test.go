@@ -3,8 +3,13 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
+	"github.com/legendary1205/rapido-go/internal/resellerusagejob"
 )
 
 // createTestNode creates a node via the real admin API and returns its id
@@ -355,5 +360,130 @@ func TestGetNodesUsageReflectsPushedTraffic(t *testing.T) {
 	}
 	if total < 10000 {
 		t.Errorf("total uplink+downlink across all nodes = %d, want >= 10000", total)
+	}
+}
+
+// TestNodeReportQueuesResellerUsageAndTheJobBillsItExactlyOnce covers the
+// reseller bot's billing end to end against a real database: traffic is
+// queued only while the integration is configured, a report the bot rejects
+// stays queued, and an accepted one is never sent again.
+func TestNodeReportQueuesResellerUsageAndTheJobBillsItExactlyOnce(t *testing.T) {
+	router, token, h := newTestRouterAndHandler(t)
+	pool := testPool(t)
+	_, secret := createTestNode(t, router, token, "report-test-node-billing")
+
+	if resp := doRequest(t, router, "POST", "/api/admin", token, map[string]interface{}{
+		"username": "billed_reseller", "password": "SomePassword123", "is_sudo": false,
+	}); resp.Code != http.StatusOK {
+		t.Fatalf("create admin: %d %v", resp.Code, resp.Body)
+	}
+	resellerToken := loginAs(t, router, "billed_reseller", "SomePassword123")
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "VLESS TCP", "protocol": "vless"}})
+	doRequest(t, router, "POST", "/api/user", resellerToken, map[string]interface{}{
+		"username": "billed_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+
+	report := func(bytes int) {
+		t.Helper()
+		resp := doRequest(t, router, "POST", "/api/internal/node-report", secret, nodeReportPayload([]map[string]interface{}{
+			{"username": "billed_user", "uplink": bytes, "downlink": 0},
+		}))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("node report: %d %v", resp.Code, resp.Body)
+		}
+	}
+	queue := func() (pending, reported int64) {
+		t.Helper()
+		err := pool.QueryRow(context.Background(),
+			`SELECT COALESCE(sum(pending), 0), COALESCE(sum(reported), 0) FROM reseller_api_usage_queue`).Scan(&pending, &reported)
+		if err != nil {
+			t.Fatalf("query reseller_api_usage_queue: %v", err)
+		}
+		return pending, reported
+	}
+
+	// Not configured yet: users_usage grows, nothing is queued for billing.
+	report(1000)
+	if pending, reported := queue(); pending != 0 || reported != 0 {
+		t.Fatalf("queued before the integration was configured: pending=%d reported=%d", pending, reported)
+	}
+
+	var botDown atomic.Bool
+	bot := newCaptureServer(t, func(w http.ResponseWriter, body []byte) {
+		if botDown.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	if resp := doRequest(t, router, "PUT", "/api/settings/integrations", token, map[string]interface{}{
+		"reseller_api_secret": "test-secret", "reseller_api_url": bot.URL,
+	}); resp.Code != http.StatusOK {
+		t.Fatalf("configure reseller API: %d %v", resp.Code, resp.Body)
+	}
+
+	settings := func(ctx context.Context) (integrationsettings.Values, error) {
+		row, err := h.store.CachedGetIntegrationSettings(ctx)
+		if err != nil {
+			return integrationsettings.Values{}, err
+		}
+		return integrationsettings.Resolve(row, integrationsettings.Values{}), nil
+	}
+	reporter := resellerapi.NewClient(&http.Client{Timeout: 5 * time.Second})
+	tick := func() error {
+		return resellerusagejob.Tick(context.Background(), h.store.Queries, reporter, settings)
+	}
+
+	report(300)
+	report(200)
+	if pending, _ := queue(); pending != 500 {
+		t.Fatalf("pending = %d, want 500", pending)
+	}
+
+	if err := tick(); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	bodies := bot.bodies()
+	if len(bodies) != 1 || bodies[0] != `[{"username":"billed_reseller","usage":500}]` {
+		t.Fatalf("bot received %q, want one report of 500 bytes", bodies)
+	}
+	if pending, reported := queue(); pending != 0 || reported != 500 {
+		t.Fatalf("after delivery: pending=%d reported=%d, want 0/500", pending, reported)
+	}
+
+	if err := tick(); err != nil {
+		t.Fatalf("idle tick: %v", err)
+	}
+	if n := len(bot.bodies()); n != 1 {
+		t.Fatalf("an accepted report was sent again (%d requests)", n)
+	}
+
+	botDown.Store(true)
+	report(70)
+	if err := tick(); err == nil {
+		t.Fatal("tick against a failing bot returned no error")
+	}
+	if pending, reported := queue(); pending != 70 || reported != 500 {
+		t.Fatalf("after a rejected report: pending=%d reported=%d, want 70/500", pending, reported)
+	}
+
+	botDown.Store(false)
+	if err := tick(); err != nil {
+		t.Fatalf("tick after the bot recovered: %v", err)
+	}
+	bodies = bot.bodies()
+	if last := bodies[len(bodies)-1]; last != `[{"username":"billed_reseller","usage":70}]` {
+		t.Fatalf("retry sent %q, want the 70 bytes that were held back", last)
+	}
+	if pending, reported := queue(); pending != 0 || reported != 570 {
+		t.Fatalf("after the retry: pending=%d reported=%d, want 0/570", pending, reported)
+	}
+
+	var usersUsage int64
+	if err := pool.QueryRow(context.Background(), "SELECT users_usage FROM admins WHERE username = 'billed_reseller'").Scan(&usersUsage); err != nil {
+		t.Fatalf("query users_usage: %v", err)
+	}
+	if usersUsage != 1570 {
+		t.Errorf("users_usage = %d, want 1570 (queueing must not change what the panel itself counts)", usersUsage)
 	}
 }

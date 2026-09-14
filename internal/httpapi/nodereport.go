@@ -11,6 +11,7 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 )
 
 const nodeIDContextKey = "node.id"
@@ -130,8 +131,16 @@ func (h *Handler) handleNodeReport(c *gin.Context) {
 				adminIDs = append(adminIDs, adminID)
 				adminDeltaValues = append(adminDeltaValues, delta)
 			}
+			// Queued for the reseller bot's billing only while it is
+			// configured - see internal/resellerusagejob.
+			queueForResellerAPI := false
+			if settings, _, err := h.resolveIntegrationSettings(c); err != nil {
+				h.logger.Error("node report: resolve integration settings, usage not queued for the reseller API", "error", err)
+			} else {
+				queueForResellerAPI = resellerapi.Config{Secret: settings.ResellerApiSecret, URL: settings.ResellerApiUrl}.CanReportUsage()
+			}
 			if err := h.store.Queries.BulkIncrementAdminUsage(ctx, generated.BulkIncrementAdminUsageParams{
-				Ids: adminIDs, Deltas: adminDeltaValues,
+				Ids: adminIDs, Deltas: adminDeltaValues, QueueForResellerApi: queueForResellerAPI,
 			}); err != nil {
 				h.logger.Error("node report: bulk increment admin usage", "error", err)
 			}

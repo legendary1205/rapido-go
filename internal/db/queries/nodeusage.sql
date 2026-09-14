@@ -30,9 +30,22 @@ UPDATE admins SET users_usage = users_usage + $2 WHERE id = $1;
 
 -- name: BulkIncrementAdminUsage :exec
 -- Batch form of IncrementAdminUsage - same reasoning as BulkIncrementUserUsage.
-UPDATE admins SET users_usage = users_usage + v.delta
-FROM (SELECT unnest(sqlc.arg('ids')::int[]) AS id, unnest(sqlc.arg('deltas')::bigint[]) AS delta) AS v
-WHERE admins.id = v.id;
+-- With queue_for_reseller_api set, the same deltas are also queued for the
+-- reseller bot's billing report (see migration 00014). Both happen in one
+-- statement, so the queue can never disagree with users_usage about what a
+-- report added.
+WITH v AS (
+    SELECT unnest(sqlc.arg('ids')::int[]) AS id, unnest(sqlc.arg('deltas')::bigint[]) AS delta
+), bumped AS (
+    UPDATE admins SET users_usage = users_usage + v.delta
+    FROM v
+    WHERE admins.id = v.id
+    RETURNING admins.id, v.delta
+)
+INSERT INTO reseller_api_usage_queue (admin_id, pending)
+SELECT bumped.id, bumped.delta FROM bumped
+WHERE sqlc.arg('queue_for_reseller_api')::boolean
+ON CONFLICT (admin_id) DO UPDATE SET pending = reseller_api_usage_queue.pending + EXCLUDED.pending;
 
 -- name: UpsertNodeUserUsage :exec
 -- created_at is the caller-computed current-hour bucket (truncated to the

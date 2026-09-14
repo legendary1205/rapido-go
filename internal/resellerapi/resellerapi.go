@@ -1,21 +1,18 @@
 // Package resellerapi is an HTTP client for an external reseller/wallet-management
-// bot (panel -> bot, one-way; see app/resellerapi/manager.py for the current
-// Python implementation this ports). Two of its three Python duties are
-// ported here: GetConfigs (inbound filtering per reseller) and
-// GetUsersLimit (per-admin active-user cap).
-//
-// report_admin_usage (billing/usage reporting) is deliberately NOT ported:
-// it needs a per-user usage-delta data source this rewrite doesn't have
-// yet - Phase 3's Go node agent has no stats-reporting endpoint, and no
-// record_user_usages-equivalent job exists. This is a real, flagged gap,
-// not a stub returning fake numbers.
+// bot (panel -> bot, one-way; see app/resellerapi/manager.py for the Python
+// implementation this ports). It covers all three of that bot's duties:
+// GetConfigs (inbound filtering per reseller), GetUsersLimit (per-admin
+// active-user cap) and ReportUsages (the per-admin traffic the bot bills
+// resellers for - queued by node reports and sent by internal/resellerusagejob).
 package resellerapi
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -31,6 +28,13 @@ type Config struct {
 // every method below returns immediately with no outbound request at all.
 func (c Config) Enabled() bool {
 	return c.Secret != ""
+}
+
+// CanReportUsage is Enabled plus a URL to send to. The two lookups below
+// tolerate a missing URL by failing quietly, but usage is only queued for
+// billing when a report can actually be delivered.
+func (c Config) CanReportUsage() bool {
+	return c.Enabled() && c.URL != ""
 }
 
 func (c Config) baseURL() string {
@@ -111,4 +115,42 @@ func (c *Client) GetUsersLimit(ctx context.Context, cfg Config, username string)
 		return nil
 	}
 	return decoded.UsersLimit
+}
+
+// Usage is one admin's traffic for a usage report, in bytes.
+type Usage struct {
+	Username string `json:"username"`
+	Usage    int64  `json:"usage"`
+}
+
+// ReportUsages mirrors ResellerAPI.report_admin_usage's POST: sends
+// [{"username", "usage"}] to {url}/api/subscriptions/{secret}/usages, where
+// the bot charges each reseller's wallet for that traffic. Unlike the two
+// lookups above, failure is returned rather than swallowed - the caller
+// keeps the usage queued and sends it again, since a report that silently
+// vanished is traffic nobody paid for.
+func (c *Client) ReportUsages(ctx context.Context, cfg Config, usages []Usage) error {
+	if !cfg.CanReportUsage() {
+		return errors.New("reseller API is not configured")
+	}
+	body, err := json.Marshal(usages)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.baseURL()+"/usages", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("usage report rejected with HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
