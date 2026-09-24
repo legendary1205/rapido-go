@@ -540,7 +540,13 @@ cmd_backup() {
         rm -f "$dest"
         die "pg_dump failed - nothing was written. Is the database up? (rapido-go status)"
     fi
-    if ! gunzip -c "$dest" 2>/dev/null | head -c 1 | grep -q .; then
+    # Read the first byte into a variable rather than piping into `grep -q`:
+    # grep exits at the first match, which under `pipefail` turns the SIGPIPE
+    # gunzip then gets into a failed pipeline - a healthy dump of a large
+    # database was reported as empty and blocked `rapido-go update`.
+    local first_byte
+    first_byte="$(gunzip -c "$dest" 2>/dev/null | head -c 1 || true)"
+    if [ -z "$first_byte" ]; then
         rm -f "$dest"
         die "The backup came out empty - nothing was written."
     fi
