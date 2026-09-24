@@ -34,6 +34,11 @@ type proxyInboundDTO struct {
 	Network  string `json:"network"`
 	TLS      string `json:"tls"`
 	Port     int32  `json:"port"`
+	// Ports is every distinct port of the inbound's enabled hosts, ascending
+	// (always an array, empty when there are none). Port stays the primary
+	// host's alone: the real Marzban model has no such field, so the one
+	// every client reads must not change meaning.
+	Ports []int `json:"ports"`
 }
 
 func (h *Handler) handleListInbounds(c *gin.Context) {
@@ -52,8 +57,9 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 			// The real panel calls this field "tls" and puts the security
 			// mode in it ("none"/"tls"/"reality"), which is what this
 			// column already holds.
-			TLS:  r.Security,
-			Port: r.Port.Int32,
+			TLS:   r.Security,
+			Port:  r.Port.Int32,
+			Ports: validHostPorts(r.Ports),
 		}
 		tagsByProtocol[r.Protocol] = append(tagsByProtocol[r.Protocol], r.Tag)
 	}
@@ -84,7 +90,7 @@ func (h *Handler) handleListInbounds(c *gin.Context) {
 			// A tag the reseller API returned that this panel doesn't have: keep it
 			// visible rather than dropping it silently, with the protocol
 			// it was filed under.
-			entries = append(entries, proxyInboundDTO{Tag: tag, Protocol: protocol, Network: "tcp", TLS: "none"})
+			entries = append(entries, proxyInboundDTO{Tag: tag, Protocol: protocol, Network: "tcp", TLS: "none", Ports: []int{}})
 		}
 		out[protocol] = entries
 	}

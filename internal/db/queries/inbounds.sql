@@ -43,11 +43,19 @@ SELECT * FROM inbounds ORDER BY protocol, tag;
 -- inbound's primary host (lowest id with a real port), not on the inbound
 -- row itself. Same "primary host" rule ListAutoSyncInbounds uses, but
 -- without its auto-sync eligibility filter: this endpoint lists every
--- inbound an admin has, configured or not.
+-- inbound an admin has, configured or not. `ports` is every distinct port of
+-- the inbound's non-disabled hosts, ascending (a multi-port inbound listens
+-- on all of them); `port` stays the single primary-host value older clients
+-- read.
 SELECT i.tag, i.protocol, i.network, i.security,
        (SELECT h.port FROM hosts h
         WHERE h.inbound_tag = i.tag AND h.port IS NOT NULL
-        ORDER BY h.id LIMIT 1) AS port
+        ORDER BY h.id LIMIT 1) AS port,
+       ARRAY(
+           SELECT DISTINCT hp.port FROM hosts hp
+           WHERE hp.inbound_tag = i.tag AND hp.is_disabled IS NOT TRUE AND hp.port IS NOT NULL
+           ORDER BY hp.port
+       )::int[] AS ports
 FROM inbounds i
 ORDER BY i.protocol, i.tag;
 

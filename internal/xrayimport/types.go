@@ -70,7 +70,11 @@ type Outbound struct {
 
 // RoutingRule mirrors internal/httpapi/coreconfig.go's routingRuleDTO.
 type RoutingRule struct {
-	Inbound       []string
+	Inbound []string
+	// InboundPort is export-only: it becomes Xray's localPort next to
+	// inboundTag. ParseXrayConfig never sets it - it resolves localPort into
+	// already-split inbound tags instead.
+	InboundPort   []int
 	Domain        []string
 	DomainSuffix  []string
 	DomainKeyword []string

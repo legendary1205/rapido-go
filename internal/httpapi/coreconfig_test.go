@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -233,5 +234,124 @@ func TestUpdateCoreConfigRejectsUnknownDNSType(t *testing.T) {
 	})
 	if resp.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unknown dns type: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+// TestValidateCoreConfigInboundPortAndDirectFallback covers every rule the
+// two multi-port/fail-open fields add. It calls the validator directly (it is
+// a pure function) so each rule is pinned by its own message; the PUT
+// handler's 422 mapping is exercised once below.
+func TestValidateCoreConfigInboundPortAndDirectFallback(t *testing.T) {
+	wgOutbound := outboundDTO{Tag: "uk", Type: "direct", BindInterface: "wg-uk", DirectFallback: true}
+	cases := []struct {
+		name string
+		dto  coreConfigDTO
+		want string // "" means valid, otherwise a substring of the message
+	}{
+		{"valid rule with ports", coreConfigDTO{RoutingRules: []routingRuleDTO{{Inbound: []string{"main"}, InboundPort: []int{1, 20004, 65535}, OutboundTag: "block"}}}, ""},
+		{"inbound_port without inbound", coreConfigDTO{RoutingRules: []routingRuleDTO{{InboundPort: []int{20004}, OutboundTag: "block"}}}, "inbound_port requires a non-empty inbound"},
+		{"port zero", coreConfigDTO{RoutingRules: []routingRuleDTO{{Inbound: []string{"main"}, InboundPort: []int{0}, OutboundTag: "block"}}}, "invalid inbound_port 0"},
+		{"port negative", coreConfigDTO{RoutingRules: []routingRuleDTO{{Inbound: []string{"main"}, InboundPort: []int{-5}, OutboundTag: "block"}}}, "invalid inbound_port -5"},
+		{"port too large", coreConfigDTO{RoutingRules: []routingRuleDTO{{Inbound: []string{"main"}, InboundPort: []int{65536}, OutboundTag: "block"}}}, "invalid inbound_port 65536"},
+		{"duplicate port", coreConfigDTO{RoutingRules: []routingRuleDTO{{Inbound: []string{"main"}, InboundPort: []int{20004, 20005, 20004}, OutboundTag: "block"}}}, "duplicate inbound_port 20004"},
+
+		{"valid fallback", coreConfigDTO{Outbounds: []outboundDTO{wgOutbound}}, ""},
+		{"fallback without bind_interface", coreConfigDTO{Outbounds: []outboundDTO{{Tag: "uk", Type: "direct", DirectFallback: true}}}, "outbound uk: direct_fallback requires bind_interface"},
+		{"fallback on a leaf proxy type is fine", coreConfigDTO{Outbounds: []outboundDTO{{Tag: "s", Type: "socks", Server: "1.2.3.4", ServerPort: 1080, BindInterface: "wg0", DirectFallback: true}}}, ""},
+		{"fallback on selector", coreConfigDTO{Outbounds: []outboundDTO{wgOutbound, {Tag: "pick", Type: "selector", Outbounds: []string{"uk"}, BindInterface: "wg0", DirectFallback: true}}}, "outbound pick: direct_fallback is not allowed for type selector"},
+		{"fallback on urltest", coreConfigDTO{Outbounds: []outboundDTO{wgOutbound, {Tag: "auto", Type: "urltest", Outbounds: []string{"uk"}, BindInterface: "wg0", DirectFallback: true}}}, "outbound auto: direct_fallback is not allowed for type urltest"},
+		{"fallback on block", coreConfigDTO{Outbounds: []outboundDTO{{Tag: "b", Type: "block", BindInterface: "wg0", DirectFallback: true}}}, "outbound b: direct_fallback is not allowed for type block"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateCoreConfig(tc.dto)
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("validateCoreConfig = %q, want valid", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("validateCoreConfig = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUpdateCoreConfigRejectsBadInboundPortAndDirectFallback(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "main", "protocol": "vless"}})
+
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"routing_rules": []map[string]interface{}{{"inbound": []string{"main"}, "inbound_port": []int{70000}, "outbound_tag": "block"}},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("out-of-range inbound_port: %d, want 422: %v", resp.Code, resp.Body)
+	}
+	resp = doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{{"tag": "uk", "type": "direct", "direct_fallback": true}},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("direct_fallback without bind_interface: %d, want 422: %v", resp.Code, resp.Body)
+	}
+	if detail, _ := resp.Body["detail"].(string); !strings.Contains(detail, "direct_fallback requires bind_interface") {
+		t.Errorf("detail = %q, want the direct_fallback message", detail)
+	}
+}
+
+// TestCoreConfigRoundTripsInboundPortAndDirectFallback proves the two new
+// fields survive every hop: the PUT response, a later GET, and - the one that
+// matters to a node - the core section of the node-config payload.
+func TestCoreConfigRoundTripsInboundPortAndDirectFallback(t *testing.T) {
+	router, token := newTestRouter(t)
+	_, secret := createTestNode(t, router, token, "core-roundtrip-node")
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "main", "protocol": "vless"}})
+
+	putResp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "uk", "type": "direct", "bind_interface": "wg-uk", "direct_fallback": true},
+			{"tag": "de", "type": "direct", "bind_interface": "wg-de"},
+		},
+		"routing_rules": []map[string]interface{}{
+			{"inbound": []string{"main"}, "inbound_port": []int{20004, 20005}, "outbound_tag": "uk"},
+			{"inbound": []string{"main"}, "outbound_tag": "de"},
+		},
+	})
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("put core config: %d %v", putResp.Code, putResp.Body)
+	}
+	assertCoreRoundTrip(t, "PUT response", putResp.Body)
+
+	getResp := doRequest(t, router, "GET", "/api/settings/core-config", token, nil)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get core config: %d %v", getResp.Code, getResp.Body)
+	}
+	assertCoreRoundTrip(t, "GET response", getResp.Body)
+
+	nodeResp := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if nodeResp.Code != http.StatusOK {
+		t.Fatalf("get node config: %d %v", nodeResp.Code, nodeResp.Body)
+	}
+	assertCoreRoundTrip(t, "node-config core", nodeResp.Body["core"].(map[string]interface{}))
+}
+
+func assertCoreRoundTrip(t *testing.T, where string, core map[string]interface{}) {
+	t.Helper()
+	outbounds := core["outbounds"].([]interface{})
+	uk, de := outbounds[0].(map[string]interface{}), outbounds[1].(map[string]interface{})
+	if uk["direct_fallback"] != true {
+		t.Errorf("%s: uk.direct_fallback = %v, want true", where, uk["direct_fallback"])
+	}
+	if _, has := de["direct_fallback"]; has {
+		t.Errorf("%s: de.direct_fallback = %v, want the key omitted when false", where, de["direct_fallback"])
+	}
+	rules := core["routing_rules"].([]interface{})
+	ported, plain := rules[0].(map[string]interface{}), rules[1].(map[string]interface{})
+	ports, _ := ported["inbound_port"].([]interface{})
+	if len(ports) != 2 || ports[0] != float64(20004) || ports[1] != float64(20005) {
+		t.Errorf("%s: rule 0 inbound_port = %v, want [20004 20005]", where, ported["inbound_port"])
+	}
+	if _, has := plain["inbound_port"]; has {
+		t.Errorf("%s: rule 1 inbound_port = %v, want the key omitted when unset", where, plain["inbound_port"])
 	}
 }

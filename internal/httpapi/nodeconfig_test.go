@@ -254,3 +254,133 @@ func TestGetNodeConfigServesTheCachedBodyUnchanged(t *testing.T) {
 		t.Errorf("cached body users = %v, want [nc_cached_user]", users)
 	}
 }
+
+// multiPortHosts is one inbound's hosts as PUT /api/hosts takes them: three
+// distinct ports (20002, 20000, 20001), one of them shared by two hosts, plus
+// a disabled host on a 4th that must not count. The FIRST host - the primary
+// one, lowest id - deliberately does not carry the lowest port, so
+// listen_port (primary) and listen_ports[0] (minimum) can't be confused.
+func multiPortHosts() []map[string]interface{} {
+	return []map[string]interface{}{
+		{"remark": "p2", "address": "1.2.3.4", "port": 20002},
+		{"remark": "p0", "address": "1.2.3.4", "port": 20000},
+		{"remark": "p0-again", "address": "5.6.7.8", "port": 20000},
+		{"remark": "p1", "address": "1.2.3.4", "port": 20001},
+		{"remark": "off", "address": "1.2.3.4", "port": 20009, "is_disabled": true},
+	}
+}
+
+func TestGetNodeConfigMergesHostPortsIntoOneInboundWithListenPorts(t *testing.T) {
+	router, token := newTestRouter(t)
+	_, secret := createTestNode(t, router, token, "config-multiport-node")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "main", "protocol": "vless"},
+		{"tag": "trojan-single", "protocol": "trojan"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"main":          multiPortHosts(),
+		"trojan-single": []map[string]interface{}{{"remark": "t", "address": "1.2.3.4", "port": 2087}},
+	})
+	// vless-only users, so a username can only ever appear in the vless
+	// inbound's user list - counting it in the raw body then proves that list
+	// is encoded once, not once per host or per port.
+	for _, name := range []string{"nc_mp_a", "nc_mp_b"} {
+		resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+			"username": name, "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+		})
+		if resp.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %v", name, resp.Code, resp.Body)
+		}
+	}
+
+	resp := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get node config: %d %v", resp.Code, resp.Body)
+	}
+	inbounds := resp.Body["inbounds"].([]interface{})
+	if len(inbounds) != 2 {
+		t.Fatalf("inbounds = %v, want exactly 2 (one per tag, however many hosts/ports)", inbounds)
+	}
+	byTag := map[string]map[string]interface{}{}
+	for _, i := range inbounds {
+		in := i.(map[string]interface{})
+		byTag[in["tag"].(string)] = in
+	}
+
+	main := byTag["main"]
+	if main == nil {
+		t.Fatalf("no main inbound in %v", inbounds)
+	}
+	ports, ok := main["listen_ports"].([]interface{})
+	if !ok || len(ports) != 3 || ports[0] != float64(20000) || ports[1] != float64(20001) || ports[2] != float64(20002) {
+		t.Errorf("main listen_ports = %v, want [20000 20001 20002] (distinct, ascending, disabled host's 20009 excluded)", main["listen_ports"])
+	}
+	if main["listen_port"] != float64(20002) {
+		t.Errorf("main listen_port = %v, want 20002 (the primary host's port, unchanged for old nodes)", main["listen_port"])
+	}
+
+	single := byTag["trojan-single"]
+	if single == nil {
+		t.Fatalf("no trojan-single inbound in %v", inbounds)
+	}
+	if _, has := single["listen_ports"]; has {
+		t.Errorf("single-port inbound carries listen_ports %v, want the key absent", single["listen_ports"])
+	}
+	if single["listen_port"] != float64(2087) {
+		t.Errorf("trojan-single listen_port = %v, want 2087", single["listen_port"])
+	}
+
+	body := string(resp.Raw)
+	if n := strings.Count(body, `"listen_ports"`); n != 1 {
+		t.Errorf(`"listen_ports" appears %d times in the body, want once (only the multi-port inbound)`, n)
+	}
+	for _, name := range []string{"nc_mp_a", "nc_mp_b"} {
+		if n := strings.Count(body, `"name":"`+name+`"`); n != 1 {
+			t.Errorf("user %s appears %d times in the body, want once", name, n)
+		}
+	}
+}
+
+// TestNodeConfigBodyStaysByteIdenticalWithAMultiPortInbound is
+// TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload's counterpart for
+// the new field: the wire struct that splices the pre-encoded user list must
+// emit listen_ports exactly where the spec struct does.
+func TestNodeConfigBodyStaysByteIdenticalWithAMultiPortInbound(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "main", "protocol": "vless"},
+		{"tag": "trojan-single", "protocol": "trojan"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"main":          multiPortHosts(),
+		"trojan-single": []map[string]interface{}{{"remark": "t", "address": "1.2.3.4", "port": 2087}},
+	})
+	resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "nc_mp_bytes", "proxies": map[string]interface{}{"vless": map[string]interface{}{}, "trojan": map[string]interface{}{}},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("create user: %d %v", resp.Code, resp.Body)
+	}
+
+	ctx := context.Background()
+	payload, _, err := handler.buildNodeConfigPayload(ctx)
+	if err != nil {
+		t.Fatalf("buildNodeConfigPayload: %v", err)
+	}
+	want, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	got, err := handler.buildNodeConfigBody(ctx)
+	if err != nil {
+		t.Fatalf("buildNodeConfigBody: %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("spliced body differs from the marshalled payload\n got: %.300s\nwant: %.300s", got, want)
+	}
+	if !strings.Contains(got, `"listen_ports":[20000,20001,20002]`) {
+		t.Errorf("body is missing the multi-port inbound's listen_ports: %.300s", got)
+	}
+}

@@ -1,9 +1,27 @@
 // Mirrors internal/httpapi/monitoring.go's monitoringHostDTO/
-// historyPointDTO. Unlike the old Python system, there is no per-tunnel/
-// per-peer WireGuard detail here (tunnels_up/tunnels_total are just counts),
-// and no uptime/load-average/xray fields at all - the Go node agent doesn't
-// report them (see the Phase 7.3 plan's context on what host_metrics
-// actually stores).
+// historyPointDTO. There is no uptime/load-average/xray data here - the Go
+// node agent doesn't report them (see the Phase 7.3 plan's context on what
+// host_metrics actually stores). WireGuard is reported both as counts
+// (tunnels_up/tunnels_total) and per tunnel (tunnels).
+export type MonitoringTunnel = {
+  name: string;
+  up: boolean;
+  /** false: configured on that server, but its network interface does not
+   * exist right now. */
+  present: boolean;
+  rx_bytes: number;
+  tx_bytes: number;
+  /** Unix seconds; 0 = unknown/never. */
+  last_handshake: number;
+  handshake_age_seconds: number | null;
+  probe_ms: number | null;
+  error?: string;
+  /** The node is currently routing this exit's traffic over a plain direct
+   * connection because the tunnel is down - users still work, but exit from
+   * the server's own IP. */
+  fallback_active: boolean;
+};
+
 export type MonitoringHost = {
   /** null identifies the panel's own self-sample (name is literally "Panel"). */
   node_id: number | null;
@@ -37,6 +55,9 @@ export type MonitoringHost = {
   connections: number | null;
   tunnels_up: number | null;
   tunnels_total: number | null;
+  /** Absent/null on hosts that report no tunnels (the panel itself, nodes
+   * without WireGuard) and on a backend older than the per-tunnel detail. */
+  tunnels?: MonitoringTunnel[] | null;
   healthy: boolean;
 };
 

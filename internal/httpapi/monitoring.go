@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,11 +22,23 @@ const staleAfter = 2 * time.Minute
 // a client can name the tunnel that is down instead of only knowing that
 // one of N is.
 type monitoringTunnelDTO struct {
-	Name          string `json:"name"`
-	Up            bool   `json:"up"`
-	RxBytes       int64  `json:"rx_bytes"`
-	TxBytes       int64  `json:"tx_bytes"`
-	LastHandshake int64  `json:"last_handshake"`
+	Name string `json:"name"`
+	Up   bool   `json:"up"`
+	// Present is false when the tunnel is configured on the host but its
+	// interface does not exist right now - a different failure from an
+	// interface that is up with a stale handshake.
+	Present bool  `json:"present"`
+	RxBytes int64 `json:"rx_bytes"`
+	TxBytes int64 `json:"tx_bytes"`
+	// LastHandshake is unix seconds of the most recent peer handshake, 0 when
+	// unknown or never. HandshakeAgeSeconds is the same fact as of the
+	// sample's collection time (minimum across peers), null when no peer has
+	// ever handshaked.
+	LastHandshake       int64    `json:"last_handshake"`
+	HandshakeAgeSeconds *float64 `json:"handshake_age_seconds"`
+	ProbeMS             *float64 `json:"probe_ms"`
+	Error               string   `json:"error,omitempty"`
+	FallbackActive      bool     `json:"fallback_active"`
 }
 
 type monitoringHostDTO struct {
@@ -60,16 +73,25 @@ type monitoringHostDTO struct {
 // hostMetricPayload is the subset of a stored sample the monitoring
 // response exposes beyond the summarized columns.
 type hostMetricPayload struct {
-	UptimeSeconds float64 `json:"uptime_seconds"`
-	Load1m        float64 `json:"load_1m"`
-	XrayRunning   bool    `json:"xray_running"`
-	XrayVersion   string  `json:"xray_version"`
+	CollectedAt   time.Time `json:"collected_at"`
+	UptimeSeconds float64   `json:"uptime_seconds"`
+	Load1m        float64   `json:"load_1m"`
+	XrayRunning   bool      `json:"xray_running"`
+	XrayVersion   string    `json:"xray_version"`
 	Tunnels       []struct {
-		Name              string `json:"name"`
-		LastHandshakeUnix int64  `json:"last_handshake"`
-		RxBytes           int64  `json:"rx_bytes"`
-		TxBytes           int64  `json:"tx_bytes"`
-		Up                bool   `json:"up"`
+		Name string `json:"name"`
+		Up   bool   `json:"up"`
+		// Absent in samples stored before the node reported it, when only
+		// interfaces that existed were listed at all - so absent means true.
+		Present        *bool    `json:"present"`
+		RxBytes        int64    `json:"rx_bytes"`
+		TxBytes        int64    `json:"tx_bytes"`
+		ProbeMS        *float64 `json:"probe_ms"`
+		Error          string   `json:"error"`
+		FallbackActive bool     `json:"fallback_active"`
+		Peers          []struct {
+			LastHandshakeAgeSeconds *float64 `json:"last_handshake_age_seconds"`
+		} `json:"peers"`
 	} `json:"tunnels"`
 }
 
@@ -112,10 +134,31 @@ func toMonitoringHostDTO(name, address string, nodeID *int32, m *generated.HostM
 				version := p.XrayVersion
 				dto.XrayVersion = &version
 			}
+			sampledAt := p.CollectedAt
+			if sampledAt.IsZero() {
+				sampledAt = collectedAt
+			}
 			for _, t := range p.Tunnels {
-				dto.Tunnels = append(dto.Tunnels, monitoringTunnelDTO{
-					Name: t.Name, Up: t.Up, RxBytes: t.RxBytes, TxBytes: t.TxBytes, LastHandshake: t.LastHandshakeUnix,
-				})
+				tunnel := monitoringTunnelDTO{
+					Name: t.Name, Up: t.Up, Present: t.Present == nil || *t.Present,
+					RxBytes: t.RxBytes, TxBytes: t.TxBytes,
+					ProbeMS: t.ProbeMS, Error: t.Error, FallbackActive: t.FallbackActive,
+				}
+				// The freshest handshake of any peer is the tunnel's: one
+				// stale peer among several says nothing about the path in use.
+				for _, peer := range t.Peers {
+					if peer.LastHandshakeAgeSeconds == nil {
+						continue
+					}
+					age := math.Max(*peer.LastHandshakeAgeSeconds, 0)
+					if tunnel.HandshakeAgeSeconds == nil || age < *tunnel.HandshakeAgeSeconds {
+						tunnel.HandshakeAgeSeconds = &age
+					}
+				}
+				if tunnel.HandshakeAgeSeconds != nil {
+					tunnel.LastHandshake = sampledAt.Unix() - int64(math.Round(*tunnel.HandshakeAgeSeconds))
+				}
+				dto.Tunnels = append(dto.Tunnels, tunnel)
 			}
 		}
 	}

@@ -308,3 +308,46 @@ func TestPruneOrphanedProxiesNeverRunsWhenNoInboundsRemainAtAll(t *testing.T) {
 		t.Errorf("vless proxy must survive deleting the last inbound - pruning must refuse to run with zero inbounds left, got %v", got)
 	}
 }
+
+// TestListInboundsReturnsEveryHostPortAlongsideTheUnchangedPrimaryPort pins
+// the additive `ports` field: distinct, ascending, disabled hosts excluded,
+// an empty array (never null) for an inbound with no ported host - while
+// `port` keeps meaning "the primary host's port" for existing clients.
+func TestListInboundsReturnsEveryHostPortAlongsideTheUnchangedPrimaryPort(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "main", "protocol": "vless"},
+		{"tag": "one-port", "protocol": "vless"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"main":     multiPortHosts(),
+		"one-port": []map[string]interface{}{{"remark": "o", "address": "1.2.3.4", "port": 8443}},
+	})
+	// createDefaultHost gives a brand new inbound a host with no port at all.
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "portless", "protocol": "vless"}})
+
+	resp := doRequest(t, router, "GET", "/api/inbounds", token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get inbounds: %d %v", resp.Code, resp.Body)
+	}
+	byTag := map[string]map[string]interface{}{}
+	for _, e := range resp.Body["vless"].([]interface{}) {
+		obj := e.(map[string]interface{})
+		byTag[obj["tag"].(string)] = obj
+	}
+
+	main := byTag["main"]
+	ports, _ := main["ports"].([]interface{})
+	if len(ports) != 3 || ports[0] != float64(20000) || ports[1] != float64(20001) || ports[2] != float64(20002) {
+		t.Errorf("main ports = %v, want [20000 20001 20002]", main["ports"])
+	}
+	if main["port"] != float64(20002) {
+		t.Errorf("main port = %v, want 20002 (primary host, unchanged)", main["port"])
+	}
+	if ports, _ := byTag["one-port"]["ports"].([]interface{}); len(ports) != 1 || ports[0] != float64(8443) {
+		t.Errorf("one-port ports = %v, want [8443]", byTag["one-port"]["ports"])
+	}
+	if ports, ok := byTag["portless"]["ports"].([]interface{}); !ok || len(ports) != 0 {
+		t.Errorf("portless ports = %v, want an empty array, not null", byTag["portless"]["ports"])
+	}
+}

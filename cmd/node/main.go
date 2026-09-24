@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -31,6 +32,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/nodecore"
 	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
+	"github.com/legendary1205/rapido-go/internal/tunnelhealth"
 )
 
 type config struct {
@@ -183,6 +185,77 @@ type server struct {
 	// pulled config and handling a manual POST /start/POST /stop must
 	// never interleave.
 	lastPulled *pulledConfig
+
+	// monitor probes every WireGuard tunnel for the life of the process,
+	// whether or not a core is running: the panel's monitoring page wants the
+	// verdicts even on an idle node. Nil in tests.
+	monitor *tunnelhealth.Monitor
+
+	// plan, supervisor and supCancel describe the running core and are set and
+	// cleared together with node, under mu.
+	plan       nodePlan
+	supervisor *nodecore.Supervisor
+	supCancel  context.CancelFunc
+}
+
+// fallbackCheckInterval is how often the supervisor compares each tunnel's
+// health with the outbound currently in use. Health itself only changes when
+// the monitor completes a probe round, so this just bounds the reaction time
+// after one does.
+const fallbackCheckInterval = time.Second
+
+// startNodeLocked builds, starts and supervises a core from req. Caller holds mu
+// and has already checked that no core is running.
+func (s *server) startNodeLocked(req startRequest) error {
+	opts, plan, err := buildOptionsPlan(req)
+	if err != nil {
+		return err
+	}
+	node, err := nodecore.New(s.ctx, opts, s.traffic)
+	if err != nil {
+		return err
+	}
+	if err := node.Start(); err != nil {
+		node.Close()
+		return err
+	}
+	s.node = node
+	s.plan = plan
+	s.startSupervisorLocked(plan)
+	return nil
+}
+
+// stopNodeLocked stops supervising and closes the running core, if any.
+func (s *server) stopNodeLocked() error {
+	if s.supCancel != nil {
+		s.supCancel()
+		s.supCancel, s.supervisor = nil, nil
+	}
+	if s.monitor != nil {
+		s.monitor.Watch(nil)
+	}
+	s.plan = nodePlan{}
+	if s.node == nil {
+		return nil
+	}
+	err := s.node.Close()
+	s.node = nil
+	return err
+}
+
+func (s *server) startSupervisorLocked(plan nodePlan) {
+	if s.monitor == nil {
+		return
+	}
+	s.monitor.Watch(plan.watchedInterfaces())
+	if len(plan.fallbacks) == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	sup := nodecore.NewSupervisor(s.node, plan.fallbacks, s.monitor, s.logger)
+	sup.Foreign = func(iface string) bool { return !slices.Contains(hostmetrics.TunnelNames(), iface) }
+	s.supervisor, s.supCancel = sup, cancel
+	go sup.Run(ctx, fallbackCheckInterval)
 }
 
 func main() {
@@ -212,6 +285,8 @@ func main() {
 	defer stop()
 
 	srv := &server{logger: logger, ctx: ctx, traffic: traffic.NewManager()}
+	srv.monitor = tunnelhealth.New(tunnelhealth.Options{Logger: logger})
+	go srv.monitor.Run(ctx)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", srv.handleHealth)
 	mux.HandleFunc("POST /start", srv.handleStart)
@@ -243,9 +318,7 @@ func main() {
 		defer cancel()
 		httpServer.Shutdown(shutdownCtx)
 		srv.mu.Lock()
-		if srv.node != nil {
-			srv.node.Close()
-		}
+		srv.stopNodeLocked()
 		srv.mu.Unlock()
 	}()
 
@@ -272,11 +345,30 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // POST /start to rebuild the instance, until they get the same fork
 // treatment as vless.
 type inboundSpec struct {
-	Tag        string     `json:"tag"`
-	Protocol   string     `json:"protocol"` // vless | vmess | trojan | shadowsocks
-	ListenPort uint16     `json:"listen_port"`
-	Users      []userSpec `json:"users"`
-	TLS        *tlsSpec   `json:"tls,omitempty"`
+	Tag        string `json:"tag"`
+	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks
+	ListenPort uint16 `json:"listen_port"`
+	// ListenPorts is set only when one logical inbound serves several ports
+	// (ListenPort is then the first of them, for a node that predates this
+	// field). Each port becomes its own sing-box listener tagged
+	// "<tag>#<port>", so a routing rule can tell them apart.
+	ListenPorts []uint16   `json:"listen_ports,omitempty"`
+	Users       []userSpec `json:"users"`
+	TLS         *tlsSpec   `json:"tls,omitempty"`
+}
+
+func (in inboundSpec) ports() []uint16 {
+	if len(in.ListenPorts) > 0 {
+		return in.ListenPorts
+	}
+	return []uint16{in.ListenPort}
+}
+
+// derivedInboundTag names the sing-box listener for one port of a
+// multi-port inbound. '#' cannot appear in a tag an admin would type, so it
+// can never collide with a real inbound.
+func derivedInboundTag(tag string, port uint16) string {
+	return tag + "#" + strconv.Itoa(int(port))
 }
 
 type userSpec struct {
@@ -328,10 +420,18 @@ type outboundSpec struct {
 	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
 
 	BindInterface string `json:"bind_interface,omitempty"`
+	// DirectFallback keeps this outbound working when its BindInterface is
+	// down: traffic is sent over a plain direct connection until the
+	// interface is healthy again. Ignored without a BindInterface and for
+	// block/selector/urltest.
+	DirectFallback bool `json:"direct_fallback,omitempty"`
 }
 
 type routingRuleSpec struct {
-	Inbound       []string `json:"inbound,omitempty"`
+	Inbound []string `json:"inbound,omitempty"`
+	// InboundPort narrows Inbound to connections that arrived on these local
+	// listen ports of a multi-port inbound.
+	InboundPort   []int    `json:"inbound_port,omitempty"`
 	Domain        []string `json:"domain,omitempty"`
 	DomainSuffix  []string `json:"domain_suffix,omitempty"`
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
@@ -380,8 +480,7 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts, err := buildOptions(req)
-	if err != nil {
+	if _, _, err := buildOptionsPlan(req); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"detail": err.Error()})
 		return
 	}
@@ -396,16 +495,10 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := nodecore.New(s.ctx, opts, s.traffic)
-	if err != nil {
+	if err := s.startNodeLocked(req); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
 		return
 	}
-	if err := node.Start(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
-	}
-	s.node = node
 	writeJSON(w, http.StatusOK, map[string]any{"detail": "started"})
 }
 
@@ -416,11 +509,10 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"detail": "already stopped"})
 		return
 	}
-	if err := s.node.Close(); err != nil {
+	if err := s.stopNodeLocked(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
 		return
 	}
-	s.node = nil
 	writeJSON(w, http.StatusOK, map[string]any{"detail": "stopped"})
 }
 
@@ -455,101 +547,156 @@ func (s *server) handleUpdateUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range req.Users {
 		users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
 	}
-	if err := s.node.UpdateVLESSUsers(tag, users); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"detail": err.Error()})
-		return
+	for _, listener := range s.plan.listenerTags(tag) {
+		if err := s.node.UpdateVLESSUsers(listener, users); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"detail": err.Error()})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"detail": "updated"})
 }
 
+// nodePlan is what buildOptionsPlan learned while translating a config that
+// the running node needs to remember afterwards.
+type nodePlan struct {
+	// derivedTags maps a multi-port inbound's own tag to the sing-box
+	// listeners it expanded into. A single-port inbound is not in it - its
+	// tag is the listener's tag.
+	derivedTags map[string][]string
+	// fallbacks are the outbounds that must fail over to a direct connection
+	// when their WireGuard interface is down.
+	fallbacks []nodecore.FallbackGroup
+}
+
+// listenerTags returns the sing-box inbound tags behind one logical inbound.
+func (p nodePlan) listenerTags(tag string) []string {
+	if tags, ok := p.derivedTags[tag]; ok {
+		return tags
+	}
+	return []string{tag}
+}
+
+// watchedInterfaces is every interface a fallback group depends on.
+func (p nodePlan) watchedInterfaces() []string {
+	names := make([]string, 0, len(p.fallbacks))
+	for _, g := range p.fallbacks {
+		names = append(names, g.Interface)
+	}
+	return names
+}
+
 func buildOptions(req startRequest) (sbox.Options, error) {
+	opts, _, err := buildOptionsPlan(req)
+	return opts, err
+}
+
+func buildInboundTLS(in inboundSpec) *sbox.InboundTLSOptions {
+	if in.TLS == nil {
+		return nil
+	}
+	tlsOpts := &sbox.InboundTLSOptions{
+		Enabled:     true,
+		ServerName:  in.TLS.ServerName,
+		Certificate: badoption.Listable[string]{in.TLS.Certificate},
+		Key:         badoption.Listable[string]{in.TLS.Key},
+	}
+	if in.TLS.Reality != nil {
+		tlsOpts.Reality = &sbox.InboundRealityOptions{
+			Enabled:    true,
+			PrivateKey: in.TLS.Reality.PrivateKey,
+			ShortID:    in.TLS.Reality.ShortID,
+			Handshake: sbox.InboundRealityHandshakeOptions{
+				ServerOptions: sbox.ServerOptions{
+					Server:     in.TLS.Reality.Handshake.ServerName,
+					ServerPort: in.TLS.Reality.Handshake.ServerPort,
+				},
+			},
+		}
+	}
+	return tlsOpts
+}
+
+func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
+	plan := nodePlan{derivedTags: make(map[string][]string)}
+	portsByTag := make(map[string][]uint16, len(req.Inbounds))
 	inbounds := make([]sbox.Inbound, 0, len(req.Inbounds))
 	for _, in := range req.Inbounds {
-		var tlsOpts *sbox.InboundTLSOptions
-		if in.TLS != nil {
-			tlsOpts = &sbox.InboundTLSOptions{
-				Enabled:     true,
-				ServerName:  in.TLS.ServerName,
-				Certificate: badoption.Listable[string]{in.TLS.Certificate},
-				Key:         badoption.Listable[string]{in.TLS.Key},
+		ports := in.ports()
+		portsByTag[in.Tag] = ports
+		for _, port := range ports {
+			tag := in.Tag
+			if len(ports) > 1 {
+				tag = derivedInboundTag(in.Tag, port)
+				plan.derivedTags[in.Tag] = append(plan.derivedTags[in.Tag], tag)
 			}
-			if in.TLS.Reality != nil {
-				tlsOpts.Reality = &sbox.InboundRealityOptions{
-					Enabled:    true,
-					PrivateKey: in.TLS.Reality.PrivateKey,
-					ShortID:    in.TLS.Reality.ShortID,
-					Handshake: sbox.InboundRealityHandshakeOptions{
-						ServerOptions: sbox.ServerOptions{
-							Server:     in.TLS.Reality.Handshake.ServerName,
-							ServerPort: in.TLS.Reality.Handshake.ServerPort,
-						},
-					},
+			// Built per listener: sing-box takes ownership of the options it is
+			// given, so two inbounds must not share one TLS block.
+			tlsOpts := buildInboundTLS(in)
+
+			listen := badoption.Addr(netip.IPv4Unspecified())
+			listenOptions := sbox.ListenOptions{Listen: &listen, ListenPort: port}
+
+			switch in.Protocol {
+			case "vless":
+				users := make([]sbox.VLESSUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
 				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "vless", Tag: tag, Options: &sbox.VLESSInboundOptions{
+					ListenOptions:              listenOptions,
+					Users:                      users,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+				}})
+			case "vmess":
+				users := make([]sbox.VMessUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.VMessUser{Name: u.Name, UUID: u.UUID})
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "vmess", Tag: tag, Options: &sbox.VMessInboundOptions{
+					ListenOptions:              listenOptions,
+					Users:                      users,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+				}})
+			case "trojan":
+				users := make([]sbox.TrojanUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.TrojanUser{Name: u.Name, Password: u.Password})
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "trojan", Tag: tag, Options: &sbox.TrojanInboundOptions{
+					ListenOptions:              listenOptions,
+					Users:                      users,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+				}})
+			case "shadowsocks":
+				users := make([]sbox.ShadowsocksUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.ShadowsocksUser{Name: u.Name, Password: u.Password})
+				}
+				method := "2022-blake3-aes-128-gcm"
+				if len(in.Users) > 0 && in.Users[0].Method != "" {
+					method = in.Users[0].Method
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "shadowsocks", Tag: tag, Options: &sbox.ShadowsocksInboundOptions{
+					ListenOptions: listenOptions,
+					Method:        method,
+					Users:         users,
+				}})
 			}
-		}
-
-		listen := badoption.Addr(netip.IPv4Unspecified())
-		listenOptions := sbox.ListenOptions{Listen: &listen, ListenPort: in.ListenPort}
-
-		switch in.Protocol {
-		case "vless":
-			users := make([]sbox.VLESSUser, 0, len(in.Users))
-			for _, u := range in.Users {
-				users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
-			}
-			inbounds = append(inbounds, sbox.Inbound{Type: "vless", Tag: in.Tag, Options: &sbox.VLESSInboundOptions{
-				ListenOptions:              listenOptions,
-				Users:                      users,
-				InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
-			}})
-		case "vmess":
-			users := make([]sbox.VMessUser, 0, len(in.Users))
-			for _, u := range in.Users {
-				users = append(users, sbox.VMessUser{Name: u.Name, UUID: u.UUID})
-			}
-			inbounds = append(inbounds, sbox.Inbound{Type: "vmess", Tag: in.Tag, Options: &sbox.VMessInboundOptions{
-				ListenOptions:              listenOptions,
-				Users:                      users,
-				InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
-			}})
-		case "trojan":
-			users := make([]sbox.TrojanUser, 0, len(in.Users))
-			for _, u := range in.Users {
-				users = append(users, sbox.TrojanUser{Name: u.Name, Password: u.Password})
-			}
-			inbounds = append(inbounds, sbox.Inbound{Type: "trojan", Tag: in.Tag, Options: &sbox.TrojanInboundOptions{
-				ListenOptions:              listenOptions,
-				Users:                      users,
-				InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
-			}})
-		case "shadowsocks":
-			users := make([]sbox.ShadowsocksUser, 0, len(in.Users))
-			for _, u := range in.Users {
-				users = append(users, sbox.ShadowsocksUser{Name: u.Name, Password: u.Password})
-			}
-			method := "2022-blake3-aes-128-gcm"
-			if len(in.Users) > 0 && in.Users[0].Method != "" {
-				method = in.Users[0].Method
-			}
-			inbounds = append(inbounds, sbox.Inbound{Type: "shadowsocks", Tag: in.Tag, Options: &sbox.ShadowsocksInboundOptions{
-				ListenOptions: listenOptions,
-				Method:        method,
-				Users:         users,
-			}})
 		}
 	}
 
-	outbounds, route, dns, log, err := buildCoreOptions(req.Core)
+	outbounds, route, dns, log, fallbacks, err := buildCoreOptions(req.Core, portsByTag)
 	if err != nil {
-		return sbox.Options{}, err
+		return sbox.Options{}, nodePlan{}, err
 	}
+	plan.fallbacks = fallbacks
 	return sbox.Options{
 		Log:       log,
 		DNS:       dns,
 		Inbounds:  inbounds,
 		Outbounds: outbounds,
 		Route:     route,
-	}, nil
+	}, plan, nil
 }
 
 // implicitOutboundTag{Direct,Block} are always present regardless of
@@ -589,102 +736,179 @@ func resolveOutboundTag(tag string) string {
 	}
 }
 
+// isLeafOutbound reports whether an outbound type dials a destination itself
+// (as opposed to picking among other outbounds, or refusing to dial).
+func isLeafOutbound(t string) bool {
+	switch t {
+	case "block", "selector", "urltest":
+		return false
+	}
+	return true
+}
+
+// leafOutboundOptions builds the sing-box options for every outbound type
+// that dials by itself. bind is the network interface its sockets are pinned
+// to - the sing-box equivalent of Xray's streamSettings.sockopt.interface,
+// which the production fleet's per-location WireGuard exit selection depends
+// on entirely; "" leaves the sockets on the default route. Passing it
+// separately from ob is what lets one Core Config outbound be built twice:
+// pinned, and unpinned as its fallback.
+func leafOutboundOptions(ob outboundSpec, bind string) (any, error) {
+	dialerOptions := sbox.DialerOptions{AbstractDialerOptions: sbox.AbstractDialerOptions{BindInterface: bind}}
+	server := sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)}
+	switch ob.Type {
+	case "direct":
+		return &sbox.DirectOutboundOptions{DialerOptions: dialerOptions}, nil
+	case "socks":
+		return &sbox.SOCKSOutboundOptions{DialerOptions: dialerOptions, ServerOptions: server, Username: ob.Username, Password: ob.Password}, nil
+	case "http":
+		return &sbox.HTTPOutboundOptions{DialerOptions: dialerOptions, ServerOptions: server, Username: ob.Username, Password: ob.Password}, nil
+	case "shadowsocks":
+		return &sbox.ShadowsocksOutboundOptions{DialerOptions: dialerOptions, ServerOptions: server, Method: ob.Method, Password: ob.Password}, nil
+	case "vmess":
+		return &sbox.VMessOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server,
+			UUID: ob.UUID, Security: ob.Security,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+		}, nil
+	case "trojan":
+		return &sbox.TrojanOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, Password: ob.Password,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+		}, nil
+	case "vless":
+		return &sbox.VLESSOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server,
+			UUID: ob.UUID, Flow: ob.Flow,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
+		}, nil
+	case "hysteria2":
+		// QUIC-based - TLS is mandatory at the transport level, not an
+		// admin-toggleable option like the classic TCP protocols above.
+		return &sbox.Hysteria2OutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, Password: ob.Password,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	case "tuic":
+		// Also QUIC-based - same mandatory-TLS reasoning as hysteria2.
+		return &sbox.TUICOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server,
+			UUID: ob.UUID, Password: ob.Password, CongestionControl: ob.CongestionControl,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	}
+	return nil, fmt.Errorf("unknown outbound type: %s", ob.Type)
+}
+
+// Suffixes of the two outbounds a direct_fallback outbound is built from.
+// The outbound's own tag becomes the selector routing rules point at.
+const (
+	fallbackPrimarySuffix  = "~wg"
+	fallbackFallbackSuffix = "~direct"
+)
+
+// inboundMatchTags turns a rule's inbound list (plus its optional port
+// restriction) into the sing-box listener tags it must match. A multi-port
+// inbound is matched through its per-port tags; an inbound this config does
+// not define is passed through untouched (it simply matches nothing, as
+// before). The result is empty only when the port restriction excludes
+// every listener - the caller must then drop the rule, because a rule
+// with no inbound criterion at all matches every connection.
+func inboundMatchTags(inbound []string, ports []int, portsByTag map[string][]uint16) []string {
+	allowed := func(p uint16) bool {
+		if len(ports) == 0 {
+			return true
+		}
+		for _, q := range ports {
+			if q == int(p) {
+				return true
+			}
+		}
+		return false
+	}
+	var tags []string
+	for _, tag := range inbound {
+		listenPorts, known := portsByTag[tag]
+		switch {
+		case !known:
+			tags = append(tags, tag)
+		case len(listenPorts) <= 1:
+			if len(listenPorts) == 0 || allowed(listenPorts[0]) {
+				tags = append(tags, tag)
+			}
+		default:
+			for _, p := range listenPorts {
+				if allowed(p) {
+					tags = append(tags, derivedInboundTag(tag, p))
+				}
+			}
+		}
+	}
+	return tags
+}
+
 // buildCoreOptions translates Phase 7.4's Core Config (outbounds/routing
 // rules/DNS/log level/sniffing default) into real sing-box option types -
 // see internal/httpapi/coreconfig.go's validateCoreConfig for the
 // server-side checks a core is guaranteed to have already passed before
 // ever reaching a node (unknown outbound references, invalid enum values).
 // core may be nil (the manual POST /start path predates Core Config and
-// still works with none configured at all).
-func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbox.DNSOptions, *sbox.LogOptions, error) {
+// still works with none configured at all). portsByTag lists each inbound's
+// listen ports, which routing rules that name an inbound need in order to
+// address one port of a multi-port inbound.
+func buildCoreOptions(core *coreSpec, portsByTag map[string][]uint16) ([]sbox.Outbound, *sbox.RouteOptions, *sbox.DNSOptions, *sbox.LogOptions, []nodecore.FallbackGroup, error) {
 	outbounds := []sbox.Outbound{
 		{Type: "direct", Tag: implicitOutboundTagDirect, Options: &sbox.DirectOutboundOptions{}},
 		{Type: "block", Tag: implicitOutboundTagBlock, Options: &sbox.StubOptions{}},
 	}
 	route := &sbox.RouteOptions{Final: implicitOutboundTagDirect}
 	if core == nil {
-		return outbounds, route, nil, nil, nil
+		return outbounds, route, nil, nil, nil, nil
 	}
 
+	var fallbacks []nodecore.FallbackGroup
 	for _, ob := range core.Outbounds {
-		var opts any
-		// Shared by every leaf (non-group) outbound type below - the sing-box
-		// equivalent of Xray's streamSettings.sockopt.interface, which the
-		// real production fleet's per-location WireGuard-tunnel exit
-		// selection depends on entirely. selector/urltest (group types)
-		// don't embed DialerOptions at all, so it's simply never referenced
-		// in those two cases - a set BindInterface on one of those is inert,
-		// never wired to anything.
-		dialerOptions := sbox.DialerOptions{AbstractDialerOptions: sbox.AbstractDialerOptions{BindInterface: ob.BindInterface}}
 		switch ob.Type {
-		case "direct":
-			opts = &sbox.DirectOutboundOptions{DialerOptions: dialerOptions}
 		case "block":
-			opts = &sbox.StubOptions{}
-		case "socks":
-			opts = &sbox.SOCKSOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				Username:      ob.Username, Password: ob.Password,
-			}
-		case "http":
-			opts = &sbox.HTTPOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				Username:      ob.Username, Password: ob.Password,
-			}
-		case "shadowsocks":
-			opts = &sbox.ShadowsocksOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				Method:        ob.Method, Password: ob.Password,
-			}
-		case "vmess":
-			opts = &sbox.VMessOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				UUID:          ob.UUID, Security: ob.Security,
-				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
-			}
-		case "trojan":
-			opts = &sbox.TrojanOutboundOptions{
-				DialerOptions:               dialerOptions,
-				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				Password:                    ob.Password,
-				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
-			}
-		case "vless":
-			opts = &sbox.VLESSOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				UUID:          ob.UUID, Flow: ob.Flow,
-				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, false)},
-			}
-		case "hysteria2":
-			// QUIC-based - TLS is mandatory at the transport level, not an
-			// admin-toggleable option like the classic TCP protocols above.
-			opts = &sbox.Hysteria2OutboundOptions{
-				DialerOptions:               dialerOptions,
-				ServerOptions:               sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				Password:                    ob.Password,
-				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
-			}
-		case "tuic":
-			// Also QUIC-based - same mandatory-TLS reasoning as hysteria2.
-			opts = &sbox.TUICOutboundOptions{
-				DialerOptions: dialerOptions,
-				ServerOptions: sbox.ServerOptions{Server: ob.Server, ServerPort: uint16(ob.ServerPort)},
-				UUID:          ob.UUID, Password: ob.Password, CongestionControl: ob.CongestionControl,
-				OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
-			}
+			outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: &sbox.StubOptions{}})
 		case "selector":
-			opts = &sbox.SelectorOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}
+			outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: &sbox.SelectorOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}})
 		case "urltest":
-			opts = &sbox.URLTestOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}
+			outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: &sbox.URLTestOutboundOptions{Outbounds: resolveOutboundTags(ob.Outbounds)}})
 		default:
-			return nil, nil, nil, nil, fmt.Errorf("unknown outbound type: %s", ob.Type)
+			opts, err := leafOutboundOptions(ob, ob.BindInterface)
+			if err != nil {
+				return nil, nil, nil, nil, nil, err
+			}
+			if !ob.DirectFallback || ob.BindInterface == "" {
+				outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: opts})
+				continue
+			}
+			// Two dialers for one exit, and a selector standing in for the
+			// admin's tag. Which member is live is decided at run time by the
+			// fallback supervisor from the tunnel's health - see
+			// nodecore.Supervisor.
+			plainOpts, err := leafOutboundOptions(ob, "")
+			if err != nil {
+				return nil, nil, nil, nil, nil, err
+			}
+			primary, fallback := ob.Tag+fallbackPrimarySuffix, ob.Tag+fallbackFallbackSuffix
+			outbounds = append(outbounds,
+				sbox.Outbound{Type: ob.Type, Tag: primary, Options: opts},
+				sbox.Outbound{Type: ob.Type, Tag: fallback, Options: plainOpts},
+				sbox.Outbound{Type: "selector", Tag: ob.Tag, Options: &sbox.SelectorOutboundOptions{
+					Outbounds: []string{primary, fallback},
+					Default:   primary,
+					// A tunnel that has just died leaves connections hanging on it;
+					// closing them lets clients reconnect over the fallback at once
+					// instead of waiting out their own timeouts.
+					InterruptExistConnections: true,
+				}},
+			)
+			fallbacks = append(fallbacks, nodecore.FallbackGroup{
+				Group: ob.Tag, Primary: primary, Fallback: fallback, Interface: ob.BindInterface,
+			})
 		}
-		outbounds = append(outbounds, sbox.Outbound{Type: ob.Type, Tag: ob.Tag, Options: opts})
 	}
 
 	rules := make([]sbox.Rule, 0, len(core.RoutingRules)+1)
@@ -703,7 +927,11 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 			IPIsPrivate: r.IPIsPrivate,
 		}
 		if len(r.Inbound) > 0 {
-			raw.Inbound = badoption.Listable[string](r.Inbound)
+			tags := inboundMatchTags(r.Inbound, r.InboundPort, portsByTag)
+			if len(tags) == 0 {
+				continue
+			}
+			raw.Inbound = badoption.Listable[string](tags)
 		}
 		if len(r.Domain) > 0 {
 			raw.Domain = badoption.Listable[string](r.Domain)
@@ -771,7 +999,7 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 					Path: s.Path,
 				}
 			default:
-				return nil, nil, nil, nil, fmt.Errorf("unknown dns server type: %s", s.Type)
+				return nil, nil, nil, nil, nil, fmt.Errorf("unknown dns server type: %s", s.Type)
 			}
 			servers = append(servers, sbox.DNSServerOptions{Type: s.Type, Tag: s.Tag, Options: opts})
 		}
@@ -783,7 +1011,7 @@ func buildCoreOptions(core *coreSpec) ([]sbox.Outbound, *sbox.RouteOptions, *sbo
 		log = &sbox.LogOptions{Level: core.LogLevel}
 	}
 
-	return outbounds, route, dns, log, nil
+	return outbounds, route, dns, log, fallbacks, nil
 }
 
 func resolveOutboundTags(tags []string) []string {
@@ -846,6 +1074,7 @@ func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) 
 	s.mu.Unlock()
 
 	sample := hostmetrics.Collect(running, singBoxVersion)
+	sample.Tunnels = s.tunnelReport(sample.Tunnels)
 	body, err := json.Marshal(reportRequest{Users: users, Host: sample})
 	if err != nil {
 		s.logger.Error("push report: marshal", "error", err)
@@ -869,6 +1098,29 @@ func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Warn("push report: panel rejected report", "status", resp.StatusCode)
 	}
+}
+
+// tunnelReport merges the probe results and the fallback state into the
+// interface reading, so the panel is told what each tunnel is actually doing
+// and not just that its network device exists.
+func (s *server) tunnelReport(read []hostmetrics.Tunnel) []hostmetrics.Tunnel {
+	if s.monitor == nil {
+		return read
+	}
+	health := s.monitor.Health()
+	s.mu.Lock()
+	var active map[string]bool
+	if s.supervisor != nil {
+		active = s.supervisor.ActiveByInterface()
+	}
+	s.mu.Unlock()
+	for name, h := range health {
+		if active[name] {
+			h.FallbackActive = true
+			health[name] = h
+		}
+	}
+	return hostmetrics.ApplyTunnelHealth(read, hostmetrics.ConfiguredTunnelNames(), health)
 }
 
 // pulledConfig is GET /api/internal/node-config's response shape - see
@@ -942,11 +1194,12 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 		for _, u := range in.Users {
 			users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
 		}
-		if err := s.node.UpdateVLESSUsers(tag, users); err != nil {
-			s.logger.Error("pull config: hot-apply users", "tag", tag, "error", err)
-		} else {
-			s.logger.Info("pull config: hot-applied user list", "tag", tag, "users", len(users))
+		for _, listener := range s.plan.listenerTags(tag) {
+			if err := s.node.UpdateVLESSUsers(listener, users); err != nil {
+				s.logger.Error("pull config: hot-apply users", "tag", listener, "error", err)
+			}
 		}
+		s.logger.Info("pull config: hot-applied user list", "tag", tag, "users", len(users))
 	}
 	s.lastPulled = &pulled
 }
@@ -955,27 +1208,13 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 // starts fresh from pulled - the same internal path POST /start already
 // uses. Caller must hold s.mu.
 func (s *server) applyFullLocked(pulled pulledConfig) {
-	if s.node != nil {
-		if err := s.node.Close(); err != nil {
-			s.logger.Warn("pull config: close previous node before restart", "error", err)
-		}
-		s.node = nil
+	if err := s.stopNodeLocked(); err != nil {
+		s.logger.Warn("pull config: close previous node before restart", "error", err)
 	}
-	opts, err := buildOptions(startRequest{Inbounds: pulled.Inbounds, Core: &pulled.Core})
-	if err != nil {
-		s.logger.Error("pull config: build options", "error", err)
-		return
-	}
-	node, err := nodecore.New(s.ctx, opts, s.traffic)
-	if err != nil {
-		s.logger.Error("pull config: build node", "error", err)
-		return
-	}
-	if err := node.Start(); err != nil {
+	if err := s.startNodeLocked(startRequest{Inbounds: pulled.Inbounds, Core: &pulled.Core}); err != nil {
 		s.logger.Error("pull config: start node", "error", err)
 		return
 	}
-	s.node = node
 	s.lastPulled = &pulled
 	s.logger.Info("pull config: applied full restart", "inbounds", len(pulled.Inbounds), "version", pulled.Version)
 }

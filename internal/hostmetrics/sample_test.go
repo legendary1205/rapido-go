@@ -1,6 +1,8 @@
 package hostmetrics
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -170,5 +172,92 @@ func TestCollectDoesNotPanicOnAMissingProc(t *testing.T) {
 	s := Collect(true, "test-version")
 	if !s.XrayRunning || s.XrayVersion != "test-version" {
 		t.Errorf("caller-supplied fields not preserved: %+v", s)
+	}
+}
+
+// A WireGuard device's uevent is the only place the kernel names its type.
+// This exact text was read from a real tunnel on a production node - there
+// is no /sys/class/net/<if>/wireguard directory.
+func TestParseUeventDevTypeRecognisesWireGuard(t *testing.T) {
+	if got := parseUeventDevType("DEVTYPE=wireguard\nINTERFACE=uk\nIFINDEX=14\n"); got != "wireguard" {
+		t.Errorf("parseUeventDevType = %q, want wireguard", got)
+	}
+	if got := parseUeventDevType("INTERFACE=eth0\nIFINDEX=2\n"); got != "" {
+		t.Errorf("an ordinary NIC has no DEVTYPE, got %q", got)
+	}
+	if got := parseUeventDevType(""); got != "" {
+		t.Errorf("empty uevent = %q, want empty", got)
+	}
+}
+
+func TestConfiguredTunnelNamesReadsWgQuickConfigs(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"uk.conf", "Czech.conf", "notes.txt", "sweden.conf.bak"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "dir.conf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := wireguardConfDir
+	wireguardConfDir = dir
+	t.Cleanup(func() { wireguardConfDir = old })
+
+	got := ConfiguredTunnelNames()
+	want := []string{"Czech", "uk"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("ConfiguredTunnelNames = %v, want %v", got, want)
+	}
+
+	wireguardConfDir = filepath.Join(dir, "does-not-exist")
+	if got := ConfiguredTunnelNames(); got != nil {
+		t.Errorf("a host without /etc/wireguard has no configured tunnels, got %v", got)
+	}
+}
+
+func TestApplyTunnelHealthReportsASwitchedOffTunnelAsDown(t *testing.T) {
+	probeMs := 41.5
+	tunnels := []Tunnel{
+		{Name: "uk", Up: true, RxBytes: 10},
+		{Name: "sweden", Up: true, RxBytes: 20},
+	}
+	configured := []string{"italy", "sweden", "uk"}
+	health := map[string]TunnelHealth{
+		"uk":     {Present: true, Up: true, ProbeMs: &probeMs},
+		"sweden": {Present: true, Up: false, Error: "probe timed out", FallbackActive: true},
+	}
+
+	got := ApplyTunnelHealth(tunnels, configured, health)
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (italy is configured but its interface is gone): %+v", len(got), got)
+	}
+	byName := map[string]Tunnel{}
+	for _, tn := range got {
+		byName[tn.Name] = tn
+	}
+	if got[0].Name != "italy" || got[1].Name != "sweden" || got[2].Name != "uk" {
+		t.Errorf("not sorted by name: %+v", got)
+	}
+	if it := byName["italy"]; it.Up || it.Present || it.Error == "" {
+		t.Errorf("italy = %+v, want down, not present, with an explanation", it)
+	}
+	if uk := byName["uk"]; !uk.Up || !uk.Present || uk.ProbeMs == nil || *uk.ProbeMs != 41.5 || uk.RxBytes != 10 {
+		t.Errorf("uk = %+v, want up/present with the probe latency and the original byte counters", uk)
+	}
+	if sw := byName["sweden"]; sw.Up || !sw.Present || !sw.FallbackActive || sw.Error != "probe timed out" {
+		t.Errorf("sweden = %+v, want present but down, fallback active", sw)
+	}
+}
+
+func TestApplyTunnelHealthWithoutProbeKeepsLinkStateGuess(t *testing.T) {
+	got := ApplyTunnelHealth([]Tunnel{{Name: "uk", Up: true}}, nil, nil)
+	if len(got) != 1 || !got[0].Up || !got[0].Present {
+		t.Errorf("got %+v, want the tunnel untouched but marked present", got)
+	}
+	// Health for a name that is neither read nor configured is ignored, not invented.
+	got = ApplyTunnelHealth(nil, nil, map[string]TunnelHealth{"ghost": {Up: true}})
+	if len(got) != 0 {
+		t.Errorf("a tunnel that exists nowhere must not be invented: %+v", got)
 	}
 }

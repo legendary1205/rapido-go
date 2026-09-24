@@ -191,6 +191,10 @@ func (h *Handler) handleReconnectNode(c *gin.Context) {
 // buildNodeConfigPayload's own "include_db_users()" behavior exactly
 // (including its same known gap: no per-user inbound exclusion - see that
 // file's doc comment).
+//
+// An inbound whose hosts span several ports is exported as ONE Xray inbound
+// with a comma-separated "port"; PUT /api/core/config still splits such an
+// inbound back into one panel inbound per port (xrayimport.ParseXrayConfig).
 func (h *Handler) buildRawXrayInbounds(ctx context.Context) ([]xrayimport.ExportInbound, error) {
 	inboundRows, err := h.store.Queries.ListAutoSyncInbounds(ctx)
 	if err != nil {
@@ -232,7 +236,7 @@ func (h *Handler) buildRawXrayInbounds(ctx context.Context) ([]xrayimport.Export
 			RealityPrivateKey: in.RealityPrivateKey.String, RealityShortIDs: in.RealityShortIds,
 			RealityServerName: in.RealityServerName.String, RealityServerPort: in.RealityServerPort.Int32,
 			TLSCertificate: in.TlsCertificate.String, TLSKey: in.TlsKey.String, TLSServerName: in.TlsServerName.String,
-			Port: in.Port.Int32, SNI: in.Sni.String, Host: in.Host.String,
+			Port: in.Port.Int32, Ports: validHostPorts(in.Ports), SNI: in.Sni.String, Host: in.Host.String,
 			Clients: clientsByProtocol[in.Protocol],
 		})
 	}
@@ -257,7 +261,7 @@ func coreRoutingRulesToExport(in []routingRuleDTO) []xrayimport.RoutingRule {
 	out := make([]xrayimport.RoutingRule, len(in))
 	for i, r := range in {
 		out[i] = xrayimport.RoutingRule{
-			Inbound: r.Inbound, Domain: r.Domain, DomainSuffix: r.DomainSuffix, DomainKeyword: r.DomainKeyword,
+			Inbound: r.Inbound, InboundPort: r.InboundPort, Domain: r.Domain, DomainSuffix: r.DomainSuffix, DomainKeyword: r.DomainKeyword,
 			IPCIDR: r.IPCIDR, IPIsPrivate: r.IPIsPrivate, Port: r.Port, PortRange: r.PortRange,
 			Network: r.Network, Protocol: r.Protocol, OutboundTag: r.OutboundTag,
 		}

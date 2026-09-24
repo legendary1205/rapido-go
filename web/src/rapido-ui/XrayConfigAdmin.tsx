@@ -1,15 +1,19 @@
-import { FC, useEffect, useRef, useState } from "react";
+import { FC, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useXrayConfigQuery, useSaveXrayConfigMutation } from "hooks/useXrayConfigQuery";
-import { useImportXrayConfigMutation } from "hooks/useInboundsQuery";
+import { useImportXrayConfigMutation, useInboundPortsQuery } from "hooks/useInboundsQuery";
 import { XrayConfig, XrayConfigWritePayload } from "types/XrayConfig";
 import { XrayImportResult } from "types/XrayImport";
 import { errorText } from "service/errors";
 import { locateJSONSyntaxError } from "utils/jsonSyntaxLocator";
+import { validateCoreConfigDoc } from "utils/coreConfigRules";
+import { parseInboundPortInput } from "utils/inboundPorts";
 import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
 import { Modal } from "rapido-ui/Modal";
+import { ltrIsolate } from "rapido-ui/bidi";
+import { XrayConfigStructure, parseDocObject } from "rapido-ui/XrayConfigStructure";
 
 // parseXrayConfigJSON is deliberately lenient about the core-config fields
 // (same reasoning as coreConfigHelpers.ts's own parseFullConfigJSON: only
@@ -73,6 +77,14 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const lineCount = text.split("\n").length;
+  // What a rule's ports field currently holds while it's mid-typing (see
+  // XrayConfigStructure) - kept here so an unparseable draft, which never
+  // reaches the JSON, can still hold Apply back.
+  const [portDrafts, setPortDrafts] = useState<Record<number, string>>({});
+  const { data: inboundPorts } = useInboundPortsQuery();
+  const issues = useMemo(() => validateCoreConfigDoc(parseDocObject(text)), [text]);
+  const hasBadPortDraft = Object.values(portDrafts).some((draft) => !parseInboundPortInput(draft).ok);
+  const blocked = issues.length > 0 || hasBadPortDraft;
   // Set only while a parsed pending payload is genuinely about to delete one
   // or more inbounds (omitted from the JSON - see xrayconfig.go's own doc
   // comment on why that's real deletion here, not a no-op like the old
@@ -89,7 +101,10 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
   // embedded HostsAdmin creating a new inbound's default host elsewhere)
   // must never clobber something the admin is mid-way through typing here.
   useEffect(() => {
-    if (!dirty) setText(JSON.stringify(config, null, 2));
+    if (!dirty) {
+      setText(JSON.stringify(config, null, 2));
+      setPortDrafts({});
+    }
   }, [config, dirty]);
 
   const doApply = (payload: XrayConfigWritePayload) => {
@@ -99,12 +114,30 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
         setPreviousText(before);
         setDirty(false);
         setPendingRemoval(null);
+        setPortDrafts({});
       },
       onError: (e) => setError(errorText(e, t("rapido.xrayConfig.applyFailed"))),
     });
   };
 
+  // Every edit to the text - typed into the textarea or made through the
+  // guided view above it - lands here.
+  const changeText = (next: string) => {
+    setText(next);
+    setDirty(true);
+    setError("");
+    setErrorLine(null);
+    setPendingRemoval(null);
+  };
+
+  const setPortDraft = (ruleIndex: number, draft: string | null) =>
+    setPortDrafts((prev) => {
+      const { [ruleIndex]: _dropped, ...rest } = prev;
+      return draft === null ? rest : { ...rest, [ruleIndex]: draft };
+    });
+
   const apply = () => {
+    if (blocked) return;
     setError("");
     setErrorLine(null);
     setPendingRemoval(null);
@@ -130,6 +163,7 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
     setError("");
     setErrorLine(null);
     setPendingRemoval(null);
+    setPortDrafts({});
     setText(JSON.stringify(config, null, 2));
   };
 
@@ -143,6 +177,7 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
         onSuccess: () => {
           setPreviousText(null);
           setDirty(false);
+          setPortDrafts({});
         },
         onError: (e) => setError(errorText(e, t("rapido.xrayConfig.revertFailed"))),
       });
@@ -168,6 +203,14 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
         </div>
         {dirty && <Badge tone="yellow">{t("rapido.xrayConfig.unapplied")}</Badge>}
       </div>
+
+      <XrayConfigStructure
+        text={text}
+        onEdit={changeText}
+        inboundPorts={inboundPorts}
+        portDrafts={portDrafts}
+        onPortDraft={setPortDraft}
+      />
 
       <div className="relative">
         {/* Absolutely positioned against this wrapper, whose own height is
@@ -198,14 +241,32 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
           className="w-full resize-y whitespace-pre overflow-x-auto rounded-lg border border-rapido-border bg-rapido-bg py-2 pl-11 pr-3 font-mono text-xs leading-5 text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
           value={text}
           onChange={(e) => {
-            setText(e.target.value);
-            setDirty(true);
-            setError("");
-            setErrorLine(null);
-            setPendingRemoval(null);
+            changeText(e.target.value);
+            setPortDrafts({});
           }}
         />
       </div>
+      {issues.length > 0 && (
+        <div role="alert" className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          <p className="mb-1 font-medium">{t("rapido.xrayConfig.issuesTitle")}</p>
+          <ul className="list-inside list-disc space-y-0.5 text-xs">
+            {issues.map((issue) => (
+              <li key={`${issue.scope}-${issue.index}-${issue.kind}`}>
+                {t(`rapido.xrayConfig.issue${issue.kind[0].toUpperCase()}${issue.kind.slice(1)}`, {
+                  n: issue.index + 1,
+                  ref: ltrIsolate(issue.ref),
+                  value: ltrIsolate(issue.value ?? ""),
+                })}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {hasBadPortDraft && (
+        <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          {t("rapido.xrayConfig.draftBlockedHint")}
+        </div>
+      )}
       {error && (
         <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}
@@ -228,13 +289,13 @@ const XrayConfigJSONEditor: FC<{ config: XrayConfig }> = ({ config }) => {
             <Button
               variant="chip"
               tone="amber"
-              disabled={save.isPending}
+              disabled={save.isPending || blocked}
               onClick={() => doApply(pendingRemoval.payload)}
             >
               {save.isPending ? t("rapido.pleaseWait") : t("rapido.xrayConfig.applyConfirmRemoval")}
             </Button>
           ) : (
-            <Button variant="chip" tone="accent" disabled={!dirty || save.isPending} onClick={apply}>
+            <Button variant="chip" tone="accent" disabled={!dirty || save.isPending || blocked} onClick={apply}>
               {save.isPending ? t("rapido.pleaseWait") : t("rapido.xrayConfig.apply")}
             </Button>
           )}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +400,67 @@ func TestDetectSubscriptionFormatVersionGating(t *testing.T) {
 				t.Errorf("detectSubscriptionFormat(%q, %+v) = %q, want %q", tc.userAgent, tc.flags, got, tc.wantFormat)
 			}
 		})
+	}
+}
+
+// TestSubscriptionEmitsOneLinkPerHostForAnInboundWithManyPorts guards the
+// shape a merged multi-port inbound has: ONE inbound tag carrying a host per
+// port. Every enabled host must still become its own link, with its own
+// port and remark, in the admin's priority order - not one link per tag, and
+// not de-duplicated by anything the hosts have in common (here two of them
+// share an address, and the disabled one shares a port with an enabled one).
+func TestSubscriptionEmitsOneLinkPerHostForAnInboundWithManyPorts(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "main", "protocol": "vless", "network": "tcp", "security": "none"},
+	})
+	// Submitted out of priority order on purpose: the links must follow
+	// priority, not array position or port number.
+	hostsResp := doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"main": []map[string]interface{}{
+			{"remark": "third", "address": "a.example.com", "port": 20002, "security": "none", "priority": 3},
+			{"remark": "first", "address": "a.example.com", "port": 20000, "security": "none", "priority": 1},
+			{"remark": "off", "address": "b.example.com", "port": 20001, "security": "none", "priority": 2, "is_disabled": true},
+			{"remark": "second", "address": "b.example.com", "port": 20001, "security": "none", "priority": 2},
+		},
+	})
+	if hostsResp.Code != 200 {
+		t.Fatalf("put hosts: %d %v", hostsResp.Code, hostsResp.Body)
+	}
+	resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "many_ports_user",
+		"proxies":  map[string]interface{}{"vless": map[string]interface{}{}},
+	})
+	if resp.Code != 200 {
+		t.Fatalf("create user: %d %v", resp.Code, resp.Body)
+	}
+
+	subToken := subscription.CreateToken("many_ports_user", []byte(testSubSecret))
+	subResp := doRequest(t, router, "GET", "/sub/"+subToken, "", nil)
+	if subResp.Code != 200 {
+		t.Fatalf("get subscription: %d body=%s", subResp.Code, subResp.Raw)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(string(subResp.Raw))
+	if err != nil {
+		t.Fatalf("subscription body is not valid base64: %v", err)
+	}
+	links := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+
+	want := []struct{ host, remark string }{
+		{"a.example.com:20000", "first"},
+		{"b.example.com:20001", "second"},
+		{"a.example.com:20002", "third"},
+	}
+	if len(links) != len(want) {
+		t.Fatalf("got %d links, want %d (the disabled host must not appear): %q", len(links), len(want), links)
+	}
+	for i, w := range want {
+		u, err := url.Parse(links[i])
+		if err != nil {
+			t.Fatalf("link %d is not a URL: %v (%s)", i, err, links[i])
+		}
+		if u.Scheme != "vless" || u.Host != w.host || u.Fragment != w.remark {
+			t.Errorf("link %d = %s (host %q remark %q), want vless host %q remark %q", i, links[i], u.Host, u.Fragment, w.host, w.remark)
+		}
 	}
 }

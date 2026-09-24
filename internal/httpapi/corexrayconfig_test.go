@@ -93,3 +93,54 @@ func TestGetRawXrayConfigReturnsRealXrayShapedJSON(t *testing.T) {
 		t.Errorf("expected a routing object, got %v", resp.Body)
 	}
 }
+
+// TestGetRawXrayConfigExportsMultiPortInboundAndLocalPortRules covers the
+// wiring the xrayimport unit test cannot: buildRawXrayInbounds feeding each
+// inbound's host ports, and coreRoutingRulesToExport carrying inbound_port.
+func TestGetRawXrayConfigExportsMultiPortInboundAndLocalPortRules(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "main", "protocol": "vless"},
+		{"tag": "solo", "protocol": "trojan"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"main": multiPortHosts(),
+		"solo": []map[string]interface{}{{"remark": "s", "address": "1.2.3.4", "port": 2087}},
+	})
+	putResp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{{"tag": "uk", "type": "direct", "bind_interface": "wg-uk", "direct_fallback": true}},
+		"routing_rules": []map[string]interface{}{
+			{"inbound": []string{"main"}, "inbound_port": []int{20001, 20002}, "outbound_tag": "uk"},
+		},
+	})
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("put core config: %d %v", putResp.Code, putResp.Body)
+	}
+
+	resp := doRequest(t, router, "GET", "/api/core/config", token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get raw xray config: %d %v", resp.Code, resp.Body)
+	}
+	byTag := map[string]map[string]interface{}{}
+	for _, i := range resp.Body["inbounds"].([]interface{}) {
+		in := i.(map[string]interface{})
+		byTag[in["tag"].(string)] = in
+	}
+	if got := byTag["main"]["port"]; got != "20000,20001,20002" {
+		t.Errorf("main port = %#v, want the comma string \"20000,20001,20002\"", got)
+	}
+	if got := byTag["solo"]["port"]; got != float64(2087) {
+		t.Errorf("solo port = %#v, want the bare number 2087", got)
+	}
+	rules := resp.Body["routing"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 1 {
+		t.Fatalf("rules = %v, want 1", rules)
+	}
+	rule := rules[0].(map[string]interface{})
+	if rule["localPort"] != "20001,20002" {
+		t.Errorf("rule localPort = %#v, want \"20001,20002\"", rule["localPort"])
+	}
+	if tags, _ := rule["inboundTag"].([]interface{}); len(tags) != 1 || tags[0] != "main" {
+		t.Errorf("rule inboundTag = %v, want [main]", rule["inboundTag"])
+	}
+}

@@ -100,6 +100,11 @@ export type Outbound = {
    * streamSettings.sockopt.interface, which real per-location exit
    * selection depends on. Meaningless for selector/urltest. */
   bind_interface?: string;
+  /** When bind_interface's device is down, dial directly instead of failing
+   * (users keep working but exit from the server's own IP). Server-side
+   * only allowed with a non-empty bind_interface on a leaf type - not
+   * selector/urltest/block. Send it only when true. */
+  direct_fallback?: boolean;
 };
 
 export const NETWORK_TYPES = ["tcp", "udp", "icmp"] as const;
@@ -126,6 +131,10 @@ export type RoutingRule = {
    * is). This is what lets one rule route e.g. only "node1"'s traffic to
    * a specific outbound. */
   inbound?: string[];
+  /** Only match connections that arrived on these local listen ports of the
+   * selected inbound(s). Server-side requires a non-empty `inbound`, every
+   * port in 1..65535 and no duplicates. Omit when empty. */
+  inbound_port?: number[];
   domain?: string[];
   domain_suffix?: string[];
   domain_keyword?: string[];

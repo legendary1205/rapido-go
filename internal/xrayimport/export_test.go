@@ -179,3 +179,57 @@ func TestBuildXrayJSONRoutingRuleFieldMapping(t *testing.T) {
 		t.Errorf("port = %v, want 80,1000-2000", rule["port"])
 	}
 }
+
+func TestBuildXrayJSONMultiPortInboundAndLocalPortRule(t *testing.T) {
+	inbounds := []ExportInbound{
+		{Tag: "main", Protocol: "vless", Security: "none", Port: 20000, Ports: []int{20000, 20001, 20004}},
+		{Tag: "single", Protocol: "vless", Security: "none", Port: 8443, Ports: []int{8443}},
+		{Tag: "legacy", Protocol: "trojan", Security: "none", Port: 2087},
+	}
+	rules := []RoutingRule{
+		{Inbound: []string{"main"}, InboundPort: []int{20004}, OutboundTag: "uk"},
+		{Inbound: []string{"main"}, InboundPort: []int{20000, 20001}, OutboundTag: "de"},
+		{Inbound: []string{"main"}, OutboundTag: "fr"},
+	}
+	raw, err := BuildXrayJSON(inbounds, nil, rules, nil, "", false)
+	if err != nil {
+		t.Fatalf("BuildXrayJSON: %v", err)
+	}
+
+	// Decoded through RawMessage so a number and a string can't be confused:
+	// the single-port form must stay a bare JSON number, byte for byte.
+	var doc struct {
+		Inbounds []map[string]json.RawMessage `json:"inbounds"`
+		Routing  struct {
+			Rules []map[string]json.RawMessage `json:"rules"`
+		} `json:"routing"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	wantPort := []string{`"20000,20001,20004"`, `8443`, `2087`}
+	for i, want := range wantPort {
+		if got := string(doc.Inbounds[i]["port"]); got != want {
+			t.Errorf("inbound %d port = %s, want %s", i, got, want)
+		}
+	}
+
+	wantLocal := []string{`"20004"`, `"20000,20001"`, ""}
+	for i, want := range wantLocal {
+		got, present := doc.Routing.Rules[i]["localPort"]
+		if want == "" {
+			if present {
+				t.Errorf("rule %d has localPort %s, want none", i, got)
+			}
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("rule %d localPort = %s, want %s", i, got, want)
+		}
+		var tags []string
+		if err := json.Unmarshal(doc.Routing.Rules[i]["inboundTag"], &tags); err != nil || len(tags) != 1 || tags[0] != "main" {
+			t.Errorf("rule %d inboundTag = %s, want [main]", i, doc.Routing.Rules[i]["inboundTag"])
+		}
+	}
+}

@@ -3,9 +3,19 @@ import classNames from "classnames";
 import { useTranslation } from "react-i18next";
 
 import { useMonitoringHistoryQuery, useMonitoringQuery } from "hooks/useMonitoringQuery";
-import { MonitoringHost } from "types/Monitoring";
+import { MonitoringHost, MonitoringTunnel } from "types/Monitoring";
+import { formatBytes } from "utils/formatByte";
 import { formatRate, hostDisplayState, hostTone, meterTone } from "utils/monitoringHost";
 import { buildSparklinePath } from "utils/sparkline";
+import {
+  FleetTunnelSummary,
+  handshakeAge,
+  sortTunnels,
+  summarizeFleetTunnels,
+  tunnelProblemLabel,
+  tunnelStatus,
+  tunnelTone,
+} from "utils/tunnelStatus";
 import { Badge } from "./Badge";
 import { Card, CardSubtitle, CardTitle } from "./Card";
 
@@ -15,9 +25,10 @@ import { Card, CardSubtitle, CardTitle } from "./Card";
 // old version, all because the Go node agent simply doesn't report them:
 //  - uptime, load average, and the Xray running/version badge.
 //  - per-request counts ("requests" breakdown).
-//  - per-tunnel/per-peer WireGuard detail with individual handshake ages -
-//    tunnels_up/tunnels_total are just counts here, so the tunnel section
-//    below is a single "N/M tunnels up" badge, not a per-tunnel list.
+// WireGuard is reported per tunnel (host.tunnels: status, handshake age,
+// probe latency, traffic, whether the direct fallback is carrying it), with
+// tunnels_up/tunnels_total kept as the headline count. The classification and
+// sorting live in utils/tunnelStatus.ts.
 // `Meter` is exported so OverviewNew.tsx's reinstated fleet-health section
 // can reuse the exact same meter look without a second implementation.
 
@@ -60,6 +71,160 @@ const Spark: FC<{ points: number[]; className?: string }> = ({ points, className
   );
 };
 
+const statusLabelKey = {
+  up: "rapido.monitoring.tunnelUp",
+  down: "rapido.monitoring.tunnelDown",
+  missing: "rapido.monitoring.tunnelMissing",
+  "down-fallback": "rapido.monitoring.tunnelDownFallback",
+} as const;
+
+const agoLabelKey = {
+  seconds: "rapido.monitoring.agoSeconds",
+  minutes: "rapido.monitoring.agoMinutes",
+  hours: "rapido.monitoring.agoHours",
+  days: "rapido.monitoring.agoDays",
+} as const;
+
+// Tunnel names, byte counts and latencies are LTR tokens (dir="ltr"); the
+// handshake age is a whole translated phrase ("3 min ago" / "3 دقیقه پیش"),
+// so it stays in the page's direction to keep its words in order.
+export const TunnelRow: FC<{ tunnel: MonitoringTunnel }> = ({ tunnel }) => {
+  const { t } = useTranslation();
+  const status = tunnelStatus(tunnel);
+  const age = handshakeAge(tunnel);
+  const ageText =
+    age.kind === "never" ? t("rapido.monitoring.tunnelNever") : t(agoLabelKey[age.unit], { value: age.value });
+
+  return (
+    <li className="rounded-lg border border-rapido-border bg-rapido-raised/40 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium text-rapido-text" dir="ltr">
+            {tunnel.name}
+          </span>
+          <Badge tone={tunnelTone(status)} title={tunnel.error || undefined}>
+            {t(statusLabelKey[status])}
+          </Badge>
+          {/* The pill says "missing"; this is the extra fact that traffic is still being served. */}
+          {status === "missing" && tunnel.fallback_active && (
+            <Badge tone="yellow">{t("rapido.monitoring.tunnelFallbackChip")}</Badge>
+          )}
+        </div>
+        {tunnel.present && tunnel.probe_ms != null && (
+          <span className="text-xs text-rapido-muted">
+            {t("rapido.monitoring.tunnelProbe")}:{" "}
+            <span className="font-medium tabular-nums text-rapido-text" dir="ltr">
+              {Math.round(tunnel.probe_ms)} ms
+            </span>
+          </span>
+        )}
+      </div>
+      {tunnel.present && (
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-rapido-muted">
+          <span>
+            {t("rapido.monitoring.lastHandshake")}: <span className="text-rapido-text">{ageText}</span>
+          </span>
+          <span className="tabular-nums" dir="ltr">
+            <span className="text-sky-400" title={t("rapido.monitoring.download")}>
+              ↓ {formatBytes(tunnel.rx_bytes)}
+            </span>{" "}
+            <span className="text-rapido-accent" title={t("rapido.monitoring.upload")}>
+              ↑ {formatBytes(tunnel.tx_bytes)}
+            </span>
+          </span>
+        </div>
+      )}
+      {tunnel.error && (
+        <div className="mt-1 break-words text-xs text-rapido-muted" title={tunnel.error}>
+          {t("rapido.monitoring.tunnelError")}:{" "}
+          <span dir="ltr" className="text-red-300/80">
+            {tunnel.error}
+          </span>
+        </div>
+      )}
+    </li>
+  );
+};
+
+const TunnelList: FC<{ host: MonitoringHost; tunnels: MonitoringTunnel[] }> = ({ host, tunnels }) => {
+  const { t } = useTranslation();
+  const sorted = useMemo(() => sortTunnels(tunnels), [tunnels]);
+  const statuses = sorted.map(tunnelStatus);
+  const badgeTone = statuses.every((s) => s === "up")
+    ? "green"
+    : statuses.every((s) => s === "up" || s === "down-fallback")
+    ? "yellow"
+    : "red";
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-rapido-muted">{t("rapido.monitoring.tunnels")}</span>
+        <Badge tone={badgeTone} dir="ltr">
+          {host.tunnels_up ?? statuses.filter((s) => s === "up").length}/{host.tunnels_total ?? tunnels.length}
+        </Badge>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {sorted.map((tunnel) => (
+          <TunnelRow key={tunnel.name} tunnel={tunnel} />
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const TUNNEL_WARNING_LIMIT = 6;
+
+export const TunnelWarning: FC<{ summary: FleetTunnelSummary }> = ({ summary }) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  if (summary.severity === "none") return null;
+
+  const { problems, withFallback } = summary;
+  const withoutFallback = problems.length - withFallback;
+  const shown = expanded ? problems : problems.slice(0, TUNNEL_WARNING_LIMIT);
+
+  return (
+    <div
+      role="alert"
+      className={classNames(
+        "rounded-xl border px-4 py-3 text-sm",
+        summary.severity === "critical"
+          ? "border-red-500/30 bg-red-500/10 text-red-300"
+          : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+      )}
+    >
+      <div className="font-semibold">
+        {t("rapido.monitoring.tunnelsNotUpTitle", { down: problems.length, total: summary.total })}
+      </div>
+      <ul className="mt-2 flex flex-wrap gap-1.5">
+        {shown.map((p, i) => (
+          <li key={`${i}-${tunnelProblemLabel(p)}`} className="rounded-full bg-black/25 px-2.5 py-0.5 text-xs" dir="ltr">
+            {tunnelProblemLabel(p)}
+          </li>
+        ))}
+      </ul>
+      {problems.length > TUNNEL_WARNING_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-2 text-xs underline underline-offset-2 hover:no-underline"
+        >
+          {expanded
+            ? t("rapido.monitoring.tunnelsShowFewer")
+            : t("rapido.monitoring.tunnelsShowAll", { n: problems.length })}
+        </button>
+      )}
+      {withFallback > 0 && (
+        <p className="mt-2 text-xs">{t("rapido.monitoring.tunnelsFallbackNote", { n: withFallback })}</p>
+      )}
+      {withoutFallback > 0 && (
+        <p className="mt-1 text-xs">{t("rapido.monitoring.tunnelsNoFallbackNote", { n: withoutFallback })}</p>
+      )}
+    </div>
+  );
+};
+
 const HostCard: FC<{ host: MonitoringHost }> = ({ host }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -85,7 +250,10 @@ const HostCard: FC<{ host: MonitoringHost }> = ({ host }) => {
       ? "border-red-500/30"
       : "border-rapido-border";
 
-  const hasTunnels = (host.tunnels_total ?? 0) > 0;
+  const tunnels = host.tunnels ?? [];
+  const hasTunnelDetail = tunnels.length > 0;
+  // Only a backend without per-tunnel detail still needs the bare N/M.
+  const hasTunnelCount = !hasTunnelDetail && (host.tunnels_total ?? 0) > 0;
 
   return (
     <Card className={classNames("flex flex-col gap-4", borderTone)}>
@@ -128,7 +296,7 @@ const HostCard: FC<{ host: MonitoringHost }> = ({ host }) => {
                 {host.connections ?? "—"}
               </span>
             </div>
-            {hasTunnels && (
+            {hasTunnelCount && (
               <div>
                 <span className="text-rapido-muted">{t("rapido.monitoring.tunnels")}: </span>
                 <span className="font-medium text-rapido-text tabular-nums" dir="ltr">
@@ -137,6 +305,8 @@ const HostCard: FC<{ host: MonitoringHost }> = ({ host }) => {
               </div>
             )}
           </div>
+
+          {hasTunnelDetail && <TunnelList host={host} tunnels={tunnels} />}
 
           <button
             type="button"
@@ -195,6 +365,7 @@ export const Monitoring: FC = () => {
     }),
     [hosts]
   );
+  const tunnelSummary = useMemo(() => summarizeFleetTunnels(hosts), [hosts]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -208,6 +379,8 @@ export const Monitoring: FC = () => {
           {t("rapido.monitoring.failed")}
         </div>
       )}
+
+      <TunnelWarning summary={tunnelSummary} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
@@ -232,10 +405,25 @@ export const Monitoring: FC = () => {
         </Card>
         <Card>
           <CardSubtitle>{t("rapido.monitoring.tunnels")}</CardSubtitle>
-          <div className="mt-1 tabular-nums text-2xl font-semibold text-rapido-text" dir="ltr">
+          <div
+            className={classNames(
+              "mt-1 tabular-nums text-2xl font-semibold",
+              tunnelSummary.severity === "critical"
+                ? "text-red-400"
+                : tunnelSummary.severity === "warning"
+                ? "text-amber-400"
+                : "text-rapido-text"
+            )}
+            dir="ltr"
+          >
             {summary.tunnelsUp}
             <span className="text-base text-rapido-muted"> / {summary.tunnels}</span>
           </div>
+          {tunnelSummary.withFallback > 0 && (
+            <div className="mt-1 text-xs text-amber-400">
+              {t("rapido.monitoring.tunnelsFallbackCount", { n: tunnelSummary.withFallback })}
+            </div>
+          )}
         </Card>
       </div>
 

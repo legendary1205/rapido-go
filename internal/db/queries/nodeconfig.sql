@@ -6,14 +6,20 @@
 -- one with security='tls' and no certificate yet stays excluded, same as
 -- before, rather than being pushed to nodes with no TLS material to serve.
 -- The primary host (lowest id, not disabled, with a real port) supplies
--- the actual listen port - Hosts can carry several rows per inbound tag
--- for client-facing branding, but a raw inbound listener has exactly one
--- real port, same limitation the Xray config this data model is descended
--- from already has.
+-- the single back-compat listen port (`port`) for a node that predates
+-- multi-port inbounds; `ports` is every distinct port of the inbound's
+-- non-disabled hosts, ascending, for a node that expands one logical inbound
+-- into a listener per port. Hosts can carry several rows per inbound tag,
+-- and several of them may share a port - which is why `ports` is DISTINCT.
 SELECT i.tag, i.protocol, i.network, i.header_type, i.security,
        i.reality_private_key, i.reality_short_ids, i.reality_server_name, i.reality_server_port,
        i.tls_certificate, i.tls_key, i.tls_server_name,
-       h.port, h.sni, h.host
+       h.port, h.sni, h.host,
+       ARRAY(
+           SELECT DISTINCT hp.port FROM hosts hp
+           WHERE hp.inbound_tag = i.tag AND hp.is_disabled IS NOT TRUE AND hp.port IS NOT NULL
+           ORDER BY hp.port
+       )::int[] AS ports
 FROM inbounds i
 JOIN LATERAL (
     SELECT port, sni, host FROM hosts

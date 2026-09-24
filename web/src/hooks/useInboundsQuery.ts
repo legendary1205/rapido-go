@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetch } from "service/http";
-import { InboundsByProtocol } from "types/Inbound";
+import { InboundListEntry, InboundsByProtocol } from "types/Inbound";
 import { XrayImportRequest, XrayImportResult } from "types/XrayImport";
+import { portsByTag } from "utils/inboundPorts";
 import { queryKeys } from "utils/queryClient";
 
 // GET /api/inbounds - protocol -> tag list (see types/Inbound.ts on why this
@@ -16,20 +17,26 @@ import { queryKeys } from "utils/queryClient";
 // client is written against. Nothing in this dashboard needs more than the
 // tag, so the objects are flattened to tags here, in one place, instead of
 // reshaping every consumer.
+type RawInbounds = Record<string, Array<Partial<InboundListEntry> & { tag: string } | string>>;
+
+const fetchInbounds = () => fetch<RawInbounds>("/inbounds");
+
+const toTagsByProtocol = (raw: RawInbounds): InboundsByProtocol => {
+  const byProtocol: InboundsByProtocol = {};
+  for (const [protocol, entries] of Object.entries(raw ?? {})) {
+    byProtocol[protocol] = (entries ?? []).map((entry) => (typeof entry === "string" ? entry : entry.tag));
+  }
+  return byProtocol;
+};
+
 export const useInboundsQuery = () =>
-  useQuery({
-    queryKey: queryKeys.inbounds,
-    queryFn: async () => {
-      const raw = await fetch<Record<string, Array<{ tag: string } | string>>>("/inbounds");
-      const byProtocol: InboundsByProtocol = {};
-      for (const [protocol, entries] of Object.entries(raw ?? {})) {
-        byProtocol[protocol] = (entries ?? []).map((entry) =>
-          typeof entry === "string" ? entry : entry.tag
-        );
-      }
-      return byProtocol;
-    },
-  });
+  useQuery({ queryKey: queryKeys.inbounds, queryFn: fetchInbounds, select: toTagsByProtocol });
+
+// Same query key and fetch as useInboundsQuery (one request, one cache
+// entry), just a different view of the response - the Xray Config page shows
+// every port an inbound listens on.
+export const useInboundPortsQuery = () =>
+  useQuery({ queryKey: queryKeys.inbounds, queryFn: fetchInbounds, select: portsByTag });
 
 // POST /api/inbounds/import-xray - called twice per real import: once
 // with confirm:false (a pure preview - parses and reports counts/warnings,

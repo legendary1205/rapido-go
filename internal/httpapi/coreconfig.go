@@ -74,6 +74,12 @@ type outboundDTO struct {
 	// entirely. Meaningless for selector/urltest (group types have no
 	// dialer of their own); harmless if set on one, just never read.
 	BindInterface string `json:"bind_interface,omitempty"`
+
+	// DirectFallback makes a bind_interface outbound fail open: while that
+	// interface is missing or unhealthy on a node, connections dial without
+	// the bind (a plain direct route) instead of failing. Only meaningful
+	// with BindInterface, and only on a leaf type.
+	DirectFallback bool `json:"direct_fallback,omitempty"`
 }
 
 type routingRuleDTO struct {
@@ -84,7 +90,12 @@ type routingRuleDTO struct {
 	// entries here must be real inbound tags - validated against the
 	// live inbounds table in handleUpdateCoreConfig, not here (this DTO
 	// has no DB access).
-	Inbound       []string `json:"inbound,omitempty"`
+	Inbound []string `json:"inbound,omitempty"`
+	// InboundPort narrows Inbound to the LOCAL listen ports the connection
+	// arrived on - what lets one multi-port inbound route each port to its
+	// own exit. Not checked against the inbound's hosts: a port that has no
+	// host yet simply never matches.
+	InboundPort   []int    `json:"inbound_port,omitempty"`
 	Domain        []string `json:"domain,omitempty"`
 	DomainSuffix  []string `json:"domain_suffix,omitempty"`
 	DomainKeyword []string `json:"domain_keyword,omitempty"`
@@ -167,6 +178,14 @@ func validateCoreConfig(dto coreConfigDTO) string {
 		if (ob.Type == "selector" || ob.Type == "urltest") && len(ob.Outbounds) == 0 {
 			return "outbound " + ob.Tag + ": at least one member outbound is required for type " + ob.Type
 		}
+		if ob.DirectFallback {
+			if ob.BindInterface == "" {
+				return "outbound " + ob.Tag + ": direct_fallback requires bind_interface"
+			}
+			if ob.Type == "selector" || ob.Type == "urltest" || ob.Type == "block" {
+				return "outbound " + ob.Tag + ": direct_fallback is not allowed for type " + ob.Type
+			}
+		}
 		switch ob.Type {
 		case "shadowsocks":
 			if !validShadowsocksMethods[ob.Method] {
@@ -226,6 +245,21 @@ func validateCoreConfig(dto coreConfigDTO) string {
 		for _, p := range rule.Protocol {
 			if !validProtocols[p] {
 				return "routing rule: invalid protocol " + p
+			}
+		}
+		if len(rule.InboundPort) > 0 {
+			if len(rule.Inbound) == 0 {
+				return "routing rule: inbound_port requires a non-empty inbound"
+			}
+			seen := make(map[int]bool, len(rule.InboundPort))
+			for _, p := range rule.InboundPort {
+				if p < 1 || p > 65535 {
+					return fmt.Sprintf("routing rule: invalid inbound_port %d (must be 1-65535)", p)
+				}
+				if seen[p] {
+					return fmt.Sprintf("routing rule: duplicate inbound_port %d", p)
+				}
+				seen[p] = true
 			}
 		}
 	}

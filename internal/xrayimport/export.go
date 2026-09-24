@@ -26,8 +26,11 @@ type ExportInbound struct {
 	TLSServerName  string
 
 	Port int32
-	SNI  string
-	Host string
+	// Ports is every port this inbound listens on. With more than one it is
+	// what gets exported (Port is then ignored); with zero or one, Port is.
+	Ports []int
+	SNI   string
+	Host  string
 
 	Clients []ExportClient
 }
@@ -183,9 +186,16 @@ func buildXrayInbound(in ExportInbound, sniffEnabled bool) map[string]any {
 		stream["security"] = "none"
 	}
 
+	// Xray's own multi-port syntax: a comma-separated string. One port keeps
+	// the plain number every existing consumer already parses.
+	var port any = in.Port
+	if len(in.Ports) > 1 {
+		port = joinInts(in.Ports)
+	}
+
 	inbound := map[string]any{
 		"tag":            in.Tag,
-		"port":           in.Port,
+		"port":           port,
 		"protocol":       in.Protocol,
 		"settings":       settings,
 		"streamSettings": stream,
@@ -254,7 +264,11 @@ func buildXrayOutbound(ob Outbound) map[string]any {
 
 // buildXrayRoutingRule is parseRoutingRule's inverse for the fields that
 // round-trip through an Xray import (OutboundTag, Inbound - already real
-// post-split tags, needing no further resolution to go back out). The
+// post-split tags, needing no further resolution to go back out).
+// InboundPort goes out as Xray's localPort beside inboundTag (a
+// comma-separated string, like the multi-port inbound "port"): it is how a
+// multi-port inbound's per-port routing reads in Xray, though ParseXrayConfig
+// turns it back into split tags rather than into InboundPort. The
 // other routingRuleDTO fields (Domain/DomainSuffix/DomainKeyword/Port/
 // PortRange/Protocol/IPIsPrivate) exist on RoutingRule only because it's
 // shared with the dashboard's own Core Config editor - parseRoutingRule
@@ -266,6 +280,9 @@ func buildXrayRoutingRule(r RoutingRule) map[string]any {
 	rule := map[string]any{"type": "field", "outboundTag": r.OutboundTag}
 	if len(r.Inbound) > 0 {
 		rule["inboundTag"] = r.Inbound
+	}
+	if len(r.InboundPort) > 0 {
+		rule["localPort"] = joinInts(r.InboundPort)
 	}
 
 	var domain []string
@@ -342,6 +359,14 @@ func joinStrings(s []string, sep string) string {
 		out += v
 	}
 	return out
+}
+
+func joinInts(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = itoa(n)
+	}
+	return joinStrings(parts, ",")
 }
 
 func itoa(n int) string {

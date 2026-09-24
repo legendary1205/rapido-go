@@ -10,6 +10,19 @@
 // via types/XrayConfig.ts) works with instead.
 export type InboundsByProtocol = Record<string, string[]>;
 
+// One entry of GET /api/inbounds (internal/httpapi/inbounds.go's
+// proxyInboundDTO). `port` is the single value Marzban-style clients read;
+// `ports` is every distinct enabled host port, ascending - an inbound that
+// listens on many ports has them all here while `port` stays one of them.
+export type InboundListEntry = {
+  tag: string;
+  protocol: string;
+  network: string;
+  tls: string;
+  port: number;
+  ports: number[];
+};
+
 export type InboundNetwork = "tcp" | "ws" | "grpc" | "kcp" | "quic" | "splithttp" | "xhttp";
 export type InboundSecurity = "none" | "tls" | "reality";
 

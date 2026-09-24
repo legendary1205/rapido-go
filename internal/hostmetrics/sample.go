@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,12 +66,22 @@ type Sample struct {
 	XrayVersion string `json:"xray_version,omitempty"`
 }
 
+// Tunnel is one WireGuard exit. Up is a health verdict, not a link flag: a
+// WireGuard device's operstate is always "unknown", so it says nothing about
+// whether traffic actually gets through. When an active probe is available
+// (see ApplyTunnelHealth) Up reflects that; Present says whether the network
+// interface exists right now - false means the tunnel is configured on the
+// host (an /etc/wireguard/<name>.conf exists) but has been brought down.
 type Tunnel struct {
-	Name    string `json:"name"`
-	Up      bool   `json:"up"`
-	RxBytes int64  `json:"rx_bytes"`
-	TxBytes int64  `json:"tx_bytes"`
-	Peers   []Peer `json:"peers,omitempty"`
+	Name           string   `json:"name"`
+	Up             bool     `json:"up"`
+	Present        bool     `json:"present"`
+	RxBytes        int64    `json:"rx_bytes"`
+	TxBytes        int64    `json:"tx_bytes"`
+	Peers          []Peer   `json:"peers,omitempty"`
+	ProbeMs        *float64 `json:"probe_ms,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	FallbackActive bool     `json:"fallback_active,omitempty"`
 }
 
 type Peer struct {
@@ -268,17 +279,127 @@ func parseInterfaceCounters(raw string) map[string]struct{ rx, tx int64 } {
 	return out
 }
 
+// parseUeventDevType returns the DEVTYPE line of a /sys/class/net/<if>/uevent
+// file. That is the only place the kernel says an interface is WireGuard:
+// there is no /sys/class/net/<if>/wireguard directory, which is what this
+// package used to look for - so it never found a single tunnel.
+func parseUeventDevType(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "DEVTYPE="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+func isWireGuardInterface(name string) bool {
+	return parseUeventDevType(mustReadFile(filepath.Join("/sys/class/net", name, "uevent"))) == "wireguard"
+}
+
 func readInterfaces() map[string]ifaceStats {
 	out := make(map[string]ifaceStats)
 	for name, c := range parseInterfaceCounters(mustReadFile("/proc/net/dev")) {
 		operstate := mustReadFile(filepath.Join("/sys/class/net", name, "operstate"))
-		_, wgErr := os.Stat(filepath.Join("/sys/class/net", name, "wireguard"))
 		out[name] = ifaceStats{
 			rxBytes: c.rx, txBytes: c.tx,
 			operstate: strings.TrimSpace(operstate),
-			wireguard: wgErr == nil,
+			wireguard: isWireGuardInterface(name),
 		}
 	}
+	return out
+}
+
+// wireguardConfDir is where wg-quick keeps tunnel configs. A variable so
+// tests can point it at a temp directory.
+var wireguardConfDir = "/etc/wireguard"
+
+// ConfiguredTunnelNames lists the tunnels this host is set up to have -
+// one /etc/wireguard/<name>.conf each. Comparing it with the interfaces that
+// exist right now is what tells a tunnel that was switched off apart from a
+// tunnel that never belonged on this server.
+func ConfiguredTunnelNames() []string {
+	entries, err := os.ReadDir(wireguardConfDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if name, ok := strings.CutSuffix(e.Name(), ".conf"); ok && name != "" && !e.IsDir() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TunnelNames is every WireGuard tunnel worth watching on this host:
+// configured ones plus any WireGuard interface that exists right now.
+func TunnelNames() []string {
+	seen := make(map[string]bool)
+	var names []string
+	add := func(n string) {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, n := range ConfiguredTunnelNames() {
+		add(n)
+	}
+	for n, iface := range readInterfaces() {
+		if iface.wireguard {
+			add(n)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TunnelHealth is what an active probe learned about one tunnel. Supplied
+// by the caller (the node agent), never measured here - Collect stays a
+// pure reading of /proc and /sys.
+type TunnelHealth struct {
+	Present        bool
+	Up             bool
+	ProbeMs        *float64
+	Error          string
+	FallbackActive bool
+}
+
+// ApplyTunnelHealth turns the raw interface reading into the verdict the
+// panel shows. configured lists tunnels the host is set up for: one whose
+// interface is gone is reported as down and not present rather than silently
+// disappearing - which is exactly what a switched-off tunnel looks like.
+// A tunnel with no probe result keeps its link-state guess. Tunnels are
+// returned sorted by name.
+func ApplyTunnelHealth(tunnels []Tunnel, configured []string, health map[string]TunnelHealth) []Tunnel {
+	byName := make(map[string]*Tunnel, len(tunnels)+len(configured))
+	for i := range tunnels {
+		t := tunnels[i]
+		t.Present = true
+		byName[t.Name] = &t
+	}
+	for _, name := range configured {
+		if _, ok := byName[name]; !ok {
+			byName[name] = &Tunnel{Name: name, Up: false, Present: false, Error: "interface not found"}
+		}
+	}
+	for name, h := range health {
+		t, ok := byName[name]
+		if !ok {
+			continue
+		}
+		t.Present = h.Present
+		t.Up = h.Up
+		t.ProbeMs = h.ProbeMs
+		t.Error = h.Error
+		t.FallbackActive = h.FallbackActive
+	}
+	out := make([]Tunnel, 0, len(byName))
+	for _, t := range byName {
+		out = append(out, *t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -353,6 +474,7 @@ func readTunnels(ifaces map[string]ifaceStats) []Tunnel {
 		tunnels = append(tunnels, Tunnel{
 			Name:    name,
 			Up:      iface.operstate == "up" || iface.operstate == "unknown",
+			Present: true,
 			RxBytes: iface.rxBytes,
 			TxBytes: iface.txBytes,
 		})

@@ -46,11 +46,16 @@ type nodeConfigTLSSpec struct {
 }
 
 type nodeConfigInboundSpec struct {
-	Tag        string               `json:"tag"`
-	Protocol   string               `json:"protocol"`
-	ListenPort uint16               `json:"listen_port"`
-	Users      []nodeConfigUserSpec `json:"users"`
-	TLS        *nodeConfigTLSSpec   `json:"tls,omitempty"`
+	Tag        string `json:"tag"`
+	Protocol   string `json:"protocol"`
+	ListenPort uint16 `json:"listen_port"`
+	// ListenPorts is every distinct port of the inbound's enabled hosts,
+	// ascending, and is only set when there is MORE than one - a single-port
+	// inbound serializes exactly as it did before this field existed, and a
+	// node that predates it keeps reading ListenPort.
+	ListenPorts []uint16             `json:"listen_ports,omitempty"`
+	Users       []nodeConfigUserSpec `json:"users"`
+	TLS         *nodeConfigTLSSpec   `json:"tls,omitempty"`
 }
 
 // nodeConfigInboundWire is nodeConfigInboundSpec with the user list already
@@ -66,11 +71,12 @@ type nodeConfigInboundSpec struct {
 // TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload is what keeps
 // the two forms honest.
 type nodeConfigInboundWire struct {
-	Tag        string             `json:"tag"`
-	Protocol   string             `json:"protocol"`
-	ListenPort uint16             `json:"listen_port"`
-	Users      json.RawMessage    `json:"users"`
-	TLS        *nodeConfigTLSSpec `json:"tls,omitempty"`
+	Tag         string             `json:"tag"`
+	Protocol    string             `json:"protocol"`
+	ListenPort  uint16             `json:"listen_port"`
+	ListenPorts []uint16           `json:"listen_ports,omitempty"`
+	Users       json.RawMessage    `json:"users"`
+	TLS         *nodeConfigTLSSpec `json:"tls,omitempty"`
 }
 
 // nodeConfigResponse is the full payload a node self-applies - see
@@ -84,10 +90,38 @@ type nodeConfigResponse struct {
 	Core     coreConfigDTO           `json:"core"`
 }
 
+// validHostPorts keeps only real TCP/UDP port numbers. hosts.port is a bare
+// INTEGER nothing range-checks on write, and the uint16 conversions below
+// would otherwise wrap 65536 to 0 and silently collide two hosts' ports.
+func validHostPorts(ports []int32) []int {
+	out := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p >= 1 && p <= 65535 {
+			out = append(out, int(p))
+		}
+	}
+	return out
+}
+
+// multiListenPorts is the value of an inbound's `listen_ports`: nil unless
+// the inbound really has more than one distinct port (see the field's doc).
+func multiListenPorts(ports []int32) []uint16 {
+	valid := validHostPorts(ports)
+	if len(valid) < 2 {
+		return nil
+	}
+	out := make([]uint16, len(valid))
+	for i, p := range valid {
+		out[i] = uint16(p)
+	}
+	return out
+}
+
 // buildNodeConfigPayload is the Go equivalent of
 // XRayConfig.include_db_users(): groups every active/on_hold user's proxy
 // credentials by protocol, and stuffs them into every auto-sync-eligible
-// inbound of that protocol.
+// inbound of that protocol. An inbound is one row per tag however many
+// ports its hosts use - those go out as listen_ports.
 //
 // It returns the canonical bytes it hashed to produce Version alongside the
 // payload, because those bytes are the response body bar its first field -
@@ -134,7 +168,8 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 	for _, in := range inboundRows {
 		spec := nodeConfigInboundSpec{
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: uint16(in.Port.Int32),
-			Users: usersByProtocol[in.Protocol],
+			ListenPorts: multiListenPorts(in.Ports),
+			Users:       usersByProtocol[in.Protocol],
 		}
 		switch in.Security {
 		case "reality":
@@ -191,7 +226,7 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 			users = emptyUsers
 		}
 		wire = append(wire, nodeConfigInboundWire{
-			Tag: in.Tag, Protocol: in.Protocol, ListenPort: in.ListenPort,
+			Tag: in.Tag, Protocol: in.Protocol, ListenPort: in.ListenPort, ListenPorts: in.ListenPorts,
 			Users: users, TLS: in.TLS,
 		})
 	}
