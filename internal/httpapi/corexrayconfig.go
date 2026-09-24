@@ -17,7 +17,7 @@ import (
 // there is no real Xray process running behind this panel (nodes run
 // sing-box), so there is no real version to report. A reseller bot only
 // ever displays this field; it isn't used to gate behavior anywhere in
-// the real Marzban ecosystem this is restoring compatibility with.
+// the external clients this endpoint keeps compatibility with.
 const xrayCoreVersionReported = "1.8.24"
 
 // minNodeVersionReported mirrors NodeSettings.min_node_version's own
@@ -25,11 +25,10 @@ const xrayCoreVersionReported = "1.8.24"
 // certificate when adding a node, not something either side enforces.
 const minNodeVersionReported = "v0.2.0"
 
-// handleGetCoreVersion implements GET /api/core (sudo only) - real
-// Marzban's app/routers/core.py CoreStats endpoint. Kept deliberately
-// tiny: every genuine-Marzban-API reseller bot that calls this (WizWiz's
-// config.php included) only reads it to show an admin "core is running",
-// never to gate a later request.
+// handleGetCoreVersion implements GET /api/core (sudo only) - the panel
+// API's core-stats endpoint. Kept deliberately tiny: every external
+// reseller/management bot that calls this only reads it to show an admin
+// "core is running", never to gate a later request.
 func (h *Handler) handleGetCoreVersion(c *gin.Context) {
 	inboundRows, err := h.store.Queries.ListAutoSyncInbounds(c.Request.Context())
 	if err != nil {
@@ -39,8 +38,8 @@ func (h *Handler) handleGetCoreVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": xrayCoreVersionReported,
 		"started": len(inboundRows) > 0,
-		// Real Marzban's CoreStats carries this third field (the path of
-		// its live log websocket). A client that reads it and connects
+		// The panel API's core-stats model carries this third field (the
+		// path of its live log websocket). A client that reads it and connects
 		// would find nothing here - this architecture has no equivalent
 		// stream - but omitting the key entirely breaks a strict client
 		// that expects the full model, which costs more than an unused
@@ -49,10 +48,10 @@ func (h *Handler) handleGetCoreVersion(c *gin.Context) {
 	})
 }
 
-// handleRestartCore implements POST /api/core/restart (sudo only). Real
-// Marzban pushes a freshly-rendered config to its core and every connected
-// node here; this architecture inverts that - nodes pull their own config
-// on a short interval (see handleGetNodeConfig) - so the honest equivalent
+// handleRestartCore implements POST /api/core/restart (sudo only). The
+// API's contract is to push a freshly-rendered config to the core and every
+// connected node here; this architecture inverts that - nodes pull their
+// own config on a short interval (see handleGetNodeConfig) - so the honest equivalent
 // is to drop the cached fleet-wide payload, which makes every node rebuild
 // from current data on its very next poll instead of up to the cache TTL
 // later. Returns {} exactly as the real endpoint does.
@@ -121,9 +120,9 @@ func (h *Handler) handleValidateRawXrayConfig(c *gin.Context) {
 }
 
 // handleListCoreConfigBackups implements GET /api/core/config/backups
-// (sudo only). Real Marzban keeps timestamped copies of its xray.json on
-// disk; this panel has no such file to copy (its core config lives in
-// Postgres, and whole-database backups are their own endpoint family under
+// (sudo only). The API contract is a list of timestamped copies of the core
+// config kept on disk; this panel has no such file to copy (its core config
+// lives in Postgres, and whole-database backups are their own endpoint family under
 // /api/settings/backup), so the honest answer is an empty list rather than
 // a 404 a dashboard would render as an error.
 func (h *Handler) handleListCoreConfigBackups(c *gin.Context) {
@@ -159,8 +158,8 @@ func (h *Handler) handleGetNodeSettings(c *gin.Context) {
 }
 
 // handleReconnectNode implements POST /api/node/:id/reconnect (sudo only).
-// Real Marzban dials the node itself here; this architecture has no
-// panel-to-node channel at all (nodes poll), so the equivalent is to drop
+// The API contract has the panel dial the node itself here; this
+// architecture has no panel-to-node channel at all (nodes poll), so the equivalent is to drop
 // the cached config payload so that node's very next poll rebuilds from
 // current data. Returns the same body the real endpoint does.
 func (h *Handler) handleReconnectNode(c *gin.Context) {
@@ -278,13 +277,10 @@ func coreDNSServersToExport(in []dnsServerDTO) []xrayimport.DNSServer {
 }
 
 // handleGetRawXrayConfig implements GET /api/core/config (sudo only) -
-// the one route this whole feature exists for: real Marzban's
-// app/routers/core.py get_core_config, the exact call a genuine-Marzban-
-// API reseller bot makes to read a panel's live Xray config (confirmed
-// against wizwizdev/wizwizxui-timebot's config.php, whose misleadingly-
-// named getMarzbanHosts() is this request). Returns a real, raw Xray
-// JSON document - not this codebase's own sing-box-flavored Core Config
-// DTO - built fresh on every call from the same live data every node
+// the one route this whole feature exists for: the exact call an external
+// reseller/management bot makes to read a panel's live Xray config.
+// Returns a real, raw Xray JSON document - not this codebase's own
+// sing-box-flavored Core Config DTO - built fresh on every call from the same live data every node
 // itself is configured from, so it always reflects the current fleet.
 func (h *Handler) handleGetRawXrayConfig(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -300,9 +296,8 @@ func (h *Handler) handleGetRawXrayConfig(c *gin.Context) {
 	// reason is sound: the full config carries each inbound's TLS and
 	// REALITY private keys plus the UUID/password of EVERY user on the
 	// fleet. But refusing it outright has a worse real-world consequence -
-	// a reseller bot (WizWiz, confirmed in its own source: it reads
-	// `getMarzbanHosts()->inbounds` purely for tag+protocol when building a
-	// plan) then shows the operator an empty inbound list, and the usual
+	// an external reseller bot (confirmed in its own source: it reads the
+	// inbounds list purely for tag+protocol when building a plan) then shows the operator an empty inbound list, and the usual
 	// fix is to make that reseller a sudo admin, which hands them the real
 	// keys AND full control of the panel.
 	//

@@ -17,8 +17,8 @@ export type RestoreResult = {
 };
 
 // Mirrors legacyImportResultDTO - what the upload endpoint returns when
-// the uploaded file was recognized as a legacy panel export (Marzban/
-// Rapido today, more later) instead of a native backup. No `detail`
+// the uploaded file was recognized as a legacy panel export (from an older
+// panel, more formats later) instead of a native backup. No `detail`
 // field - the counts and warnings are the actual summary here.
 export type LegacyImportResult = {
   safety_backup: Backup;

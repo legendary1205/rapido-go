@@ -20,10 +20,10 @@ import (
 // parsed xray/sing-box config; here, from the inbounds table until the
 // node-agent phase syncs it from a live proxy core config for real - see
 // 00002_inbound_protocol.sql).
-// proxyInboundDTO mirrors app/models/proxy.py's ProxyInbound exactly - all
+// proxyInboundDTO mirrors the panel API's ProxyInbound model exactly - all
 // five fields, always present. The earlier shape here was a bare tag
 // string per entry, which is a real incompatibility rather than a
-// simplification: every Marzban-ecosystem client iterates this map and
+// simplification: every external API client iterates this map and
 // reads inbound["tag"] (plus port/network to build a config), and a string
 // is not indexable, so such a client sees zero usable inbounds. One real
 // reseller bot's symptom for that is refusing to sync "to avoid deleting
@@ -36,7 +36,7 @@ type proxyInboundDTO struct {
 	Port     int32  `json:"port"`
 	// Ports is every distinct port of the inbound's enabled hosts, ascending
 	// (always an array, empty when there are none). Port stays the primary
-	// host's alone: the real Marzban model has no such field, so the one
+	// host's alone: the panel API's model has no such field, so the one
 	// every client reads must not change meaning.
 	Ports []int `json:"ports"`
 }

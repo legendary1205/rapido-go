@@ -207,8 +207,7 @@ func loginAs(t *testing.T, router http.Handler, username, password string) strin
 }
 
 // TestGetUserExposesNestedAdminAndSubscriptionMetadata proves the wire-shape
-// fix for external Marzban-standard bots (Mirza-bot and similar - see the
-// go-rewrite-gateway/PasarGuard research): GET /api/user/{username} must
+// fix for external management bots: GET /api/user/{username} must
 // return a full nested `admin` object (id/username/is_sudo/telegram_id/
 // discord_webhook/users_usage), not the flat `admin_username` string this
 // used to be, plus `sub_updated_at`/`sub_last_user_agent`/`emergency_used_at`
@@ -305,8 +304,8 @@ func TestGetUserExposesNestedAdminAndSubscriptionMetadata(t *testing.T) {
 // TestListUsersTotalIsRealCountNotPageSize is a regression test for a real
 // bug found via live stress-testing: GET /api/users reported "total" as
 // len(page) - with 222 real users in the DB, GET /api/users?limit=1 returned
-// "total":1. A paginating client (the dashboard, or an external tool like
-// Mirza-bot) computing page counts from that field would be completely
+// "total":1. A paginating client (the dashboard, or an external management
+// bot) computing page counts from that field would be completely
 // wrong the moment it passed an explicit limit smaller than the real total.
 func TestListUsersTotalIsRealCountNotPageSize(t *testing.T) {
 	router, token := newTestRouter(t)
@@ -462,7 +461,7 @@ func TestCreateUserRejectsOutOfRangeExpire(t *testing.T) {
 
 // TestDeleteUserSucceedsAfterAUsageReset is a regression test for a real
 // bug found via a live compatibility test against a real, unmodified
-// reseller bot (WizWiz): every user-owned table except user_usage_logs was
+// external reseller bot: every user-owned table except user_usage_logs was
 // promoted to a real ON DELETE CASCADE FK (see 00001_init_schema.sql's own
 // history) - that one table was left on Postgres's default NO ACTION, so
 // deleting any user who had ever had their traffic reset (inserting a

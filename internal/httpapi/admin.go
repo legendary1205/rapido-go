@@ -76,8 +76,8 @@ func validateDiscordWebhook(v *string) error {
 // per source IP - neither this panel nor the real Python original has ever
 // had any login rate limit at all (a real, documented gap, not a
 // deliberate scope cut). This counts failures only, never successes: a
-// live compatibility test against a real, unmodified reseller bot
-// (WizWiz) showed it re-authenticates fresh on nearly every single API
+// live compatibility test against a real, unmodified external reseller bot
+// showed it re-authenticates fresh on nearly every single API
 // call rather than caching its token - a legitimate bot doing a burst of
 // real operations can rack up far more than 10 *correct* logins a minute,
 // and counting those would have made this fix break exactly the

@@ -90,12 +90,12 @@ func randomPassword() string {
 // hasSettings reports whether raw actually carries per-protocol settings to
 // unmarshal - false for both "field omitted entirely" and an empty JSON
 // array ("[]", allowing surrounding whitespace). That second shape is not
-// hypothetical: a real, unmodified reseller bot (wizwizdev/wizwizxui-
-// timebot, confirmed live) builds its add-user request body by
+// hypothetical: a real, unmodified external reseller bot (confirmed live)
+// builds its add-user request body by
 // json_decode()-ing a stored plan template with PHP's associative-array
 // mode, then json_encode()-ing it back - a round trip that cannot tell an
 // empty JSON *object* ("{}", "no special settings for this protocol") from
-// an empty JSON *array*, and always re-emits the latter. Real Marzban's
+// an empty JSON *array*, and always re-emits the latter. A
 // Python/Pydantic stack coerces both the same way; this codebase's strict
 // encoding/json unmarshal into a struct does not, and would otherwise
 // reject a common, legitimate request shape with a 422 that has nothing to

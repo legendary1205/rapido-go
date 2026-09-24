@@ -15,7 +15,7 @@ import (
 // outage from a reseller bot's side: Gin's default plain-text "404 page
 // not found" body made every bot that json_decode()s a response conclude
 // the whole panel was unreachable, rather than "that one call 404'd".
-// FastAPI - which the whole Marzban client ecosystem was written against -
+// FastAPI - which existing external API clients were written against -
 // always answers JSON.
 func TestUnknownRouteAnswersJSON(t *testing.T) {
 	router, token := newTestRouter(t)
@@ -459,7 +459,7 @@ func TestTicketBodyLimitsCountCharactersNotBytes(t *testing.T) {
 }
 
 // TestSubscriptionHeadersMatchTheRealPanel pins the headers real VPN
-// clients (Happ, Streisand, v2rayNG, Hiddify) actually render: without
+// clients (Happ, Streisand, v2rayNG, sing-box) actually render: without
 // support-url the in-app support button disappears, and without
 // profile-web-page-url the customer has no link back to their account
 // page from inside the app.
@@ -501,8 +501,8 @@ func TestSubscriptionHeadersMatchTheRealPanel(t *testing.T) {
 }
 
 // TestCoreConfigIsRedactedForNonSudo covers a real, reported failure: a
-// reseller bot (WizWiz) builds its plan's inbound picker from
-// getMarzbanHosts()->inbounds, which is GET /api/core/config. Sudo-only
+// external reseller bot builds its plan's inbound picker from the
+// inbounds list in GET /api/core/config. Sudo-only
 // meant the reseller saw an empty list and the natural "fix" would have
 // been to make that reseller a sudo admin - handing them the fleet's TLS
 // and REALITY private keys, every user's credentials, and full control.

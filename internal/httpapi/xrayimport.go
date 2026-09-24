@@ -87,8 +87,8 @@ func (h *Handler) handleImportXrayConfig(c *gin.Context) {
 // applyParsedXrayConfig writes an already-parsed Xray config through this
 // codebase's own write paths - inbound sync, one real-port host per
 // inbound, then the merged Core Config. Shared by POST
-// /api/inbounds/import-xray and PUT /api/core/config (the real Marzban
-// route reseller bots use), so the two can never drift into applying the
+// /api/inbounds/import-xray and PUT /api/core/config (the route external
+// reseller bots use), so the two can never drift into applying the
 // same file differently. badRequest is true when the caller's payload is
 // what's wrong, false when this panel failed to write it.
 func (h *Handler) applyParsedXrayConfig(ctx context.Context, parsed xrayimport.Result) (badRequest bool, err error) {

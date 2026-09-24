@@ -10,10 +10,10 @@ import { queryKeys } from "utils/queryClient";
 // the Users and User Templates forms via rapido-ui/InboundsPicker.tsx, and
 // by rapido-ui/HostsAdmin.tsx's own "which tag to add a host under" picker.
 // Inbound management itself (create/edit/delete) now lives entirely in the
-// merged Xray Config page (rapido-ui/XrayConfigAdmin.tsx, hooks/
+// merged Core Config page (rapido-ui/XrayConfigAdmin.tsx, hooks/
 // useXrayConfigQuery.ts) - this hook is read-only from here on.
 // The API itself returns one object per inbound ({tag, protocol, network,
-// tls, port}), matching the real Marzban panel that every third-party
+// tls, port}), matching the panel API shape that every third-party
 // client is written against. Nothing in this dashboard needs more than the
 // tag, so the objects are flattened to tags here, in one place, instead of
 // reshaping every consumer.
@@ -33,7 +33,7 @@ export const useInboundsQuery = () =>
   useQuery({ queryKey: queryKeys.inbounds, queryFn: fetchInbounds, select: toTagsByProtocol });
 
 // Same query key and fetch as useInboundsQuery (one request, one cache
-// entry), just a different view of the response - the Xray Config page shows
+// entry), just a different view of the response - the Core Config page shows
 // every port an inbound listens on.
 export const useInboundPortsQuery = () =>
   useQuery({ queryKey: queryKeys.inbounds, queryFn: fetchInbounds, select: portsByTag });

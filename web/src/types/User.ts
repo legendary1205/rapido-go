@@ -3,15 +3,15 @@
 // Notably absent from the old type and present here: `online_at` (added to
 // the Go DTO this same phase) and `excluded_inbounds`. Deliberately omits
 // `links` even though the backend's single-user GET now returns it (added
-// for external panel-management bot compatibility, e.g. Mirza-bot-style
+// for external panel-management bot compatibility, e.g. external
 // tools reading a user's share links directly - see internal/httpapi/
-// system.go's marzbanCompatVersion and user.go's handleGetUser) - the
+// system.go's compatAPIVersion and user.go's handleGetUser) - the
 // dashboard itself never reads it, it always uses `subscription_url`, and
 // node connection states ("error"/"connecting"/"connected") were never real
 // user statuses to begin with, just leftover node-status values on the same
 // old union. `admin` is a nested object (not a flat `admin_username` string)
 // and `sub_updated_at`/`sub_last_user_agent`/`emergency_used_at` were added
-// specifically to match the real Marzban wire shape a bot like Mirza-bot
+// specifically to match the standard panel-API wire shape an external bot
 // expects - the dashboard doesn't read any of these four fields today.
 export type Status = "active" | "disabled" | "limited" | "expired" | "on_hold";
 

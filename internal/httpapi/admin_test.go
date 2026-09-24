@@ -48,7 +48,7 @@ func TestLoginIsRateLimitedPerIP(t *testing.T) {
 }
 
 // TestSuccessfulLoginsAreNeverRateLimited is the exact scenario a live
-// compatibility test against a real, unmodified reseller bot (WizWiz)
+// compatibility test against a real, unmodified external reseller bot
 // surfaced: it re-authenticates fresh on nearly every single API call
 // rather than caching a token, so a legitimate burst of correct-credential
 // logins must never trip the limiter meant for wrong-credential spam.

@@ -49,11 +49,9 @@ type ExportClient struct {
 
 // BuildXrayJSON renders a real, standard Xray-core config JSON document -
 // the inverse of ParseXrayConfig, for the one real-world consumer this
-// exists for: GET /api/core/config, the endpoint every genuine
-// Marzban-ecosystem reseller bot (confirmed via a real one's public
-// source, wizwizdev/wizwizxui-timebot's config.php - its
-// getMarzbanHosts() calls exactly this) reads a panel's live core config
-// from.
+// exists for: GET /api/core/config, the endpoint every external reseller
+// bot (confirmed via a real one's public source) reads a panel's live core
+// config from.
 //
 // Scope matches this panel's own real, current fleet exactly: TCP (raw)
 // transport with an optional "http" header, tls/reality/none security,

@@ -135,7 +135,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 	// Gin's own defaults answer an unknown path with the plain-text body
 	// "404 page not found" and a wrong method with that same 404. FastAPI -
-	// which every Marzban-ecosystem client was written against - always
+	// which every existing external API client was written against - always
 	// answers JSON, and distinguishes the two. That difference is not
 	// cosmetic: a bot that json_decode()s the body gets null from plain
 	// text and reports the whole panel as unreachable rather than "that one
@@ -244,15 +244,14 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.GET("/settings/xray-config", requireSudo, h.handleGetXrayConfig)
 		api.PUT("/settings/xray-config", requireSudo, h.handleUpdateXrayConfig)
 
-		// Real Marzban's own API surface (app/routers/core.py) - kept
+		// The panel's external-client API surface for the core - kept
 		// separate from /settings/core-config above (this codebase's own
-		// sing-box-flavored DTO) since genuine-Marzban-API reseller bots
-		// (confirmed against wizwizdev/wizwizxui-timebot) call these exact
-		// paths expecting real, raw Xray JSON. See
+		// sing-box-flavored DTO) since external reseller bots
+		// call these exact paths expecting real, raw Xray JSON. See
 		// internal/httpapi/corexrayconfig.go's doc comments for scope.
-		// Any admin, not just sudo - the real panel gates this one with
-		// Admin.get_current while everything else under /core is
-		// check_sudo_admin. It matters: a reseller bot logged in as an
+		// Any admin, not just sudo - the API contract lets any logged-in
+		// admin call this one while everything else under /core is
+		// sudo-only. It matters: a reseller bot logged in as an
 		// ordinary (non-sudo) admin probes this to decide whether the
 		// panel is reachable at all, and a 403 here reads to it as the
 		// whole server being down.

@@ -6,12 +6,12 @@
 // per-inbound metadata to display, only tags to check off. Still used as-is
 // by InboundsPicker.tsx (Users/User Templates forms) and by the reseller-API
 // filtering logic server-side - the richer Inbound/InboundSyncEntry shapes
-// below are what the merged Xray Config page (rapido-ui/XrayConfigAdmin.tsx,
+// below are what the merged Core Config page (rapido-ui/XrayConfigAdmin.tsx,
 // via types/XrayConfig.ts) works with instead.
 export type InboundsByProtocol = Record<string, string[]>;
 
 // One entry of GET /api/inbounds (internal/httpapi/inbounds.go's
-// proxyInboundDTO). `port` is the single value Marzban-style clients read;
+// proxyInboundDTO). `port` is the single value external API clients read;
 // `ports` is every distinct enabled host port, ascending - an inbound that
 // listens on many ports has them all here while `port` stays one of them.
 export type InboundListEntry = {

@@ -7,7 +7,7 @@ import zh from "../../../public/statics/locales/zh.json";
 
 const locales: Record<string, Record<string, string>> = { en, fa, ru, zh };
 
-// The Xray Config and Monitoring namespaces are the ones every locale must
+// The Core Config and Monitoring namespaces are the ones every locale must
 // cover completely. (Other namespaces have known older gaps - e.g. ru/zh have
 // no rapido.templates.* - which are not this test's business.)
 const NAMESPACES = ["rapido.xrayConfig.", "rapido.monitoring."];
@@ -18,7 +18,7 @@ const baseKey = (key: string) => key.replace(PLURAL_SUFFIX, "");
 const placeholders = (value: string) => [...new Set(value.match(/\{\{\s*\w+\s*\}\}/g) ?? [])].sort();
 
 describe("locale files", () => {
-  it("cover every Xray Config and Monitoring base key in all four languages", () => {
+  it("cover every Core Config and Monitoring base key in all four languages", () => {
     const bases = new Set(Object.keys(en).filter(inScope).map(baseKey));
     expect(bases.size).toBeGreaterThan(0);
     for (const [lang, dict] of Object.entries(locales)) {

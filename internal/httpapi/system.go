@@ -23,16 +23,15 @@ const onlineWindow = 180 * time.Second
 // directly - see cachedHostSample.
 const hostSampleTTL = 30 * time.Second
 
-// marzbanCompatVersion is a static, zero-cost compatibility value - external
-// fleet-management bots (e.g. Mirza-bot-style panels, which "get_user" style
-// tools like Guard resemble) probe this field before deciding which request
-// shape to send (pre- vs post-Groups Marzban). Matches the real production
-// panel's own currently-reported __version__ exactly (app/__init__.py),
-// which such bots already treat as "legacy shape" successfully - not a
-// version this rewrite is pinned to or will ever bump.
-const marzbanCompatVersion = "0.8.4"
+// compatAPIVersion is a static, zero-cost compatibility value - external
+// fleet-management bots and reseller tools probe this field before deciding
+// which request shape to send (the older vs the newer user-groups API
+// shape). Matches the production panel's own previously-reported version
+// exactly, which such bots already treat as "legacy shape" successfully -
+// not a version this rewrite is pinned to or will ever bump.
+const compatAPIVersion = "0.8.4"
 
-// systemStatsDTO mirrors app/models/system.py's SystemStats field for
+// systemStatsDTO mirrors the panel API's system-stats model field for
 // field. Every field is REQUIRED there, so a client that validates the
 // response against that model (or simply indexes the key) breaks on any
 // omission - the host-resource half used to be missing here entirely,
@@ -167,7 +166,7 @@ func (h *Handler) handleGetSystemStats(c *gin.Context) {
 		return
 	}
 
-	stats := systemStatsDTO{Version: marzbanCompatVersion, TotalUser: total, OnlineUsers: online}
+	stats := systemStatsDTO{Version: compatAPIVersion, TotalUser: total, OnlineUsers: online}
 	h.fillHostResources(c, &stats)
 	if sys, err := h.store.Queries.GetSystem(ctx); err == nil {
 		stats.IncomingBandwidth = pgInt8ToInt64(sys.Uplink)

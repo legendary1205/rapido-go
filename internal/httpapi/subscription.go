@@ -450,7 +450,7 @@ func (h *Handler) setSubscriptionHeaders(c *gin.Context, user generated.User) {
 	c.Header("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(user.Username)))
 	c.Header("Profile-Update-Interval", h.subBranding.UpdateInterval)
 	c.Header("Subscription-Userinfo", fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", user.UsedTraffic, total, expire))
-	// Real VPN clients (Happ, Streisand, v2rayNG, Hiddify) render these two
+	// Real VPN clients (Happ, Streisand, v2rayNG, sing-box) render these two
 	// directly: support-url becomes the in-app support button, and
 	// profile-web-page-url the link back to the account page. Without them
 	// the customer has no route to either from inside the app.

@@ -57,7 +57,7 @@ func TestGetRawXrayConfigReturnsRealXrayShapedJSON(t *testing.T) {
 	// This is real, raw Xray JSON (log/inbounds/outbounds/routing/dns at
 	// the top level) - NOT this codebase's own sing-box-flavored Core
 	// Config DTO (which has log_level/sniff_enabled/routing_rules/
-	// dns_servers instead), since a genuine-Marzban-API reseller bot
+	// dns_servers instead), since an external reseller bot
 	// parses exactly the former.
 	if _, ok := resp.Body["log_level"]; ok {
 		t.Fatalf("response looks like the sing-box Core Config DTO, not real Xray JSON: %v", resp.Body)

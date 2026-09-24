@@ -1,7 +1,7 @@
 import { Outbound, RoutingRule } from "types/CoreConfig";
 import { validateInboundPortField } from "utils/inboundPorts";
 
-// The Xray Config page edits the whole document as JSON, so what follows is
+// The Core Config page edits the whole document as JSON, so what follows is
 // pure edit/validate helpers over plain objects: the guided view rewrites the
 // JSON through them, and Apply is gated on validateCoreConfigDoc so a payload
 // the server would reject never leaves the browser.

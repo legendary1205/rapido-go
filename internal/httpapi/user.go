@@ -99,16 +99,16 @@ type userResponseDTO struct {
 	AutoDeleteInDays       *int32     `json:"auto_delete_in_days"`
 	// SubUpdatedAt/SubLastUserAgent/EmergencyUsedAt were already tracked in
 	// the users table (subscription.go's recordSubUserAgent,
-	// subscription_emergency.go) but never surfaced here - a Marzban-standard
-	// bot (e.g. Mirza-bot-style) reading GET /api/user/{username} expects
-	// these three fields on every UserResponse, matching app/models/user.py.
+	// subscription_emergency.go) but never surfaced here - an external
+	// management bot reading GET /api/user/{username} expects these three
+	// fields on every UserResponse.
 	SubUpdatedAt     *time.Time `json:"sub_updated_at"`
 	SubLastUserAgent *string    `json:"sub_last_user_agent"`
 	EmergencyUsedAt  *time.Time `json:"emergency_used_at"`
 	// Admin is a full nested object (id/username/is_sudo/telegram_id/
-	// discord_webhook/users_usage), matching app/models/user.py:307 exactly -
-	// a bot reading resp.admin.username (the real Marzban shape) would break
-	// against the flat admin_username string this used to be.
+	// discord_webhook/users_usage), matching the panel API's user model
+	// exactly - a bot reading resp.admin.username (the standard API shape)
+	// would break against the flat admin_username string this used to be.
 	Admin *adminDTO `json:"admin"`
 	// SyncedFromPanelName is non-nil only for a Gateway replica (see
 	// gateway_sync.go) - a real local user (the overwhelming majority)
@@ -132,8 +132,8 @@ type userResponseDTO struct {
 	// project's own compatibility-fix history (see the buildUserResponses
 	// doc comment above) is specifically about NOT paying that cost per row
 	// of a list. Kept anyway on single GET because a real external
-	// panel-management bot (Mirza-bot-style, which reads it exactly this
-	// way from GET /api/user/{username}) reads it directly rather than
+	// panel-management bot (which reads it exactly this way from
+	// GET /api/user/{username}) reads it directly rather than
 	// hitting the subscription endpoint separately.
 	Links []string `json:"links"`
 }
@@ -396,10 +396,9 @@ func (h *Handler) loadAuthorizedUser(c *gin.Context) (generated.User, bool) {
 	return dbuser, true
 }
 
-// handleModifyUser implements PUT /api/user/:username, porting
-// crud.update_user's proxy/inbound reconciliation and the asymmetric
-// status-recompute branches on data_limit/expire changes (see
-// D:\MARZBANUPTIMEZE\app\db\crud.py:642-799).
+// handleModifyUser implements PUT /api/user/:username, with the proxy/inbound
+// reconciliation and the asymmetric status-recompute branches on
+// data_limit/expire changes.
 func (h *Handler) handleModifyUser(c *gin.Context) {
 	identity := auth.CurrentIdentity(c)
 	dbuser, ok := h.loadAuthorizedUser(c)
@@ -850,7 +849,7 @@ func (h *Handler) handleListUsers(c *gin.Context) {
 	// silently reported the current PAGE size as the total whenever a
 	// caller passed an explicit limit (confirmed live: GET /api/users?limit=1
 	// against 222 real users returned "total":1). Any paginating client -
-	// the dashboard, or a Mirza-bot-style external tool - needs a real total
+	// the dashboard, or an external management tool - needs a real total
 	// to compute page counts correctly.
 	total, err := h.store.Queries.CountUsers(ctx, generated.CountUsersParams{
 		AdminID: params.AdminID, Statuses: params.Statuses, Search: params.Search,

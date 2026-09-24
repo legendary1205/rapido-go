@@ -79,8 +79,7 @@ func TestFromWireShadowsocksDefaults(t *testing.T) {
 }
 
 // TestFromWireTreatsEmptyArrayAsNoSettings covers a real, live-confirmed
-// compatibility gap: a real, unmodified reseller bot (wizwizdev/
-// wizwizxui-timebot) sends "[]" instead of "{}" for a protocol's settings
+// compatibility gap: a real, unmodified external reseller bot sends "[]" instead of "{}" for a protocol's settings
 // once its plan template round-trips through PHP's associative-array JSON
 // decode/encode (see hasSettings's own doc comment for the exact
 // mechanism) - every protocol must accept this shape the same as no
