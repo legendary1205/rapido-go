@@ -12,6 +12,7 @@ import { User } from "types/User";
 import { errorText } from "service/errors";
 import { Modal } from "rapido-ui/Modal";
 import { Button } from "rapido-ui/Button";
+import { hostOf, subscriptionUrlsOf } from "utils/subscriptionUrls";
 
 // The *.prompt locale entries embed literal <b>{{username}}</b>, so they are
 // rendered through <Trans> - interpolating them into a string would print the
@@ -154,52 +155,69 @@ const RevokeSubscriptionConfirmModal: FC<{ revokeSubscriptionUser: User }> = ({
   );
 };
 
-// The backend returns a bare "/sub/<token>" path whenever
-// XRAY_SUBSCRIPTION_URL_PREFIX is unset, which is useless once copied out of
-// the panel - so resolve it against the panel's own origin, exactly as the
-// old dashboard did.
-export const absoluteSubscriptionUrl = (url: string): string =>
-  url.startsWith("/") ? window.location.origin + url : url;
-
 // Merges the old dashboard's separate "QR code grid" and "copy subscription
-// link" modals into one (see the plan's Users notes): `subscription_url` is
-// the only link the Go backend returns today - there is no per-format
-// `links[]` array yet - so there is nothing left to show a *grid* of. One QR
-// code beside one copyable field covers the same need.
+// link" modals into one (see the plan's Users notes): the Go backend returns
+// no per-format `links[]` array, so there is nothing to show a *grid* of. One
+// QR code plus the copyable addresses covers the same need. A subscription
+// can answer on several addresses (a new and an old domain); all are listed,
+// the first one the server names comes first, and the QR follows whichever
+// address the admin last clicked.
 const SubscriptionLinkModal: FC<{ user: User }> = ({ user }) => {
   const { t } = useTranslation();
   const setSubscriptionLinkUser = useUsersUiStore((s) => s.setSubscriptionLinkUser);
-  const [copied, setCopied] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [selected, setSelected] = useState(0);
   const close = () => setSubscriptionLinkUser(null);
-  const fullUrl = absoluteSubscriptionUrl(user.subscription_url);
+  const urls = subscriptionUrlsOf(user);
+  const qrUrl = urls[Math.min(selected, urls.length - 1)] ?? "";
 
   return (
     <Modal onClose={close} title={t("rapido.subscriptionLink")}>
       <div className="mb-3 flex justify-center rounded-lg bg-white p-3">
-        <QRCodeSVG value={fullUrl} size={180} />
+        <QRCodeSVG value={qrUrl} size={180} />
       </div>
-      <div className="flex gap-2">
-        {/* A URL read right-to-left is unusable: the scheme lands at the far
-            end and the slashes migrate. dir="ltr" pins the field's own
-            direction regardless of the page's. */}
-        <input
-          readOnly
-          dir="ltr"
-          value={fullUrl}
-          onFocus={(e) => e.currentTarget.select()}
-          className="min-w-0 flex-1 rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 text-sm text-rapido-text"
-        />
-        <CopyToClipboard
-          text={fullUrl}
-          onCopy={() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-          }}
-        >
-          <Button variant="primary" className="shrink-0">
-            {copied ? t("usersTable.copied") : t("rapido.copy")}
-          </Button>
-        </CopyToClipboard>
+      <div className="flex flex-col gap-3">
+        {urls.map((url, index) => (
+          <div key={url}>
+            {urls.length > 1 && (
+              <div dir="ltr" className="mb-1 text-xs text-rapido-muted">
+                {hostOf(url)}
+              </div>
+            )}
+            <div className="flex gap-2">
+              {/* A URL read right-to-left is unusable: the scheme lands at the
+                  far end and the slashes migrate. dir="ltr" pins the field's
+                  own direction regardless of the page's. */}
+              <input
+                readOnly
+                dir="ltr"
+                value={url}
+                onFocus={(e) => {
+                  e.currentTarget.select();
+                  setSelected(index);
+                }}
+                onClick={() => setSelected(index)}
+                className={`min-w-0 flex-1 rounded-lg border bg-rapido-bg px-3 py-2 text-sm text-rapido-text ${
+                  urls.length > 1 && index === selected
+                    ? "border-rapido-accent"
+                    : "border-rapido-border"
+                }`}
+              />
+              <CopyToClipboard
+                text={url}
+                onCopy={() => {
+                  setSelected(index);
+                  setCopiedUrl(url);
+                  window.setTimeout(() => setCopiedUrl(null), 1500);
+                }}
+              >
+                <Button variant="primary" className="shrink-0">
+                  {copiedUrl === url ? t("usersTable.copied") : t("rapido.copy")}
+                </Button>
+              </CopyToClipboard>
+            </div>
+          </div>
+        ))}
       </div>
       <div className="mt-4 flex justify-end">
         <Button variant="secondary" onClick={close}>

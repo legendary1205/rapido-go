@@ -77,6 +77,10 @@ services:
       SUDO_PASSWORD: ${SUDO_PASSWORD:?set SUDO_PASSWORD in your .env file - this is the one-time bootstrap login, see the README}
       PUBLIC_IP: ${PUBLIC_IP:-}
       XRAY_SUBSCRIPTION_URL_PREFIX: ${XRAY_SUBSCRIPTION_URL_PREFIX:-}
+      # Optional: every address a subscription answers on, comma-separated, in
+      # the order the dashboard lists them. `subscription_url` (what reseller
+      # bots read) still uses XRAY_SUBSCRIPTION_URL_PREFIX alone.
+      XRAY_SUBSCRIPTION_URL_PREFIXES: ${XRAY_SUBSCRIPTION_URL_PREFIXES:-}
       # Customer-visible: real VPN clients render these as the in-app
       # support button and the profile's name (see .env.prod.example).
       SUB_SUPPORT_URL: ${SUB_SUPPORT_URL:-https://t.me/}

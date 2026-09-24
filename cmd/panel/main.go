@@ -129,7 +129,7 @@ func run(logger *slog.Logger) error {
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
 		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags, subBranding,
 		envDefaults, dispatcher, resellerAPIClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
-		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger)
+		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger).WithSubscriptionURLPrefixes(cfg.SubscriptionURLPrefixes)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
 

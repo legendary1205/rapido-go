@@ -121,6 +121,10 @@ type userResponseDTO struct {
 	ExcludedInbounds    map[string][]string        `json:"excluded_inbounds"`
 	NextPlan            *nextPlanDTO               `json:"next_plan"`
 	SubscriptionURL     string                     `json:"subscription_url"`
+	// SubscriptionURLs lists every address the same subscription answers on,
+	// the first being the one to show first. SubscriptionURL is kept as it
+	// always was for clients (reseller bots) that only know that field.
+	SubscriptionURLs    []string                   `json:"subscription_urls"`
 	OnlineAt            *time.Time                 `json:"online_at"`
 	// Links is populated only by handleGetUser (the single-user GET), never
 	// by the batched buildUserResponses a paginated user-list page shares -
@@ -995,7 +999,7 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			EmergencyUsedAt:     timestamptzToPtr(u.EmergencyUsedAt),
 			SyncedFromPanelName: textToPtr(u.SyncedFromPanelName),
 			Proxies:             proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
-			SubscriptionURL: subURL, OnlineAt: timestamptzToPtr(u.OnlineAt),
+			SubscriptionURL: subURL, SubscriptionURLs: h.subscriptionURLs(subToken), OnlineAt: timestamptzToPtr(u.OnlineAt),
 			// Not the real per-user links list (see handleGetUser, the only
 			// caller that pays for that) - a literal empty slice here is
 			// free and keeps every other endpoint's JSON shape as "links":[]

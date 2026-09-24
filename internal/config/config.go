@@ -50,6 +50,14 @@ type Config struct {
 	// (the default) yields a relative path.
 	SubscriptionURLPrefix string
 
+	// SubscriptionURLPrefixes mirrors XRAY_SUBSCRIPTION_URL_PREFIXES: every
+	// address a user's subscription can be reached on, in the order the
+	// dashboard should list them (comma-separated). It only feeds the
+	// dashboard's `subscription_urls` field - `subscription_url`, which
+	// reseller bots read, keeps using SubscriptionURLPrefix alone. Empty
+	// means the list is just that one address.
+	SubscriptionURLPrefixes []string
+
 	// SubSupportURL / SubProfileTitle / SubUpdateInterval mirror the real
 	// panel's SUB_SUPPORT_URL / SUB_PROFILE_TITLE / SUB_UPDATE_INTERVAL,
 	// sent as headers on every subscription fetch. Real VPN clients render
@@ -146,6 +154,7 @@ func Load() (*Config, error) {
 		AllowedOrigins:                strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
 		PublicIP:                      getEnv("PUBLIC_IP", ""),
 		SubscriptionURLPrefix:         getEnv("XRAY_SUBSCRIPTION_URL_PREFIX", ""),
+		SubscriptionURLPrefixes:       splitNonEmpty(getEnv("XRAY_SUBSCRIPTION_URL_PREFIXES", "")),
 		SubSupportURL:                 getEnv("SUB_SUPPORT_URL", "https://t.me/"),
 		SubProfileTitle:               getEnv("SUB_PROFILE_TITLE", "Subscription"),
 		SubUpdateInterval:             getEnv("SUB_UPDATE_INTERVAL", "12"),

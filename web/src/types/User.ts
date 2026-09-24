@@ -81,6 +81,8 @@ export type User = {
   excluded_inbounds: UserInbounds;
   next_plan: NextPlan | null;
   subscription_url: string;
+  /** Every address the subscription answers on, the one to show first first. */
+  subscription_urls?: string[];
   online_at: string | null;
 };
 

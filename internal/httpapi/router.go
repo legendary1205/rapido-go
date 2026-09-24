@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type Handler struct {
 	jwtSecret            []byte
 	publicIP             string
 	subURLPrefix         string
+	subURLPrefixes       []string
 	clashTemplatePath    string
 	v2rayTemplatePath    string
 	formatFlags          SubscriptionFormatFlags
@@ -93,6 +95,28 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		restoreDatabase: func(ctx context.Context, gz io.Reader) error { return execPsqlRestore(ctx, databaseURL, gz) },
 		logger:          logger,
 	}
+}
+
+// WithSubscriptionURLPrefixes sets every address a subscription is reachable
+// on, in dashboard display order - see config.SubscriptionURLPrefixes. A setter
+// rather than another NewHandler parameter: that list is already long, and an
+// unset value simply leaves the single subURLPrefix in effect.
+func (h *Handler) WithSubscriptionURLPrefixes(prefixes []string) *Handler {
+	h.subURLPrefixes = prefixes
+	return h
+}
+
+// subscriptionURLs is the list of links for one subscription token: every
+// configured prefix in order, or just the single legacy link when none is set.
+func (h *Handler) subscriptionURLs(token string) []string {
+	if len(h.subURLPrefixes) == 0 {
+		return []string{h.subURLPrefix + "/sub/" + token}
+	}
+	urls := make([]string, 0, len(h.subURLPrefixes))
+	for _, prefix := range h.subURLPrefixes {
+		urls = append(urls, strings.TrimRight(prefix, "/")+"/sub/"+token)
+	}
+	return urls
 }
 
 // NewRouter builds the Gin engine with logging/recovery middleware and every
