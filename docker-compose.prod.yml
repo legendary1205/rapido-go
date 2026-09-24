@@ -78,8 +78,9 @@ services:
       PUBLIC_IP: ${PUBLIC_IP:-}
       XRAY_SUBSCRIPTION_URL_PREFIX: ${XRAY_SUBSCRIPTION_URL_PREFIX:-}
       # Optional: every address a subscription answers on, comma-separated, in
-      # the order the dashboard lists them. `subscription_url` (what reseller
-      # bots read) still uses XRAY_SUBSCRIPTION_URL_PREFIX alone.
+      # the order the dashboard lists them. The first one is also what
+      # `subscription_url` (what reseller bots read) uses, overriding
+      # XRAY_SUBSCRIPTION_URL_PREFIX.
       XRAY_SUBSCRIPTION_URL_PREFIXES: ${XRAY_SUBSCRIPTION_URL_PREFIXES:-}
       # Customer-visible: real VPN clients render these as the in-app
       # support button and the profile's name (see .env.prod.example).

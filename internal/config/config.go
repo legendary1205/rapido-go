@@ -52,10 +52,10 @@ type Config struct {
 
 	// SubscriptionURLPrefixes mirrors XRAY_SUBSCRIPTION_URL_PREFIXES: every
 	// address a user's subscription can be reached on, in the order the
-	// dashboard should list them (comma-separated). It only feeds the
-	// dashboard's `subscription_urls` field - `subscription_url`, which
-	// reseller bots read, keeps using SubscriptionURLPrefix alone. Empty
-	// means the list is just that one address.
+	// dashboard should list them (comma-separated). The FIRST entry is also
+	// the address `subscription_url` uses - what reseller bots hand to
+	// customers - and it takes precedence over SubscriptionURLPrefix, which
+	// only applies while this list is empty.
 	SubscriptionURLPrefixes []string
 
 	// SubSupportURL / SubProfileTitle / SubUpdateInterval mirror the real

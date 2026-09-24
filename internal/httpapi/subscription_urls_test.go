@@ -20,8 +20,9 @@ func stringList(t *testing.T, v interface{}) []string {
 }
 
 // A user's subscription answers on every configured address. The dashboard
-// lists them in the configured order; the single `subscription_url` that
-// reseller bots read must not move.
+// lists them in the configured order, and the single `subscription_url` that
+// reseller bots read is the FIRST of them, whatever the legacy single prefix
+// says.
 func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T) {
 	router, token, handler := newTestRouterAndHandler(t)
 	handler.subURLPrefix = "https://sub.officialvpn.shop"
@@ -33,8 +34,8 @@ func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T
 	})
 
 	single, _ := created.Body["subscription_url"].(string)
-	if !strings.HasPrefix(single, "https://sub.officialvpn.shop/sub/") {
-		t.Fatalf("subscription_url = %q, want it unchanged on the old address", single)
+	if !strings.HasPrefix(single, "https://sub.ts01.ir/sub/") {
+		t.Fatalf("subscription_url = %q, want the first listed address (what bots hand to customers)", single)
 	}
 	tok := single[strings.LastIndex(single, "/")+1:]
 
@@ -52,6 +53,9 @@ func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T
 	// fresh one; what must hold is that its two addresses share that token.
 	first := users[0].(map[string]interface{})
 	listSingle, _ := first["subscription_url"].(string)
+	if !strings.HasPrefix(listSingle, "https://sub.ts01.ir/sub/") {
+		t.Errorf("list: subscription_url = %q, want the first listed address", listSingle)
+	}
 	listTok := listSingle[strings.LastIndex(listSingle, "/")+1:]
 	wantList := []string{"https://sub.ts01.ir/sub/" + listTok, "https://sub.officialvpn.shop/sub/" + listTok}
 	if got := stringList(t, first["subscription_urls"]); !reflect.DeepEqual(got, wantList) {

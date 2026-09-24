@@ -98,11 +98,17 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 }
 
 // WithSubscriptionURLPrefixes sets every address a subscription is reachable
-// on, in dashboard display order - see config.SubscriptionURLPrefixes. A setter
-// rather than another NewHandler parameter: that list is already long, and an
-// unset value simply leaves the single subURLPrefix in effect.
+// on, in dashboard display order - see config.SubscriptionURLPrefixes. The
+// first one is also the single address handed to everything that takes just
+// one link (`subscription_url`, which reseller bots read, and the
+// subscription page), so it replaces subURLPrefix; an empty list leaves
+// subURLPrefix in effect. A setter rather than another NewHandler
+// parameter: that list is already long.
 func (h *Handler) WithSubscriptionURLPrefixes(prefixes []string) *Handler {
 	h.subURLPrefixes = prefixes
+	if len(prefixes) > 0 {
+		h.subURLPrefix = strings.TrimRight(prefixes[0], "/")
+	}
 	return h
 }
 
