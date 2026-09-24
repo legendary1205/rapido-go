@@ -105,14 +105,10 @@ func toNodeDTO(n generated.Node) nodeDTO {
 	return dto
 }
 
-// handleCreateNode implements POST /api/node (sudo only). Unlike the
-// current Python system - where the admin manually pastes the panel's
-// certificate into the node's config, and the node's own certificate is
-// never verified, only TOFU'd on every reconnect (see the Phase 3 research
-// note in memory) - this issues the new node a real leaf certificate
-// signed by the panel's own CA (the same self-signed CN="Rapido" cert
-// Phase 1 already generates into the `tls` table, which doubles as this
-// CA since it was generated with IsCA:true). The response carries
+// handleCreateNode implements POST /api/node (sudo only). It issues the new
+// node a real leaf certificate signed by the panel's own CA (the
+// self-signed CN="Rapido" cert generated into the `tls` table, which
+// doubles as this CA since it was generated with IsCA:true). The response carries
 // everything needed to bring the node online: its own cert+key and the CA
 // cert, so the node can require and verify the panel's client certificate
 // too, instead of trusting whatever connects.

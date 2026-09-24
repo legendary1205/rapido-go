@@ -1,14 +1,7 @@
 // Package certs generates the Rapido-branded certificate material used for
-// panel<->node mTLS.
-//
-// The current system is inconsistent: the panel's own certificate (stored
-// in the "tls" table, generated once by app/utils/crypto.generate_certificate)
-// uses CN="Rapido", but rapido-node's own self-signed certificate defaults
-// its CN to the legacy "Gozargah" value (the SSL_COMMON_NAME config knob,
-// inherited from Marzban). This package is the single source of both going
-// forward: one self-signed Rapido CA issues the panel's own identity and
-// signs every node's leaf certificate, so every certificate in the fleet
-// carries a consistent, Rapido-branded CN.
+// panel<->node mTLS: one self-signed Rapido CA issues the panel's own
+// identity and signs every node's leaf certificate, so every certificate in
+// the fleet carries a consistent, Rapido-branded CN.
 package certs
 
 import (

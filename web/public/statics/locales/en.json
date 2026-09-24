@@ -370,7 +370,7 @@
   "rapido.monitoring.loading": "Loading...",
   "rapido.monitoring.memory": "Memory",
   "rapido.monitoring.nav": "Monitoring",
-  "rapido.monitoring.noAgent": "This node runs older software and reports no metrics. Reinstall it as a Rapido node to see them.",
+  "rapido.monitoring.noAgent": "This node has not reported any metrics yet. Check that the rapido-go-node service is running on it.",
   "rapido.monitoring.noHandshakeData": "Handshake time unavailable on this node",
   "rapido.monitoring.notEnoughHistory": "Not enough samples yet",
   "rapido.monitoring.online": "Online",

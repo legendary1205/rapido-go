@@ -375,7 +375,7 @@
   "rapido.monitoring.loading": "در حال بارگذاری...",
   "rapido.monitoring.memory": "حافظه",
   "rapido.monitoring.nav": "مانیتورینگ",
-  "rapido.monitoring.noAgent": "این نود نرم‌افزار قدیمی دارد و متریکی نمی‌فرستد. برای دیدن آن‌ها به نود رپیدو تبدیلش کن.",
+  "rapido.monitoring.noAgent": "این نود هنوز هیچ متریکی نفرستاده است. بررسی کنید سرویس rapido-go-node روی آن در حال اجرا باشد.",
   "rapido.monitoring.noHandshakeData": "زمان دست‌دادن روی این نود در دسترس نیست",
   "rapido.monitoring.notEnoughHistory": "هنوز نمونه کافی جمع نشده",
   "rapido.monitoring.online": "آنلاین",
