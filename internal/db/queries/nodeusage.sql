@@ -95,8 +95,8 @@ UPDATE system SET uplink = uplink + $1, downlink = downlink + $2;
 
 -- name: InsertHostMetric :one
 INSERT INTO host_metrics (node_id, collected_at, cpu_percent, mem_percent, disk_percent,
-                          rx_rate, tx_rate, connections, tunnels_up, tunnels_total, healthy, payload)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                          rx_rate, tx_rate, connections, tunnels_up, tunnels_total, healthy, payload, client_conns)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING *;
 
 -- name: GetLatestHostMetricPerNode :many

@@ -131,3 +131,73 @@ describe("tunnel strings", () => {
     expect(i18n.getFixedT("en")("rapido.monitoring.agoMinutes", { value: 3 })).toBe("3 min ago");
   });
 });
+
+// Per-node capacity: the form, the row and the load chip.
+const CAPACITY_KEYS = [
+  "rapido.nodes.capacity",
+  "rapido.nodes.capacityField",
+  "rapido.nodes.capacityHint",
+  "rapido.nodes.capacityDefault",
+  "rapido.nodes.capacityDefaultValue",
+  "rapido.nodes.capacityError.notInteger",
+  "rapido.nodes.capacityError.outOfRange",
+  "rapido.nodes.loadTooltip_other",
+  "rapido.nodes.loadDefaultCapacity",
+  "rapido.hosts.loadConns_other",
+  "rapido.hosts.loadLimitConfig",
+  "rapido.hosts.loadLimitNode",
+];
+
+describe("per-node capacity strings", () => {
+  it("are translated, not English copied into fa, ru and zh", () => {
+    for (const lang of ["fa", "ru", "zh"]) {
+      for (const key of CAPACITY_KEYS) {
+        expect(locales[lang][key], `${lang} ${key}`).toBeTruthy();
+        expect(locales[lang][key], `${lang} ${key}`).not.toBe(en[key as keyof typeof en]);
+      }
+    }
+  });
+
+  it("fill the capacity field's messages with the value and the range", () => {
+    for (const lang of ["en", "fa", "ru", "zh"]) {
+      const t = i18n.getFixedT(lang);
+      expect(t("rapido.nodes.capacityError.notInteger", { value: "abc" }), lang).toContain("abc");
+      const range = t("rapido.nodes.capacityError.outOfRange", { value: "0", min: 1, max: "10,000,000" });
+      expect(range, lang).toContain("0");
+      expect(range, lang).toContain("10,000,000");
+      expect(t("rapido.nodes.capacityDefaultValue", { value: 10000 }), lang).toContain("10000");
+    }
+  });
+
+  it("count the connections in the node's tooltip, with the plural forms each language needs", () => {
+    const tip = (lang: string, count: number) =>
+      i18n.getFixedT(lang)("rapido.nodes.loadTooltip", { count, capacity: 15000, percent: 26 });
+    for (const lang of ["en", "fa", "ru", "zh"]) expect(tip(lang, 3960), lang).toMatch(/3960.*15000.*26/);
+    expect(tip("en", 1)).toBe("1 client connection of 15000 (26%)");
+    expect(tip("en", 3960)).toBe("3960 client connections of 15000 (26%)");
+    expect(tip("ru", 1)).toContain("клиентское соединение");
+    expect(tip("ru", 2)).toContain("клиентских соединения");
+    expect(tip("ru", 5)).toContain("клиентских соединений");
+  });
+
+  it("count the connections on a config in the host pill's tooltip, with the same plural forms", () => {
+    const conns = (lang: string, count: number) => i18n.getFixedT(lang)("rapido.hosts.loadConns", { count });
+    expect(conns("en", 1)).toBe("1 open connection on this config");
+    expect(conns("en", 312)).toBe("312 open connections on this config");
+    expect(conns("ru", 1)).toContain("открытое соединение");
+    expect(conns("ru", 2)).toContain("открытых соединения");
+    expect(conns("ru", 5)).toContain("открытых соединений");
+    for (const lang of ["fa", "zh"]) expect(conns(lang, 312), lang).toContain("312");
+  });
+
+  it("keep the two limit explanations apart in every language", () => {
+    for (const lang of ["en", "fa", "ru", "zh"]) {
+      const t = i18n.getFixedT(lang);
+      const node = t("rapido.hosts.loadLimitNode", { node: 45, port: 3 });
+      const config = t("rapido.hosts.loadLimitConfig", { node: 26, port: 72 });
+      expect(node, lang).not.toBe(config);
+      expect(node, lang).not.toContain("{{");
+      expect(config, lang).not.toContain("{{");
+    }
+  });
+});

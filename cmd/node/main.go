@@ -1195,6 +1195,7 @@ func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) 
 
 	sample := hostmetrics.Collect(running, singBoxVersion)
 	sample.Tunnels = s.tunnelReport(sample.Tunnels)
+	sample.ClientConnections = s.clientConnections()
 	body, err := json.Marshal(reportRequest{Users: users, Host: sample})
 	if err != nil {
 		s.logger.Error("push report: marshal", "error", err)
@@ -1218,6 +1219,15 @@ func (s *server) pushOnce(ctx context.Context, client *http.Client, cfg config) 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Warn("push report: panel rejected report", "status", resp.StatusCode)
 	}
+}
+
+// clientConnections is how many client connections are open right now - the
+// same total node-live sends as conns_total. 0 when nothing is counting yet.
+func (s *server) clientConnections() int {
+	if s.traffic == nil {
+		return 0
+	}
+	return int(s.traffic.Presence().Total)
 }
 
 // tunnelReport merges the probe results and the fallback state into the

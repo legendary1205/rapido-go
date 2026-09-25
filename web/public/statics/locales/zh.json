@@ -752,5 +752,17 @@
   "rapido.hosts.varLoadLevel": "以单词表示的负载等级：free、normal、busy 或 full",
   "rapido.onlineNowDesc": "当前已连接",
   "rapido.userStatusLegend": "用户状态分布",
-  "rapido.underAMinute": "不到一分钟"
+  "rapido.underAMinute": "不到一分钟",
+  "rapido.nodes.capacity": "容量",
+  "rapido.nodes.capacityField": "容量（负载 100% 时的客户端连接数）",
+  "rapido.nodes.capacityHint": "留空则使用面板默认值。",
+  "rapido.nodes.capacityDefault": "默认",
+  "rapido.nodes.capacityDefaultValue": "默认（{{value}}）",
+  "rapido.nodes.capacityError.notInteger": "「{{value}}」不是整数。",
+  "rapido.nodes.capacityError.outOfRange": "{{value}} 不是有效的容量（请填 {{min}}-{{max}}）。",
+  "rapido.nodes.loadTooltip_other": "{{count}} 个客户端连接，容量 {{capacity}}（{{percent}}%）",
+  "rapido.nodes.loadDefaultCapacity": "默认容量",
+  "rapido.hosts.loadConns_other": "此配置上有 {{count}} 个打开的连接",
+  "rapido.hosts.loadLimitConfig": "显示的百分比取决于此配置本身（{{port}}%）；其节点的负载为 {{node}}%。",
+  "rapido.hosts.loadLimitNode": "显示的百分比取决于其节点（{{node}}%），该节点上的所有配置共用它；此配置自身为 {{port}}%。"
 }

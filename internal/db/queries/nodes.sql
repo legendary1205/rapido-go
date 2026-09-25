@@ -1,6 +1,6 @@
 -- name: CreateNode :one
-INSERT INTO nodes (name, address, port, api_port, usage_coefficient, report_secret, inbound_tags, listen_ports, core_overrides)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO nodes (name, address, port, api_port, usage_coefficient, report_secret, inbound_tags, listen_ports, core_overrides, capacity)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, sqlc.narg('capacity')::int)
 RETURNING *;
 
 -- name: GetNodeByID :one
@@ -29,7 +29,19 @@ UPDATE nodes SET
                   ELSE status END,
     inbound_tags = sqlc.narg('inbound_tags')::text[],
     listen_ports = sqlc.narg('listen_ports')::int[],
-    core_overrides = sqlc.arg('core_overrides')::jsonb
+    core_overrides = sqlc.arg('core_overrides')::jsonb,
+    -- set_capacity says whether the caller sent the field at all; a NULL
+    -- capacity with it set clears the node back to the panel default.
+    capacity = CASE WHEN sqlc.arg('set_capacity')::bool THEN sqlc.narg('capacity')::int ELSE capacity END
+WHERE id = $1
+RETURNING *;
+
+-- name: SetNodeCapacity :one
+-- Capacity alone. Kept apart from UpdateNode on purpose: that statement's SET
+-- list names nodes.name and the profile columns, which fires the node_config
+-- version trigger (migration 00015) even when nothing changed, and a capacity
+-- edit must not make every node re-download its config.
+UPDATE nodes SET capacity = sqlc.narg('capacity')::int
 WHERE id = $1
 RETURNING *;
 

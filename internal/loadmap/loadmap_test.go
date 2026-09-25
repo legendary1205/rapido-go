@@ -124,6 +124,12 @@ func live(nodes map[int32]NodePresence) PresenceData {
 
 func reporting(ports map[int]int) NodePresence { return NodePresence{Reporting: true, Ports: ports} }
 
+// reportingTotal is a reporting node whose whole client total is given: more
+// than its listed ports add up to when it carries other ports' connections too.
+func reportingTotal(total int, ports map[int]int) NodePresence {
+	return NodePresence{Reporting: true, Ports: ports, Total: total}
+}
+
 // build returns a snapshot built right now, bypassing the cache.
 func build(m *Map) *Snapshot {
 	s := m.build(context.Background())
@@ -175,11 +181,13 @@ func TestPercentRoundsAndClamps(t *testing.T) {
 		{2, 3, 67},
 		{1500, 1000, 100}, // over capacity clamps to 100
 		{-5, 1000, 0},
-		{500, 0, 50},  // a bad capacity falls back to the default 1000
-		{500, -3, 50}, //
+		{500, 0, 5},  // a bad capacity falls back to the default 10000
+		{500, -3, 5}, //
 		{1, 3, 33},
 		{1000, 1000, 100},
-		{12.5, 25, 50}, // a fractional count still rounds to a percent
+		{12.5, 25, 50},      // a fractional count still rounds to a percent
+		{3960, 15000, 26},   // the busiest real node against its own capacity
+		{25000, 10000, 100}, // over capacity never reads past 100
 	}
 	for _, c := range cases {
 		if got := Percent(c.conns, c.capacity); got != c.want {
@@ -245,8 +253,9 @@ func TestNodeMatchedByIPUsesOnlyThatNode(t *testing.T) {
 	}
 }
 
-func TestSeveralMatchingNodesUseTheSum(t *testing.T) {
-	// One name resolving to both nodes' IPs: the load is what both carry together.
+func TestSeveralMatchingNodesAreAllHomeNodes(t *testing.T) {
+	// One name resolving to both nodes' IPs: everyone on the config counts, and
+	// both nodes carry a real share of it, so the busiest of them sets the load.
 	res := newResolver(map[string][]string{"lb.example.test": {"10.0.0.1", "10.0.0.2"}})
 	inv := &fakeInventory{
 		nodes: []Node{
@@ -265,8 +274,10 @@ func TestSeveralMatchingNodesUseTheSum(t *testing.T) {
 	m := newMap(inv, pres, res, clock)
 
 	first := build(m) // first build only starts the lookup: name unresolved yet
-	if hl := first.For(7); hl == nil || len(hl.NodeIDs) != 3 {
-		t.Fatalf("before the name resolves every reporting node is used, got %+v", hl)
+	// Every node serving the port is a candidate (1400 people on the config),
+	// but only the ones carrying at least 20% of that are home nodes.
+	if hl := first.For(7); hl == nil || hl.Conns != 1400 || len(hl.NodeIDs) != 2 || hl.NodeIDs[0] != 2 || hl.NodeIDs[1] != 3 {
+		t.Fatalf("before the name resolves every reporting node is a candidate (1400), home nodes [2 3], got %+v", hl)
 	}
 	second := build(m)
 	hl := second.For(7)
@@ -276,9 +287,9 @@ func TestSeveralMatchingNodesUseTheSum(t *testing.T) {
 	if len(hl.NodeIDs) != 2 || hl.NodeIDs[0] != 1 || hl.NodeIDs[1] != 2 {
 		t.Fatalf("node ids = %v, want [1 2]", hl.NodeIDs)
 	}
-	// 100 + 301 = 401 of the default capacity 1000 -> 40%
-	if hl.Percent != 40 || hl.Conns != 401 {
-		t.Errorf("summed load = conns %d percent %d, want 401 / 40", hl.Conns, hl.Percent)
+	// 401 people on the config; the busiest home node (301 of 1000) sets the percent.
+	if hl.Percent != 30 || hl.Conns != 401 {
+		t.Errorf("load = conns %d percent %d, want 401 / 30", hl.Conns, hl.Percent)
 	}
 }
 
@@ -293,8 +304,9 @@ func TestNoAddressMatchFallsBackToEveryNodeServingThePort(t *testing.T) {
 		2: reporting(map[int]int{20001: 300}),
 	})}
 	hl := build(newMap(inv, pres, newResolver(nil), nil)).For(7)
-	if hl == nil || !hl.Known || hl.Conns != 400 || hl.Percent != 40 {
-		t.Fatalf("want the sum 400 / 40%% over both nodes, got %+v", hl)
+	// 400 people on the config; the busiest node (300 of 1000) sets the percent.
+	if hl == nil || !hl.Known || hl.Conns != 400 || hl.Percent != 30 {
+		t.Fatalf("want 400 people / 30%% (the busier node), got %+v", hl)
 	}
 	if len(hl.NodeIDs) != 2 {
 		t.Errorf("node ids = %v, want both nodes", hl.NodeIDs)
@@ -309,8 +321,15 @@ func TestIdlePortOnAServingNodeReadsZeroNotUnknown(t *testing.T) {
 	// The node reports (total key exists) but has connections on another port only.
 	pres := &fakePresence{data: live(map[int32]NodePresence{1: reporting(map[int]int{20001: 50})})}
 	hl := build(newMap(inv, pres, newResolver(nil), nil)).For(7)
-	if hl == nil || !hl.Known || hl.Conns != 0 || hl.Percent != 0 || hl.Level != LevelFree {
-		t.Fatalf("an idle port on a reporting node should read 0%% free, got %+v", hl)
+	if hl == nil || !hl.Known || hl.Conns != 0 || hl.PortPercent != 0 || hl.Level != LevelFree {
+		t.Fatalf("an idle port on a reporting node should read known, no connections, free, got %+v", hl)
+	}
+	// The node's other port has 50 people on it: that is this config's floor.
+	if hl.NodePercent != 5 || hl.Percent != 5 {
+		t.Errorf("node percent %d / percent %d, want 5 / 5 (the node carries 50 of 1000)", hl.NodePercent, hl.Percent)
+	}
+	if len(hl.NodeIDs) != 1 || hl.NodeIDs[0] != 1 {
+		t.Errorf("an idle port everywhere makes every candidate a home node, got %v", hl.NodeIDs)
 	}
 }
 
@@ -471,8 +490,10 @@ func TestDNSNeverBlocksTheBuildAndFillsInAfterwards(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("build blocked on DNS")
 	}
-	if hl := s.For(7); hl == nil || len(hl.NodeIDs) != 2 || hl.Conns != 1000 {
-		t.Fatalf("first miss must fall back to every serving node, got %+v", hl)
+	// Unresolved: both nodes are candidates (1000 people on the config), and node
+	// 1 alone is its home (node 2's 100 are only 10% of the port's traffic).
+	if hl := s.For(7); hl == nil || hl.Conns != 1000 || len(hl.NodeIDs) != 1 || hl.NodeIDs[0] != 1 {
+		t.Fatalf("first miss must fall back to every serving node as a candidate, got %+v", hl)
 	}
 
 	close(res.gate)

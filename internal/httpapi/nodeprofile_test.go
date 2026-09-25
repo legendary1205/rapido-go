@@ -750,6 +750,9 @@ func TestNodeConfigVersionTriggersFireForExactlyTheRightWrites(t *testing.T) {
 		`UPDATE nodes SET uplink = uplink + 1`,
 		`UPDATE nodes SET uplink = uplink + 1, downlink = downlink + 1`,
 		`UPDATE nodes SET status = 'connected', last_status_change = now(), message = 'm', xray_version = '1', usage_coefficient = 2, address = 'z', port = 5, api_port = 6, report_secret = report_secret || 'r'`,
+		// The load indicator's per-node capacity never changes what a node runs.
+		`UPDATE nodes SET capacity = 15000`,
+		`UPDATE nodes SET capacity = NULL`,
 	}
 	for _, stmt := range quiet {
 		if bumpsVersion(t, pool, stmt) {

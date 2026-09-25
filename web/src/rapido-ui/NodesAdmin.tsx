@@ -9,12 +9,22 @@ import {
   useUpdateNodeMutation,
 } from "hooks/useNodesQuery";
 import { useInboundsQuery } from "hooks/useInboundsQuery";
+import { useHostsLoadQuery } from "hooks/useHostsLoadQuery";
+import { NodeLoadEntry } from "types/HostLoad";
 import { Node, NodeCreateResult, NodeWritePayload } from "types/Node";
 import { errorText } from "service/errors";
 import { formatBytes } from "utils/formatByte";
 import { toneForNodeStatus } from "utils/nodeStatus";
 import { buildNodeInstallCommand } from "utils/nodeInstall";
 import { PortInputError } from "utils/inboundPorts";
+import {
+  CapacityInputError,
+  MAX_NODE_CAPACITY,
+  MIN_NODE_CAPACITY,
+  formatCapacityInput,
+  parseCapacityInput,
+} from "utils/nodeCapacity";
+import { nodeLoadById } from "utils/hostLoad";
 import {
   NodeProfileDraft,
   OverridesInputError,
@@ -35,6 +45,7 @@ import { Button } from "rapido-ui/Button";
 import { Input } from "rapido-ui/Input";
 import { Checkbox } from "rapido-ui/Checkbox";
 import { Modal } from "rapido-ui/Modal";
+import { NodeLoadChip } from "rapido-ui/NodeLoadChip";
 
 // Full CRUD for the physical/VPS servers a node agent runs on - not to be
 // confused with rapido-ui/HostsAdmin.tsx's Hosts, which are proxy connection
@@ -66,6 +77,8 @@ type NodeFormValues = {
   port: string;
   api_port: string;
   usage_coefficient: string;
+  // Client connections at 100% load, as typed; empty is the panel default.
+  capacity: string;
   disabled: boolean;
   // Create-only - see NodeWritePayload's own doc comment. Never populated
   // from an existing node (formValuesFromNode has no source for it, the
@@ -82,6 +95,7 @@ const defaultFormValues = (): NodeFormValues => ({
   port: "62050",
   api_port: "62051",
   usage_coefficient: "1",
+  capacity: "",
   disabled: false,
   panel_url: "",
   profile: emptyNodeProfileDraft(),
@@ -93,6 +107,7 @@ const formValuesFromNode = (n: Node): NodeFormValues => ({
   port: String(n.port),
   api_port: String(n.api_port),
   usage_coefficient: String(n.usage_coefficient),
+  capacity: formatCapacityInput(n.capacity),
   disabled: n.status === "disabled",
   panel_url: "",
   profile: draftFromNode(n),
@@ -114,16 +129,23 @@ const ServerFieldError: FC<{ message: string }> = ({ message }) => (
 
 const NodeFormModal: FC<{
   initial: Node | null;
+  /** The panel-wide capacity a node without its own uses, when known: shown as
+   * the capacity field's placeholder. */
+  defaultCapacity?: number;
   onClose: () => void;
   onCreated: (result: NodeCreateResult) => void;
-}> = ({ initial, onClose, onCreated }) => {
+}> = ({ initial, defaultCapacity, onClose, onCreated }) => {
   const { t } = useTranslation();
   const isEdit = !!initial;
   const [values, setValues] = useState<NodeFormValues>(
     initial ? formValuesFromNode(initial) : defaultFormValues()
   );
   const [error, setError] = useState("");
-  const [advancedOpen, setAdvancedOpen] = useState(!!initial && hasCustomProfile(initial));
+  // Also open for a node that has its own capacity: it is set on purpose and
+  // easy to lose track of when it is folded away.
+  const [advancedOpen, setAdvancedOpen] = useState(
+    !!initial && (hasCustomProfile(initial) || initial.capacity != null)
+  );
 
   const createNode = useCreateNodeMutation();
   const updateNode = useUpdateNodeMutation();
@@ -141,12 +163,20 @@ const NodeFormModal: FC<{
   const profileResult = useMemo(() => buildNodeProfile(values.profile), [values.profile]);
   const portsError = profileResult.ok ? null : profileResult.ports ?? null;
   const overridesError = profileResult.ok ? null : profileResult.overrides ?? null;
+  const capacityResult = useMemo(() => parseCapacityInput(values.capacity), [values.capacity]);
+  const capacityError = capacityResult.ok ? null : capacityResult.error;
   // The panel starts each profile validation message with the field's name,
   // so it can be shown under that field instead of only at the bottom.
   const serverField = error ? profileFieldOfServerError(error) : null;
 
   const portsErrorText = (e: PortInputError) =>
     t(`rapido.xrayConfig.portError${cap(e.kind)}`, { value: ltrIsolate(e.value) });
+  const capacityErrorText = (e: CapacityInputError) =>
+    t(`rapido.nodes.capacityError.${e.kind}`, {
+      value: ltrIsolate(e.value),
+      min: ltrIsolate(MIN_NODE_CAPACITY),
+      max: ltrIsolate(MAX_NODE_CAPACITY.toLocaleString("en-US")),
+    });
   const overridesErrorText = (e: OverridesInputError): string => {
     switch (e.kind) {
       case "invalidJson":
@@ -172,11 +202,12 @@ const NodeFormModal: FC<{
 
   const submit = () => {
     setError("");
-    if (!profileResult.ok) {
+    if (!profileResult.ok || !capacityResult.ok) {
       setAdvancedOpen(true);
       return;
     }
     const profile = profileResult.profile;
+    const capacity = capacityResult.capacity;
     const body: NodeWritePayload = {
       name: values.name,
       address: values.address,
@@ -193,6 +224,10 @@ const NodeFormModal: FC<{
       // explicitly, because an omitted key would leave the stored value alone
       // and an emptied field has to clear it.
       ...(isEdit ? profile : profileForCreate(profile)),
+      // Same rule for the capacity: a new node with the panel default carries
+      // no key at all, while an update always says which it means - an
+      // explicit null is what clears one the node currently has.
+      ...(isEdit || capacity !== null ? { capacity } : {}),
     };
 
     if (isEdit) {
@@ -210,7 +245,8 @@ const NodeFormModal: FC<{
     !!values.address.trim() &&
     !!values.port &&
     !!values.api_port &&
-    profileResult.ok;
+    profileResult.ok &&
+    capacityResult.ok;
   const choices = tagChoices(knownTags, values.profile.tags);
 
   return (
@@ -301,6 +337,29 @@ const NodeFormModal: FC<{
           </summary>
           <div className="flex flex-col gap-4 border-t border-rapido-border px-3 py-3">
             <p className="text-xs text-rapido-muted">{t("rapido.nodes.advancedHint")}</p>
+
+            {/* Not part of the profile: it changes nothing the node serves, only
+                what this node's load chip and the configs on it count as full. */}
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-rapido-text">{t("rapido.nodes.capacityField")}</span>
+              <Input
+                dir="ltr"
+                inputMode="numeric"
+                placeholder={defaultCapacity ? String(defaultCapacity) : undefined}
+                hasError={!!capacityError || serverField === "capacity"}
+                aria-invalid={!!capacityError}
+                value={values.capacity}
+                onChange={(e) => set({ capacity: e.target.value })}
+              />
+              {capacityError ? (
+                <span role="alert" className="text-xs text-red-400">
+                  {capacityErrorText(capacityError)}
+                </span>
+              ) : (
+                <span className="text-xs text-rapido-muted">{t("rapido.nodes.capacityHint")}</span>
+              )}
+              {serverField === "capacity" && <ServerFieldError message={error} />}
+            </label>
 
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-rapido-text">{t("rapido.nodes.servesInbounds")}</span>
@@ -498,7 +557,14 @@ const NodeCreatedPanel: FC<{ result: NodeCreateResult; onClose: () => void }> = 
 
 // ---------------------------------------------------------------------------
 
-const NodeCard: FC<{ node: Node; onEdit: () => void }> = ({ node, onEdit }) => {
+const NodeCard: FC<{
+  node: Node;
+  /** Live load of this node, when the panel reports one. */
+  load?: NodeLoadEntry;
+  /** The panel-wide capacity a node without its own uses, when known. */
+  defaultCapacity?: number;
+  onEdit: () => void;
+}> = ({ node, load, defaultCapacity, onEdit }) => {
   const { t } = useTranslation();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
@@ -561,6 +627,7 @@ const NodeCard: FC<{ node: Node; onEdit: () => void }> = ({ node, onEdit }) => {
               </Badge>
             )}
           </div>
+          {load && <NodeLoadChip load={load} />}
         </div>
 
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-rapido-muted">
@@ -581,6 +648,20 @@ const NodeCard: FC<{ node: Node; onEdit: () => void }> = ({ node, onEdit }) => {
             <span className="text-rapido-text" dir="ltr">
               {node.api_port}
             </span>
+          </span>
+          <span title={t("rapido.nodes.capacityField")}>
+            {t("rapido.nodes.capacity")}:{" "}
+            {node.capacity != null ? (
+              <span className="text-rapido-text" dir="ltr">
+                {node.capacity}
+              </span>
+            ) : (
+              <span className="text-rapido-text">
+                {defaultCapacity
+                  ? t("rapido.nodes.capacityDefaultValue", { value: ltrIsolate(defaultCapacity) })
+                  : t("rapido.nodes.capacityDefault")}
+              </span>
+            )}
           </span>
           {node.usage_coefficient !== 1 && (
             <span>
@@ -759,6 +840,14 @@ const UsagePanel: FC = () => {
 export const NodesAdmin: FC = () => {
   const { t } = useTranslation();
   const { data: nodes, isLoading, isError } = useNodesQuery();
+  // Decoration only, like the pills on the Hosts page: a slow, missing or
+  // failing load request never delays the list, and while it is failing the
+  // chips are hidden rather than left showing numbers that have stopped moving.
+  const { data: load, isError: loadFailed } = useHostsLoadQuery();
+  const loadByNodeId = useMemo(() => nodeLoadById(loadFailed ? null : load), [load, loadFailed]);
+  // The default only means "per node" on a panel that reports nodes at all;
+  // an older one's capacity is per config.
+  const defaultCapacity = !loadFailed && load?.nodes && load.capacity > 0 ? load.capacity : undefined;
   const [editing, setEditing] = useState<Node | null | undefined>(undefined);
   const [created, setCreated] = useState<NodeCreateResult | null>(null);
 
@@ -791,7 +880,13 @@ export const NodesAdmin: FC = () => {
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
           {rows.map((node) => (
-            <NodeCard key={node.id} node={node} onEdit={() => setEditing(node)} />
+            <NodeCard
+              key={node.id}
+              node={node}
+              load={loadByNodeId.get(node.id)}
+              defaultCapacity={defaultCapacity}
+              onEdit={() => setEditing(node)}
+            />
           ))}
         </div>
       )}
@@ -799,6 +894,7 @@ export const NodesAdmin: FC = () => {
       {editing !== undefined && (
         <NodeFormModal
           initial={editing}
+          defaultCapacity={defaultCapacity}
           onClose={() => setEditing(undefined)}
           onCreated={(result) => {
             setEditing(undefined);

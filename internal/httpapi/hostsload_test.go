@@ -32,15 +32,24 @@ func (f loadFakePresence) Read(context.Context, []int32) (loadmap.PresenceData, 
 	return f.data, nil
 }
 
-// loadHandler is a Handler whose load map knows one node with the given open
-// connections per port; a nil ports map means presence is not live at all.
-func loadHandler(indicator, sortByLoad bool, hosts []loadmap.Host, ports map[int]int) *Handler {
+// loadHandler is a Handler whose load map knows two nodes (10.0.0.1 is node 1,
+// 10.0.0.2 is node 2, both with the default capacity of 1000) with the given
+// open connections per port; a nil map for a node leaves it out of the report,
+// and a nil node1 map means presence is not live at all. A node's total is the
+// sum of its ports.
+func loadHandler(indicator, sortByLoad bool, hosts []loadmap.Host, node1, node2 map[int]int) *Handler {
 	pd := loadmap.PresenceData{}
-	if ports != nil {
-		pd = loadmap.PresenceData{Live: true, Nodes: map[int32]loadmap.NodePresence{1: {Reporting: true, Ports: ports}}}
+	if node1 != nil {
+		pd = loadmap.PresenceData{Live: true, Nodes: map[int32]loadmap.NodePresence{1: {Reporting: true, Ports: node1}}}
+		if node2 != nil {
+			pd.Nodes[2] = loadmap.NodePresence{Reporting: true, Ports: node2}
+		}
 	}
 	m := loadmap.New(loadmap.Config{Capacity: 1000},
-		loadFakeInventory{nodes: []loadmap.Node{{ID: 1, Address: "10.0.0.1", Status: "connected"}}, hosts: hosts},
+		loadFakeInventory{nodes: []loadmap.Node{
+			{ID: 1, Name: "n1", Address: "10.0.0.1", Status: "connected"},
+			{ID: 2, Name: "n2", Address: "10.0.0.2", Status: "connected"},
+		}, hosts: hosts},
 		loadFakePresence{data: pd})
 	return &Handler{loads: m, loadIndicator: indicator, loadCapacity: 1000, sortByLoad: sortByLoad}
 }
@@ -56,7 +65,7 @@ func TestRequestLoadRemarkRules(t *testing.T) {
 		{ID: 3, Remark: "Explicit {LOAD_EMOJI} {LOAD_LEVEL}", Address: "10.0.0.1", Port: 20001},
 		{ID: 4, Remark: "Both {LOAD} {LOAD_PERCENT}", Address: "10.0.0.1", Port: 20001},
 		{ID: 5, Remark: "Web {TRANSPORT}", Address: "10.0.0.1", Port: 20001},
-		{ID: 6, Remark: "🇫🇷 France", Address: "10.0.0.1", Port: 20009},
+		{ID: 6, Remark: "🇫🇷 France", Address: "10.0.0.2", Port: 20009}, // its own node: a node's load is every config on it
 	}
 	remark := func(h *Handler, id int32, template string) string {
 		r := &requestLoad{h: h, ctx: context.Background()}
@@ -66,9 +75,9 @@ func TestRequestLoadRemarkRules(t *testing.T) {
 		return out
 	}
 
-	on := loadHandler(true, false, hosts, map[int]int{20001: 230, 20009: 950})
-	off := loadHandler(false, false, hosts, map[int]int{20001: 230, 20009: 950})
-	dark := loadHandler(true, false, hosts, nil)
+	on := loadHandler(true, false, hosts, map[int]int{20001: 230}, map[int]int{20009: 950})
+	off := loadHandler(false, false, hosts, map[int]int{20001: 230}, map[int]int{20009: 950})
+	dark := loadHandler(true, false, hosts, nil, nil)
 
 	cases := []struct {
 		name string
@@ -102,8 +111,8 @@ func TestRequestLoadRemarkRules(t *testing.T) {
 func TestRequestLoadSharedVariablesDoNotLeakBetweenHosts(t *testing.T) {
 	h := loadHandler(true, false, []loadmap.Host{
 		{ID: 1, Remark: "A", Address: "10.0.0.1", Port: 20001},
-		{ID: 2, Remark: "B {LOAD}", Address: "10.0.0.1", Port: 20002},
-	}, map[int]int{20001: 950}) // 20002 is idle
+		{ID: 2, Remark: "B {LOAD}", Address: "10.0.0.2", Port: 20002},
+	}, map[int]int{20001: 950}, map[int]int{}) // node 2 (B) is idle
 	r := &requestLoad{h: h, ctx: context.Background()}
 	vars := testVars()
 
@@ -194,10 +203,13 @@ const presenceTestTTL = 10 * time.Minute
 
 // newLoadFixture creates the inbounds "main" (vless), "vm" (vmess over
 // websocket, needed for the Clash formats) and "ss" (shadowsocks, for Outline),
-// and two nodes (10.0.0.1, 10.0.0.2).
+// and two nodes (10.0.0.1, 10.0.0.2). The panel-wide default capacity is set to
+// 1000 open client connections (the production default is 10000), so the
+// numbers in the tests read as plain percents.
 func newLoadFixture(t *testing.T) *loadFixture {
 	t.Helper()
 	router, token, h := newTestRouterAndHandler(t)
+	h.WithConfigLoad(true, 1000, false)
 	fx := &loadFixture{t: t, router: router, token: token, h: h, nodes: map[string]int32{}}
 
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
@@ -263,6 +275,28 @@ func (fx *loadFixture) setPresence(live bool, ports map[string]map[string]interf
 			rdb.HSet(ctx, "presence:node:"+strconv.Itoa(int(id))+":ports", p)
 			rdb.Expire(ctx, "presence:node:"+strconv.Itoa(int(id))+":ports", presenceTestTTL)
 		}
+	}
+	fx.h.WithConfigLoad(fx.h.loadIndicator, fx.h.loadCapacity, fx.h.sortByLoad)
+}
+
+// setNodeTotal overrides the total client connections a node reports (the
+// presence:node:<id>:total key), for a node that carries more connections than
+// the ports the test listed; call it after setPresence.
+func (fx *loadFixture) setNodeTotal(addr string, total int) {
+	fx.t.Helper()
+	key := "presence:node:" + strconv.Itoa(int(fx.nodes[addr])) + ":total"
+	if err := fx.h.store.Cache.Raw().Set(context.Background(), key, total, presenceTestTTL).Err(); err != nil {
+		fx.t.Fatalf("set %s: %v", key, err)
+	}
+	fx.h.WithConfigLoad(fx.h.loadIndicator, fx.h.loadCapacity, fx.h.sortByLoad)
+}
+
+// setNodeCapacity sets a node's own capacity through the real API (null clears it).
+func (fx *loadFixture) setNodeCapacity(addr string, capacity interface{}) {
+	fx.t.Helper()
+	resp := doRequest(fx.t, fx.router, "PUT", "/api/node/"+strconv.Itoa(int(fx.nodes[addr])), fx.token, map[string]interface{}{"capacity": capacity})
+	if resp.Code != http.StatusOK {
+		fx.t.Fatalf("set capacity %v on %s: %d %s", capacity, addr, resp.Code, resp.Raw)
 	}
 	fx.h.WithConfigLoad(fx.h.loadIndicator, fx.h.loadCapacity, fx.h.sortByLoad)
 }
@@ -397,23 +431,26 @@ func TestSubscriptionIndicatorOffKeepsPlainRemarks(t *testing.T) {
 
 func TestSubscriptionSortByLoadOrdersLeastLoadedFirst(t *testing.T) {
 	fx := newLoadFixture(t)
+	// A config is as loaded as its node, so what orders the configs is the node
+	// each one sits on: A alone on the busy node 1, the rest on node 2.
 	fx.putHosts(
 		lhost("A busy", "10.0.0.1", 20001, 0),
 		lhost("🛜 {DATA_LEFT} 🛜", "10.0.0.1", 20001, 1),
-		lhost("B free", "10.0.0.1", 20002, 2),
-		lhost("C free too", "10.0.0.1", 20003, 3),
-		lhost("D idle", "10.0.0.1", 20004, 4),
+		lhost("B free", "10.0.0.2", 20002, 2),
+		lhost("C free too", "10.0.0.2", 20003, 3),
+		lhost("D idle", "10.0.0.2", 20004, 4),
 	)
 	fx.h.WithConfigLoad(true, 1000, true)
 	fx.setPresence(true, map[string]map[string]interface{}{
-		"10.0.0.1": {"20001": 800, "20002": 100, "20003": 100},
+		"10.0.0.1": {"20001": 800},
+		"10.0.0.2": {"20002": 100, "20003": 100},
 	})
 	sub := fx.createUser("load_sort_user")
 
 	got := fx.linkRemarks(sub)
-	// D idle (0%) < B (10%) = C (10%, tie keeps priority order) < A (80%); the
-	// info host keeps its slot at index 1.
-	want := []string{"D idle 🟢 0%", "🛜 ∞ 🛜", "B free 🟢 10%", "C free too 🟢 10%", "A busy 🟠 80%"}
+	// B = C = D (20%, the load of node 2, which D's idle port shares; ties keep
+	// priority order) < A (80%); the info host keeps its slot at index 1.
+	want := []string{"B free 🟢 20%", "🛜 ∞ 🛜", "C free too 🟢 20%", "D idle 🟢 20%", "A busy 🟠 80%"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("remarks = %q, want %q", got, want)
 	}
@@ -421,7 +458,7 @@ func TestSubscriptionSortByLoadOrdersLeastLoadedFirst(t *testing.T) {
 	// The same data with sorting off keeps the admin's priority order.
 	fx.h.WithConfigLoad(true, 1000, false)
 	got = fx.linkRemarks(sub)
-	want = []string{"A busy 🟠 80%", "🛜 ∞ 🛜", "B free 🟢 10%", "C free too 🟢 10%", "D idle 🟢 0%"}
+	want = []string{"A busy 🟠 80%", "🛜 ∞ 🛜", "B free 🟢 20%", "C free too 🟢 20%", "D idle 🟢 20%"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("unsorted remarks = %q, want %q", got, want)
 	}
@@ -461,15 +498,25 @@ func TestGetHostsLoadShape(t *testing.T) {
 		SortByLoad bool   `json:"sort_by_load"`
 		UpdatedAt  string `json:"updated_at"`
 		Hosts      []struct {
-			HostID  int32   `json:"host_id"`
-			Remark  string  `json:"remark"`
-			Address string  `json:"address"`
-			Port    *int    `json:"port"`
-			Conns   *int    `json:"conns"`
-			Percent *int    `json:"percent"`
-			Level   string  `json:"level"`
-			NodeIDs []int32 `json:"node_ids"`
+			HostID      int32   `json:"host_id"`
+			Remark      string  `json:"remark"`
+			Address     string  `json:"address"`
+			Port        *int    `json:"port"`
+			Conns       *int    `json:"conns"`
+			Percent     *int    `json:"percent"`
+			NodePercent *int    `json:"node_percent"`
+			PortPercent *int    `json:"port_percent"`
+			Level       string  `json:"level"`
+			NodeIDs     []int32 `json:"node_ids"`
 		} `json:"hosts"`
+		Nodes []struct {
+			ID             int32  `json:"id"`
+			Name           string `json:"name"`
+			Conns          int    `json:"conns"`
+			Capacity       int    `json:"capacity"`
+			CapacitySource string `json:"capacity_source"`
+			Percent        int    `json:"percent"`
+		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(resp.Raw, &body); err != nil {
 		t.Fatalf("decode: %v: %s", err, resp.Raw)
@@ -497,6 +544,125 @@ func TestGetHostsLoadShape(t *testing.T) {
 	if nl.Percent == nil || *nl.Percent != 91 || nl.Level != "full" || len(nl.NodeIDs) != 1 || nl.NodeIDs[0] != fx.nodes["10.0.0.2"] {
 		t.Errorf("netherlands = %+v", nl)
 	}
+	// Each node carries just that one port, so the port's and the node's share agree.
+	if de.PortPercent == nil || *de.PortPercent != 31 || de.NodePercent == nil || *de.NodePercent != 31 {
+		t.Errorf("germany port/node percent = %v / %v, want 31 / 31", de.PortPercent, de.NodePercent)
+	}
+
+	// Every reporting node, by id, against the default capacity (none has its own).
+	if len(body.Nodes) != 2 {
+		t.Fatalf("nodes = %+v, want both reporting nodes", body.Nodes)
+	}
+	n1, n2 := body.Nodes[0], body.Nodes[1]
+	if n1.ID != fx.nodes["10.0.0.1"] || n1.Name != "load-node-1" || n1.Conns != 312 || n1.Capacity != 1000 || n1.CapacitySource != "default" || n1.Percent != 31 {
+		t.Errorf("node 1 = %+v, want load-node-1 312 / 1000 default 31%%", n1)
+	}
+	if n2.ID != fx.nodes["10.0.0.2"] || n2.Conns != 905 || n2.Percent != 91 || n2.CapacitySource != "default" {
+		t.Errorf("node 2 = %+v", n2)
+	}
+}
+
+// A node with its own capacity, a node total above what its listed ports add
+// up to (it carries other configs too), and the two shares told apart.
+func TestGetHostsLoadPerNodeCapacityAndNodeShare(t *testing.T) {
+	fx := newLoadFixture(t)
+	fx.putHosts(
+		lhost("🇩🇪 Germany", "10.0.0.1", 20001, 0),
+		lhost("🇳🇱 Netherlands", "10.0.0.2", 20002, 1),
+	)
+	fx.setNodeCapacity("10.0.0.1", 15000)
+	fx.setPresence(true, map[string]map[string]interface{}{
+		"10.0.0.1": {"20001": 30},
+		"10.0.0.2": {"20002": 400},
+	})
+	fx.setNodeTotal("10.0.0.1", 6000) // 5970 more on configs that are not in the hosts list
+	fx.setNodeTotal("10.0.0.2", 400)
+
+	resp := doRequest(t, fx.router, "GET", "/api/hosts/load", fx.token, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /api/hosts/load = %d %s", resp.Code, resp.Raw)
+	}
+	t.Logf("GET /api/hosts/load -> %s", resp.Raw)
+	var body struct {
+		Capacity int `json:"capacity"`
+		Hosts    []struct {
+			Conns       *int `json:"conns"`
+			Percent     *int `json:"percent"`
+			NodePercent *int `json:"node_percent"`
+			PortPercent *int `json:"port_percent"`
+		} `json:"hosts"`
+		Nodes []struct {
+			ID             int32  `json:"id"`
+			Conns          int    `json:"conns"`
+			Capacity       int    `json:"capacity"`
+			CapacitySource string `json:"capacity_source"`
+			Percent        int    `json:"percent"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Raw, &body); err != nil {
+		t.Fatalf("decode: %v: %s", err, resp.Raw)
+	}
+	if len(body.Hosts) != 2 || len(body.Nodes) != 2 {
+		t.Fatalf("hosts %d nodes %d, want 2 / 2: %s", len(body.Hosts), len(body.Nodes), resp.Raw)
+	}
+	de := body.Hosts[0]
+	// 30 people on the config, but its node carries 6000 of its own 15000: 40%.
+	if *de.Conns != 30 || *de.PortPercent != 0 || *de.NodePercent != 40 || *de.Percent != 40 {
+		t.Errorf("germany = conns %d port %d node %d percent %d, want 30 / 0 / 40 / 40", *de.Conns, *de.PortPercent, *de.NodePercent, *de.Percent)
+	}
+	// Node 2 has no capacity of its own: 400 of the default 1000.
+	nl := body.Hosts[1]
+	if *nl.Conns != 400 || *nl.PortPercent != 40 || *nl.NodePercent != 40 || *nl.Percent != 40 {
+		t.Errorf("netherlands = conns %d port %d node %d percent %d, want 400 / 40 / 40 / 40", *nl.Conns, *nl.PortPercent, *nl.NodePercent, *nl.Percent)
+	}
+	if n := body.Nodes[0]; n.Conns != 6000 || n.Capacity != 15000 || n.CapacitySource != "node" || n.Percent != 40 {
+		t.Errorf("node 1 = %+v, want 6000 / 15000 node 40%%", n)
+	}
+	if n := body.Nodes[1]; n.Conns != 400 || n.Capacity != 1000 || n.CapacitySource != "default" || n.Percent != 40 {
+		t.Errorf("node 2 = %+v, want 400 / 1000 default 40%%", n)
+	}
+
+	// Clearing the capacity puts node 1 back on the default: 6000 of 1000 is clamped to 100.
+	fx.setNodeCapacity("10.0.0.1", nil)
+	resp = doRequest(t, fx.router, "GET", "/api/hosts/load", fx.token, nil)
+	if err := json.Unmarshal(resp.Raw, &body); err != nil {
+		t.Fatalf("decode: %v: %s", err, resp.Raw)
+	}
+	if n := body.Nodes[0]; n.Capacity != 1000 || n.CapacitySource != "default" || n.Percent != 100 || n.Conns != 6000 {
+		t.Errorf("node 1 after clearing = %+v, want the default capacity and a clamped 100%%", n)
+	}
+	if *body.Hosts[0].Percent != 100 {
+		t.Errorf("germany percent = %d, want 100", *body.Hosts[0].Percent)
+	}
+}
+
+// A node that stopped reporting (its presence keys expired) is in neither the
+// node list nor any host's load.
+func TestGetHostsLoadLeavesAWholeSilentNodeOut(t *testing.T) {
+	fx := newLoadFixture(t)
+	fx.putHosts(lhost("🇩🇪 Germany", "203.0.113.9", 20001, 0)) // matches no node: every reporting one is a candidate
+	// Node 2 sends nothing at all: no total key, no ports hash.
+	fx.setPresence(true, map[string]map[string]interface{}{"10.0.0.1": {"20001": 500}})
+	resp := doRequest(t, fx.router, "GET", "/api/hosts/load", fx.token, nil)
+	var body struct {
+		Hosts []struct {
+			Conns   *int    `json:"conns"`
+			Percent *int    `json:"percent"`
+			NodeIDs []int32 `json:"node_ids"`
+		} `json:"hosts"`
+		Nodes []struct {
+			ID int32 `json:"id"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Raw, &body); err != nil {
+		t.Fatalf("decode: %v: %s", err, resp.Raw)
+	}
+	if len(body.Nodes) != 1 || body.Nodes[0].ID != fx.nodes["10.0.0.1"] {
+		t.Errorf("nodes = %+v, want only the reporting node", body.Nodes)
+	}
+	if len(body.Hosts) != 1 || *body.Hosts[0].Conns != 500 || *body.Hosts[0].Percent != 50 || len(body.Hosts[0].NodeIDs) != 1 {
+		t.Errorf("hosts = %+v, want the reporting node's 500 / 50%%", body.Hosts)
+	}
 }
 
 func TestGetHostsLoadUnknownWithoutPresence(t *testing.T) {
@@ -512,7 +678,7 @@ func TestGetHostsLoadUnknownWithoutPresence(t *testing.T) {
 		t.Fatalf("hosts = %v", resp.Body["hosts"])
 	}
 	host := hosts[0].(map[string]interface{})
-	for _, key := range []string{"conns", "percent"} {
+	for _, key := range []string{"conns", "percent", "node_percent", "port_percent"} {
 		v, present := host[key]
 		if !present || v != nil {
 			t.Errorf("%s = %v (present=%v), want an explicit null", key, v, present)
@@ -524,6 +690,9 @@ func TestGetHostsLoadUnknownWithoutPresence(t *testing.T) {
 	if ids, ok := host["node_ids"].([]interface{}); !ok || len(ids) != 0 {
 		t.Errorf("node_ids = %v, want an empty array", host["node_ids"])
 	}
+	if nodes, ok := resp.Body["nodes"].([]interface{}); !ok || len(nodes) != 0 {
+		t.Errorf("nodes = %v, want an empty array while nothing reports", resp.Body["nodes"])
+	}
 }
 
 func TestGetHostsLoadEmptyPanel(t *testing.T) {
@@ -534,6 +703,13 @@ func TestGetHostsLoadEmptyPanel(t *testing.T) {
 	}
 	if hosts, ok := resp.Body["hosts"].([]interface{}); !ok || len(hosts) != 0 {
 		t.Errorf("hosts = %v, want an empty array (not null)", resp.Body["hosts"])
+	}
+	if nodes, ok := resp.Body["nodes"].([]interface{}); !ok || len(nodes) != 0 {
+		t.Errorf("nodes = %v, want an empty array (not null)", resp.Body["nodes"])
+	}
+	// The default handler's fallback capacity is the production default.
+	if resp.Body["capacity"] != float64(10000) {
+		t.Errorf("capacity = %v, want the default 10000", resp.Body["capacity"])
 	}
 }
 

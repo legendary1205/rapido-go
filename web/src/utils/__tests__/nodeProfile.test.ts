@@ -232,6 +232,11 @@ describe("profileFieldOfServerError", () => {
     expect(profileFieldOfServerError("listen_ports must be an array of integers")).toBe("listen_ports");
   });
 
+  it("finds the capacity field, which sits in the same Advanced section", () => {
+    expect(profileFieldOfServerError("capacity: must be between 1 and 10000000")).toBe("capacity");
+    expect(profileFieldOfServerError("capacity must be a whole number")).toBe("capacity");
+  });
+
   it("returns null for everything else", () => {
     expect(profileFieldOfServerError("A node with this name already exists")).toBeNull();
     expect(profileFieldOfServerError("")).toBeNull();

@@ -16,7 +16,7 @@ Go + PostgreSQL + Redis on the backend, [sing-box](https://github.com/SagerNet/s
 - **Multiple nodes** - each node carries real traffic and reports its own usage and health. Nodes only ever dial *out*, so they work behind NAT. Every node can have its own configuration: which inbounds and ports it serves, and per-node overrides of routing, outbounds, DNS and log level.
 - **Live user updates** - adding or removing a user (VLESS, VMess, Trojan or Shadowsocks) takes effect on a running inbound without dropping anyone's connection, and every byte is counted per user for all four protocols.
 - **Exact online users** - a user is online while they hold an open connection: nodes report who is connected every 5 seconds, so the online count and each user's online flag are live to within seconds, not an activity window. A node running an older build falls back to the previous rule until it is updated.
-- **Config load at a glance** - every config name in a subscription ends with how busy that config is right now (`🇩🇪 Germany 🟢 23%`: green under 40%, yellow under 70%, orange under 90%, red beyond), computed from the live connections on its port across the nodes that serve it. Put `{LOAD}` (or `{LOAD_EMOJI}`, `{LOAD_PERCENT}`, `{LOAD_LEVEL}`) in a host's remark to place it yourself, and optionally list the emptiest configs first.
+- **Config load at a glance** - every config name in a subscription ends with how busy that config is right now (`🇩🇪 Germany 🟢 23%`: green under 40%, yellow under 70%, orange under 90%, red beyond), computed from how full the node behind it is: its open client connections against the node's capacity (set per node on the Nodes page, or measured - see Capacity planning). Put `{LOAD}` (or `{LOAD_EMOJI}`, `{LOAD_PERCENT}`, `{LOAD_LEVEL}`) in a host's remark to place it yourself, and optionally list the emptiest configs first.
 - **Live logs** - a Logs page in the dashboard (admins with sudo) streams the panel's, the background jobs' and every node's log as it is written; a node only ships its log while someone is watching. Routine client noise (dropped connections, failed handshakes, unknown UUIDs) never reaches a node's journal - it is summed into one line a minute.
 - **WireGuard exits that fail open** - an exit whose tunnel dies falls back to a direct connection by itself and returns when the tunnel recovers; tunnel health is probed for real and shown per tunnel in the dashboard.
 - **Six subscription formats** - v2ray share links, sing-box, Clash, Clash Meta, Outline (SIP008), v2ray-json. `GET /sub/:token` picks one from the client's User-Agent; `GET /sub/:token/<format>` forces it.
@@ -176,13 +176,23 @@ Everything is env-var driven (`internal/config/config.go`), and the installer wr
 | `XRAY_SUBSCRIPTION_URL_PREFIXES` | *(none)* | Every address a subscription answers on, comma-separated, in dashboard order; the first is what reseller bots read. |
 | `USAGE_RETENTION_DAYS` | `90` | Days of usage history to keep. |
 | `CONFIG_LOAD_INDICATOR` | `true` | Append the live load (`🟢 23%`) to config names that carry no `{...}` variable. `{LOAD}` written in a remark is always honoured. |
-| `CONFIG_LOAD_CAPACITY` | `1000` | Open connections on one config that count as 100% load. |
+| `CONFIG_LOAD_CAPACITY` | `10000` | Fallback for nodes without their own capacity: open client connections that count as 100% load on a node (sized for a 16-core node). Set a node's own capacity on the Nodes page. |
 | `CONFIG_SORT_BY_LOAD` | `false` | List each user's emptiest configs first in subscriptions. |
 | `POSTGRES_SHARED_BUFFERS`, `POSTGRES_EFFECTIVE_CACHE_SIZE` | sized from RAM | Postgres memory in the compose stack (`256MB` / `1GB` if unset); the installer sets them from the server's RAM. |
 
 Telegram, Discord and webhook settings exist as env vars too, but are also editable live from the dashboard's **Integrations** page, which overrides them.
 
 Node settings are separate and almost always come from the setup blob; `NODE_LISTEN_ADDR` (`0.0.0.0:62051`) and `NODE_REPORT_INTERVAL_SECONDS` (`10`) are the only ones usually worth changing.
+
+### Capacity planning
+
+"How many users can this node carry?" has to be measured, not guessed: it depends on the mix of your users (a few heavy downloaders cost more than many idle phones) and on your CPUs. Three tools answer it, from the safest to the most intrusive:
+
+1. **Read what the panel already recorded** (no load on any node): `bash scripts/capacity-report.sh` on the panel server. It fits each node's CPU against its load over the last two days (samples taken while a node was recovering from a restart are left out - a restart makes every client reconnect at once and pins the CPU for a minute or two, which is not what steady load costs) and prints the number of open client connections at which the CPU would sit at `TARGET_CPU` (70% by default), with the multiple of today's peak it represents and how well the line fits. After a busy day, round the figure down and enter it as the node's **Capacity** on the Nodes page. From v1.3 nodes also report their own client-connection count, which makes this fit direct.
+2. **Measure the exits** (a short, capped download; run on a node): `sudo bash scripts/exit-speedtest.sh`. Each WireGuard exit has a ceiling of its own; the default cap of 200 Mbit/s keeps the test gentle, and a result at the cap means "at least this much" - raise `--cap-mbps` in the quietest hour until the number stops growing.
+3. **Stress test** (for the limits a fit cannot show - file descriptors, memory per connection, what a mass reconnect does): `cmd/loadgen` is a sink plus a generator. Run `loadgen sink -listen :9000,:9001` next to the node, point a SOCKS5 client (for example a sing-box client whose outbound is the node under test) at it, and `loadgen gen -proxy 127.0.0.1:1080 -target host:9000,host:9001 -conns 2000 -kbps 20 -ramp-to 40000 -ramp-step 2000 -ramp-every 30s -abort-drop-pct 2` grows the population step by step and prints established/failed/dropped connections, connect latency and throughput every few seconds; `-storm 20000` opens that many connections at once. Watch the node's CPU next to it and stop at 70%. Never point it at a production node in the busy hours.
+
+The number goes in each node's **Capacity**: a config's load is the load of the node behind it, so every config on a node shows the same percentage and the nodes can be compared with each other. Nodes without a value use `CONFIG_LOAD_CAPACITY`.
 
 ### Development
 
@@ -237,7 +247,7 @@ Go و PostgreSQL و Redis در بک‌اند، [sing-box](https://github.com/Sag
 - **چند نود** — هر نود ترافیک واقعی را حمل و مصرف و سلامت خودش را گزارش می‌کند. نودها فقط اتصال خروجی می‌زنند، پس پشت NAT هم کار می‌کنند. هر نود می‌تواند کانفیگ خودش را داشته باشد: کدام اینباندها و پورت‌ها را سرو کند، و تنظیمات جدای روت، خروجی، DNS و سطح لاگ.
 - **به‌روزرسانی زنده** — افزودن یا حذف کاربر (VLESS، VMess، Trojan یا Shadowsocks) روی اینباند در حال اجرا اعمال می‌شود، بدون قطع‌شدن اتصال کسی؛ و مصرف هر کاربر برای هر چهار پروتکل بایت‌به‌بایت شمرده می‌شود.
 - **کاربران آنلاین دقیق** — کاربر تا وقتی یک اتصال باز دارد آنلاین است: نودها هر ۵ ثانیه فهرست متصل‌ها را می‌فرستند، پس تعداد آنلاین و وضعیت هر کاربر در حد چند ثانیه زنده است، نه یک بازه‌ی فعالیت. نودی که هنوز نسخه‌ی قدیمی دارد تا به‌روز شدن با قاعده‌ی قبلی حساب می‌شود.
-- **خلوتی هر کانفیگ** — نام هر کانفیگ در اشتراک با میزان شلوغی همان لحظه‌اش تمام می‌شود (`🇩🇪 Germany 🟢 23%`؛ سبز زیر ۴۰٪، زرد زیر ۷۰٪، نارنجی زیر ۹۰٪، قرمز بالاتر)، از روی مجموع اتصال‌های زنده‌ی همان پورت روی نودهایی که آن را سرو می‌کنند. با نوشتن `{LOAD}` در «عنوان» هاست خودتان جایش را تعیین می‌کنید و می‌توانید خلوت‌ترین‌ها را اول لیست کنید.
+- **خلوتی هر کانفیگ** — نام هر کانفیگ در اشتراک با میزان شلوغی همان لحظه‌اش تمام می‌شود (`🇩🇪 Germany 🟢 23%`؛ سبز زیر ۴۰٪، زرد زیر ۷۰٪، نارنجی زیر ۹۰٪، قرمز بالاتر)، از روی اینکه نودِ پشت آن چقدر پر است: اتصال‌های باز کلاینت‌ها نسبت به ظرفیت همان نود (ظرفیت را در صفحه‌ی نودها برای هر نود جدا می‌گذارید یا اندازه می‌گیرید — بخش «برنامه‌ریزی ظرفیت»). با نوشتن `{LOAD}` در «عنوان» هاست خودتان جایش را تعیین می‌کنید و می‌توانید خلوت‌ترین‌ها را اول لیست کنید.
 - **لاگ زنده** — صفحه‌ی «لاگ‌ها» در داشبورد (ادمین سودو) لاگ پنل، کارهای پس‌زمینه و هر نود را همان لحظه نشان می‌دهد؛ نود فقط وقتی کسی تماشا می‌کند لاگش را می‌فرستد. نویز عادی کلاینت‌ها (اتصال قطع‌شده، handshake ناموفق، UUID ناشناس) به ژورنال نود نمی‌رسد و در یک خط در دقیقه جمع می‌شود.
 - **خروجی‌های وایرگارد که قطع نمی‌شوند** — اگر تونل یک خروجی بمیرد، خودش روی اتصال مستقیم می‌افتد و با برگشتن تونل به آن برمی‌گردد؛ سلامت هر تونل واقعاً تست می‌شود و در داشبورد جدا نشان داده می‌شود.
 - **شش فرمت اشتراک** — v2ray، sing-box، Clash، Clash Meta، Outline و v2ray-json.
@@ -363,9 +373,21 @@ bash migrate-from-rapido.sh --target https://newpanel.example.com --user admin -
 
 همه‌چیز با متغیر محیطی تنظیم می‌شود و اسکریپت نصب، فایل `.env` آماده برایتان می‌نویسد. تنها متغیر الزامی `DATABASE_URL` است؛ بقیه مقدار پیش‌فرض کارا دارند. تنظیمات تلگرام، دیسکورد و وب‌هوک را می‌توانید زنده از صفحه‌ی **Integrations** داشبورد هم عوض کنید که بر متغیرهای محیطی اولویت دارد.
 
-متغیرهای شاخص خلوتی: `CONFIG_LOAD_INDICATOR` (پیش‌فرض `true`)، `CONFIG_LOAD_CAPACITY` (تعداد اتصال باز که یک کانفیگ را ۱۰۰٪ حساب می‌کند؛ پیش‌فرض `1000`) و `CONFIG_SORT_BY_LOAD` (پیش‌فرض `false`).
+متغیرهای شاخص خلوتی: `CONFIG_LOAD_INDICATOR` (پیش‌فرض `true`)، `CONFIG_LOAD_CAPACITY` (مقدار پیش‌فرض ظرفیت برای نودهایی که ظرفیت اختصاصی ندارند: تعداد اتصال باز کاربران که یک نود را ۱۰۰٪ پر حساب می‌کند؛ پیش‌فرض `10000`، مناسب یک نود ۱۶ هسته‌ای؛ ظرفیت هر نود را می‌توانید در صفحه‌ی نودها جدا تنظیم کنید) و `CONFIG_SORT_BY_LOAD` (پیش‌فرض `false`).
 
 جدول کامل متغیرها در بخش انگلیسی بالاست.
+
+### برنامه‌ریزی ظرفیت
+
+«این نود چند کاربر را تحمل می‌کند؟» را باید اندازه گرفت، نه حدس زد: به ترکیب کاربران شما (چند دانلودکننده‌ی سنگین بیشتر از خیلی گوشی‌ی بیکار بار می‌آورد) و به CPUها بستگی دارد. سه ابزار جواب می‌دهند، از بی‌خطرترین تا سنگین‌ترین:
+
+1. **خواندن آنچه پنل ثبت کرده** (بدون هیچ باری روی نودها): `bash scripts/capacity-report.sh` روی سرور پنل. CPU هر نود را با بارش در دو روز گذشته برازش می‌کند (نمونه‌های لحظه‌ی بعد از ری‌استارت کنار گذاشته می‌شوند، چون ری‌استارت همه‌ی کاربران را یک‌جا وصل می‌کند و CPU را یکی دو دقیقه پر می‌کند و هزینه‌ی بار عادی نیست) و تعداد اتصال باز کلاینت را می‌دهد که در آن CPU به `TARGET_CPU` (پیش‌فرض ۷۰٪) می‌رسد. بعد از یک روز شلوغ عدد را رو به پایین گرد کنید و در «ظرفیت» همان نود در صفحه‌ی نودها بنویسید.
+2. **اندازه‌گیری خروجی‌ها** (دانلود کوتاه و سقف‌دار؛ روی نود اجرا شود): `sudo bash scripts/exit-speedtest.sh`. هر تونل وایرگارد سقف خودش را دارد؛ سقف پیش‌فرض ۲۰۰ مگابیت روی ثانیه ملایم است و نتیجه‌ی برابر با سقف یعنی «دست‌کم این‌قدر»؛ `--cap-mbps` را در خلوت‌ترین ساعت بالا ببرید تا عدد دیگر رشد نکند.
+3. **استرس‌تست** (برای حدهایی که برازش نشان نمی‌دهد: تعداد فایل باز، حافظه‌ی هر اتصال، اثر اتصال دوباره‌ی همگانی): `cmd/loadgen` یک sink و یک مولد است. جمعیت اتصال‌ها را پله‌پله بالا می‌برد و هر چند ثانیه اتصال‌های برقرار/ناموفق/قطع‌شده، تأخیر اتصال و سرعت را چاپ می‌کند. CPU نود را کنارش ببینید و در ۷۰٪ متوقف کنید. هرگز در ساعت شلوغ روی نود تولید اجرا نکنید.
+
+عدد در «ظرفیت» هر نود می‌رود: بار یک کانفیگ همان بار نودِ پشت آن است. نودی که مقدار ندارد از `CONFIG_LOAD_CAPACITY` استفاده می‌کند.
+
+
 
 ### محدودیت‌های شناخته‌شده
 

@@ -54,6 +54,11 @@ type monitoringHostDTO struct {
 	RxRate      *int64     `json:"rx_rate"`
 	TxRate      *int64     `json:"tx_rate"`
 	Connections *int32     `json:"connections"`
+	// ClientConns is the node's open client connections (its presence total) at
+	// the time of the sample: what a node's capacity is measured against, and
+	// unlike Connections it leaves out the node's own upstream sockets. Null for
+	// the panel and for a node that does not report it.
+	ClientConns *int32 `json:"client_conns"`
 
 	Uptime      *float64 `json:"uptime"`
 	Load1m      *float64 `json:"load_1m"`
@@ -118,6 +123,7 @@ func toMonitoringHostDTO(name, address string, nodeID *int32, m *generated.HostM
 	dto.RxRate = int8ToPtr(m.RxRate)
 	dto.TxRate = int8ToPtr(m.TxRate)
 	dto.Connections = pgInt4ToPtr(m.Connections)
+	dto.ClientConns = pgInt4ToPtr(m.ClientConns)
 	dto.TunnelsUp = pgInt4ToPtr(m.TunnelsUp)
 	dto.TunnelsTotal = pgInt4ToPtr(m.TunnelsTotal)
 	dto.Healthy = m.Healthy

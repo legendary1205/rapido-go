@@ -1,6 +1,7 @@
 package hostmetrics
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,5 +260,89 @@ func TestApplyTunnelHealthWithoutProbeKeepsLinkStateGuess(t *testing.T) {
 	got = ApplyTunnelHealth(nil, nil, map[string]TunnelHealth{"ghost": {Up: true}})
 	if len(got) != 0 {
 		t.Errorf("a tunnel that exists nowhere must not be invented: %+v", got)
+	}
+}
+
+func TestSampleClientConnectionsRoundTripAndPresence(t *testing.T) {
+	// A node that sends the field: known, even when it is an honest zero.
+	var zero Sample
+	if err := json.Unmarshal([]byte(`{"connections_established":9,"client_connections":0}`), &zero); err != nil {
+		t.Fatal(err)
+	}
+	if !zero.ClientConnectionsKnown() || zero.ClientConnections != 0 || zero.ConnectionsEstablished != 9 {
+		t.Errorf("explicit zero: known=%v value=%d established=%d, want known 0 / 9", zero.ClientConnectionsKnown(), zero.ClientConnections, zero.ConnectionsEstablished)
+	}
+	var some Sample
+	if err := json.Unmarshal([]byte(`{"client_connections":4300}`), &some); err != nil {
+		t.Fatal(err)
+	}
+	if !some.ClientConnectionsKnown() || some.ClientConnections != 4300 {
+		t.Errorf("known=%v value=%d, want known 4300", some.ClientConnectionsKnown(), some.ClientConnections)
+	}
+
+	// A node that predates the field sends nothing: unknown, not zero.
+	var old Sample
+	if err := json.Unmarshal([]byte(`{"connections_established":9,"cpu_cores":4}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.ClientConnectionsKnown() || old.ClientConnections != 0 || old.CPUCores != 4 {
+		t.Errorf("absent field: known=%v value=%d cores=%d, want unknown 0 / 4", old.ClientConnectionsKnown(), old.ClientConnections, old.CPUCores)
+	}
+	var null Sample
+	if err := json.Unmarshal([]byte(`null`), &null); err != nil || null.ClientConnectionsKnown() {
+		t.Errorf("null host: err=%v known=%v, want no error and unknown", err, null.ClientConnectionsKnown())
+	}
+
+	// A locally built sample counts as known once it carries a reading, and the
+	// field always goes out on the wire.
+	local := Sample{ClientConnections: 12}
+	if !local.ClientConnectionsKnown() {
+		t.Error("a non-zero local reading must be known")
+	}
+	if (Sample{}).ClientConnectionsKnown() {
+		t.Error("the zero Sample (the panel's own, before it is filled) must be unknown")
+	}
+	raw, err := json.Marshal(Sample{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if string(fields["client_connections"]) != "0" {
+		t.Errorf("marshalled client_connections = %s, want 0 (always present)", fields["client_connections"])
+	}
+
+	// The type keeps decoding the rest of the sample: tunnels and timestamps survive the custom decoder.
+	var full Sample
+	in := `{"collected_at":"2026-09-25T04:00:00Z","load_1m":1.5,"tunnels":[{"name":"uk","up":true,"present":true}],"client_connections":7}`
+	if err := json.Unmarshal([]byte(in), &full); err != nil {
+		t.Fatal(err)
+	}
+	if full.Load1m != 1.5 || len(full.Tunnels) != 1 || full.Tunnels[0].Name != "uk" || full.CollectedAt.Year() != 2026 || full.ClientConnections != 7 {
+		t.Errorf("decoded sample = %+v", full)
+	}
+	if err := json.Unmarshal([]byte(`{"client_connections":"many"}`), &full); err == nil {
+		t.Error("a non-numeric client_connections must be a decode error")
+	}
+}
+
+func TestClientConnsColumn(t *testing.T) {
+	if c := clientConnsColumn(Sample{}); c.Valid {
+		t.Errorf("unknown must be NULL, got %+v", c)
+	}
+	if c := clientConnsColumn(Sample{ClientConnections: 250}); !c.Valid || c.Int32 != 250 {
+		t.Errorf("reading = %+v, want 250", c)
+	}
+	var sent Sample
+	if err := json.Unmarshal([]byte(`{"client_connections":0}`), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if c := clientConnsColumn(sent); !c.Valid || c.Int32 != 0 {
+		t.Errorf("an explicit 0 is a reading, got %+v", c)
+	}
+	if c := clientConnsColumn(Sample{ClientConnections: -5}); !c.Valid || c.Int32 != 0 {
+		t.Errorf("negative must clamp to 0, got %+v", c)
 	}
 }

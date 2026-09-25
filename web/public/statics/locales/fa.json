@@ -779,5 +779,19 @@
   "rapido.hosts.varLoadLevel": "سطح بار به‌صورت کلمه: free، normal، busy یا full",
   "rapido.onlineNowDesc": "هم‌اکنون متصل",
   "rapido.userStatusLegend": "تفکیک وضعیت کاربران",
-  "rapido.underAMinute": "کمتر از یک دقیقه"
+  "rapido.underAMinute": "کمتر از یک دقیقه",
+  "rapido.nodes.capacity": "ظرفیت",
+  "rapido.nodes.capacityField": "ظرفیت (تعداد اتصال کاربران در بار 100%)",
+  "rapido.nodes.capacityHint": "برای استفاده از مقدار پیش‌فرض پنل، خالی بگذارید.",
+  "rapido.nodes.capacityDefault": "پیش‌فرض",
+  "rapido.nodes.capacityDefaultValue": "پیش‌فرض ({{value}})",
+  "rapido.nodes.capacityError.notInteger": "«{{value}}» عدد صحیح نیست.",
+  "rapido.nodes.capacityError.outOfRange": "{{value}} ظرفیت معتبری نیست (عددی بین {{min}} تا {{max}}).",
+  "rapido.nodes.loadTooltip_one": "{{count}} اتصال کاربر از {{capacity}} ({{percent}}%)",
+  "rapido.nodes.loadTooltip_other": "{{count}} اتصال کاربر از {{capacity}} ({{percent}}%)",
+  "rapido.nodes.loadDefaultCapacity": "ظرفیت پیش‌فرض",
+  "rapido.hosts.loadConns_one": "{{count}} اتصال باز روی این کانفیگ",
+  "rapido.hosts.loadConns_other": "{{count}} اتصال باز روی این کانفیگ",
+  "rapido.hosts.loadLimitConfig": "درصد نمایش‌داده‌شده از خود این کانفیگ می‌آید ({{port}}%)؛ نود آن {{node}}% پر است.",
+  "rapido.hosts.loadLimitNode": "درصد نمایش‌داده‌شده از نود آن می‌آید ({{node}}%)، چون نود بین همهٔ کانفیگ‌های روی آن مشترک است. خود این کانفیگ به‌تنهایی {{port}}% است."
 }

@@ -1,52 +1,15 @@
 import { FC } from "react";
-import classNames from "classnames";
 import { useTranslation } from "react-i18next";
 import { HostLoadEntry, HostLoadLevel } from "types/HostLoad";
-
-// Whole class strings, because Tailwind only emits classes it finds literally.
-// The hues are the ones the subscription remark uses for the same levels
-// (green / yellow / orange / red), so the dashboard and the customer's app
-// agree on what a colour means.
-const LEVEL_STYLE: Record<HostLoadLevel, { pill: string; fill: string; dot: string; labelKey: string }> = {
-  free: {
-    pill: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
-    fill: "bg-emerald-500/25",
-    dot: "bg-emerald-400",
-    labelKey: "rapido.hosts.loadFree",
-  },
-  normal: {
-    pill: "border-yellow-500/30 bg-yellow-500/10 text-yellow-400",
-    fill: "bg-yellow-500/25",
-    dot: "bg-yellow-400",
-    labelKey: "rapido.hosts.loadNormal",
-  },
-  busy: {
-    pill: "border-orange-500/30 bg-orange-500/10 text-orange-400",
-    fill: "bg-orange-500/25",
-    dot: "bg-orange-400",
-    labelKey: "rapido.hosts.loadBusy",
-  },
-  full: {
-    pill: "border-red-500/30 bg-red-500/10 text-red-400",
-    fill: "bg-red-500/25",
-    dot: "bg-red-400",
-    labelKey: "rapido.hosts.loadFull",
-  },
-  unknown: {
-    pill: "border-rapido-border bg-rapido-raised text-rapido-muted",
-    fill: "bg-transparent",
-    dot: "bg-rapido-muted",
-    labelKey: "rapido.hosts.loadUnknown",
-  },
-};
+import { hostLimit } from "utils/hostLoad";
+import { LoadPill } from "rapido-ui/LoadPill";
 
 /**
- * One host's live load as a rounded pill: a level-coloured dot, the percent and
- * the level word, over a soft fill that grows with the percent (start to end,
- * so it follows the page direction). The open-connection count is in the
- * tooltip - the pill itself stays small enough to sit beside the inbound tag.
- * The word matters as much as the colour: green vs orange is not a distinction
- * everyone can make.
+ * One host's live load as a pill (see LoadPill for the look). The tooltip has
+ * what the pill cannot fit: how many connections are on this config and which
+ * of its two limits the percent is held to - its own connections, or its
+ * node's whole load, which every config on that node shares. A panel that does
+ * not send the two numbers gets the plain "N of capacity" tooltip it always had.
  */
 export const HostLoadPill: FC<{ load: HostLoadEntry; capacity: number; className?: string }> = ({
   load,
@@ -57,37 +20,26 @@ export const HostLoadPill: FC<{ load: HostLoadEntry; capacity: number; className
   // A level this build does not know (the backend ahead of the frontend), or
   // a percent that is not a number, is drawn as a neutral "no data" pill
   // instead of crashing on a missing style or claiming a colour it cannot back.
-  const level = LEVEL_STYLE[load.level] && load.level !== "unknown" && Number.isFinite(load.percent) ? load.level : "unknown";
-  const known = level !== "unknown";
-  const style = LEVEL_STYLE[level];
+  const known = (["free", "normal", "busy", "full"] as HostLoadLevel[]).includes(load.level) && Number.isFinite(load.percent);
   const percent = known ? Math.min(100, Math.max(0, load.percent)) : 0;
+  const limit = known ? hostLimit(load) : null;
 
-  const tooltip = known
-    ? t("rapido.hosts.loadTooltip", { count: load.conns, capacity, percent })
-    : t("rapido.hosts.loadTooltipUnknown");
+  let tooltip: string;
+  if (!known) {
+    tooltip = t("rapido.hosts.loadTooltipUnknown");
+  } else if (limit) {
+    tooltip = [
+      t("rapido.hosts.loadConns", { count: load.conns }),
+      t(limit.by === "node" ? "rapido.hosts.loadLimitNode" : "rapido.hosts.loadLimitConfig", {
+        node: limit.node,
+        port: limit.port,
+      }),
+    ].join("\n");
+  } else {
+    tooltip = t("rapido.hosts.loadTooltip", { count: load.conns, capacity, percent });
+  }
 
-  return (
-    <span
-      title={tooltip}
-      data-level={level}
-      className={classNames(
-        "relative inline-flex shrink-0 items-center gap-1.5 overflow-hidden rounded-full border px-2.5 py-1 text-xs font-medium",
-        style.pill,
-        className
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={classNames("absolute inset-y-0 start-0", style.fill)}
-        style={{ width: `${percent}%` }}
-      />
-      <span aria-hidden="true" className={classNames("relative h-1.5 w-1.5 shrink-0 rounded-full", style.dot)} />
-      <span className="relative tabular-nums" dir="ltr">
-        {known ? `${Math.round(percent)}%` : "—"}
-      </span>
-      <span className="relative">{t(style.labelKey)}</span>
-    </span>
-  );
+  return <LoadPill level={known ? load.level : "unknown"} percent={percent} title={tooltip} className={className} />;
 };
 
 export default HostLoadPill;

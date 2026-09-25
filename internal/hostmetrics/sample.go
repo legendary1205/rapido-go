@@ -22,6 +22,7 @@ package hostmetrics
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,10 +61,50 @@ type Sample struct {
 
 	ConnectionsEstablished int `json:"connections_established"`
 
+	// ClientConnections is the node's own count of open CLIENT connections (its
+	// presence total), which is what a node's capacity is measured against;
+	// ConnectionsEstablished counts every ESTABLISHED socket on the host, the
+	// node's upstream connections included. Only the node agent fills it in.
+	// A node that predates the field sends nothing, which a plain int cannot
+	// tell from "zero clients": see ClientConnectionsKnown.
+	ClientConnections int `json:"client_connections"`
+
+	// clientConnsSent is set by UnmarshalJSON when the decoded object carried
+	// client_connections at all.
+	clientConnsSent bool
+
 	Tunnels []Tunnel `json:"tunnels,omitempty"`
 
 	XrayRunning bool   `json:"xray_running"`
 	XrayVersion string `json:"xray_version,omitempty"`
+}
+
+// ClientConnectionsKnown reports whether ClientConnections is a reading rather
+// than the zero value of a field nobody filled in: it was present in the JSON
+// this Sample was decoded from, or it is not zero.
+func (s Sample) ClientConnectionsKnown() bool {
+	return s.clientConnsSent || s.ClientConnections != 0
+}
+
+// UnmarshalJSON decodes a Sample and remembers whether client_connections was
+// present, so the panel can store NULL (unknown) for a node that does not send
+// it instead of a misleading 0.
+func (s *Sample) UnmarshalJSON(b []byte) error {
+	type plain Sample // no methods, so this does not recurse
+	aux := struct {
+		*plain
+		// Shadows plain's field of the same name so its presence is visible.
+		ClientConnections *int `json:"client_connections"`
+	}{plain: (*plain)(s)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	s.clientConnsSent = aux.ClientConnections != nil
+	s.ClientConnections = 0
+	if aux.ClientConnections != nil {
+		s.ClientConnections = *aux.ClientConnections
+	}
+	return nil
 }
 
 // Tunnel is one WireGuard exit. Up is a health verdict, not a link flag: a

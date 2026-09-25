@@ -159,15 +159,18 @@ export const summarizeNodeProfile = (
   overrideKeys: Object.keys(n.core_overrides ?? {}),
 });
 
-export type ProfileField = "inbound_tags" | "listen_ports" | "core_overrides";
+// The fields of the form's Advanced section the panel validates by name. The
+// capacity is not part of a node's profile but sits in the same section and
+// gets the same treatment.
+export type ProfileField = "inbound_tags" | "listen_ports" | "core_overrides" | "capacity";
 
 /**
- * Which profile field a server error is about. The panel starts each of its
+ * Which Advanced field a server error is about. The panel starts each of its
  * validation messages with the field name ("listen_ports: invalid port 0",
  * "core_overrides: routing rule targets unknown outbound: x"), which is what
  * lets the form show it under that field instead of only at the bottom.
  */
 export const profileFieldOfServerError = (message: string): ProfileField | null => {
-  const fields: ProfileField[] = ["inbound_tags", "listen_ports", "core_overrides"];
+  const fields: ProfileField[] = ["inbound_tags", "listen_ports", "core_overrides", "capacity"];
   return fields.find((f) => message.startsWith(f)) ?? null;
 };

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import i18n from "locales/i18n";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Host, HostsMap } from "types/Host";
@@ -85,6 +85,78 @@ describe("HostLoadPill", () => {
 
     rerender(<HostLoadPill load={entry({ percent: NaN })} capacity={1000} />);
     expect(screen.getByText("No data")).toBeInTheDocument();
+  });
+});
+
+describe("HostLoadPill limit tooltip", () => {
+  const titleOf = (load: HostLoadEntry, capacity = 10000) => {
+    const { container } = render(<HostLoadPill load={load} capacity={capacity} />);
+    return (container.querySelector("[data-level]") as HTMLElement).getAttribute("title");
+  };
+
+  it("says the percentage comes from the node when the node is the busier limit", () => {
+    expect(titleOf(entry({ conns: 312, percent: 45, node_percent: 45, port_percent: 3 }))).toBe(
+      "312 open connections on this config\nThe percentage comes from its node (45%), which every config on it shares; this config alone is at 3%."
+    );
+  });
+
+  it("says it comes from the config itself when that is the busier limit, and gives the node's own figure", () => {
+    expect(titleOf(entry({ conns: 4300, percent: 72, node_percent: 26, port_percent: 72 }))).toBe(
+      "4300 open connections on this config\nThe percentage comes from this config itself (72%); its node is at 26%."
+    );
+  });
+
+  it("gives a tie to the config", () => {
+    expect(titleOf(entry({ percent: 30, node_percent: 30, port_percent: 30 }))).toContain("comes from this config itself (30%)");
+    cleanup();
+    expect(titleOf(entry({ percent: 0, node_percent: 0, port_percent: 0, conns: 0 }))).toContain("comes from this config itself (0%)");
+  });
+
+  it("rounds a fractional percent the way the pill does", () => {
+    expect(titleOf(entry({ percent: 45.6, node_percent: 45.6, port_percent: 2.4 }))).toContain(
+      "its node (46%), which every config on it shares; this config alone is at 2%."
+    );
+  });
+
+  it("uses the singular for one connection", () => {
+    expect(titleOf(entry({ conns: 1, percent: 0, node_percent: 0, port_percent: 0 }))).toMatch(/^1 open connection on this config\n/);
+  });
+
+  it("stays the plain 'N of capacity' tooltip when the panel does not send both numbers", () => {
+    expect(titleOf(entry())).toBe("312 open connections of 10000 (31%)");
+    cleanup();
+    expect(titleOf(entry({ node_percent: 40 }))).toBe("312 open connections of 10000 (31%)");
+    cleanup();
+    expect(titleOf(entry({ port_percent: 40 }))).toBe("312 open connections of 10000 (31%)");
+    cleanup();
+    expect(titleOf(entry({ node_percent: NaN, port_percent: 5 }))).toBe("312 open connections of 10000 (31%)");
+  });
+
+  it("does not change the pill itself: same percent, level word and colour as without the numbers", () => {
+    const { container } = render(
+      <HostLoadPill load={entry({ level: "busy", percent: 75, node_percent: 75, port_percent: 10 })} capacity={10000} />
+    );
+    const pill = container.querySelector("[data-level]") as HTMLElement;
+    expect(pill.dataset.level).toBe("busy");
+    expect(pill.className).toContain("text-orange-400");
+    expect(pill).toHaveTextContent("75%");
+    expect(pill).toHaveTextContent("Busy");
+  });
+
+  it("keeps the 'no data' pill for a level it cannot back, whatever the two numbers say", () => {
+    expect(titleOf(entry({ level: "unknown", node_percent: 50, port_percent: 10 }))).toBe("No load data for this host yet");
+  });
+
+  it("says it in every language", () => {
+    for (const lang of ["fa", "ru", "zh"]) {
+      const t = i18n.getFixedT(lang);
+      const node = t("rapido.hosts.loadLimitNode", { node: 45, port: 3 });
+      const config = t("rapido.hosts.loadLimitConfig", { node: 26, port: 72 });
+      expect(node, lang).toMatch(/45.*3|3.*45/);
+      expect(config, lang).toMatch(/72.*26|26.*72/);
+      expect(node).not.toBe(config);
+      expect(t("rapido.hosts.loadConns", { count: 312 })).toContain("312");
+    }
   });
 });
 

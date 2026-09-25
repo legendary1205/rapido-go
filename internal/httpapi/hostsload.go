@@ -29,7 +29,13 @@ func (i loadInventory) Nodes(ctx context.Context) ([]loadmap.Node, error) {
 	}
 	out := make([]loadmap.Node, len(rows))
 	for k, n := range rows {
-		out[k] = loadmap.Node{ID: n.ID, Address: n.Address, Status: n.Status, InboundTags: n.InboundTags, ListenPorts: n.ListenPorts}
+		out[k] = loadmap.Node{
+			ID: n.ID, Name: n.Name, Address: n.Address, Status: n.Status,
+			InboundTags: n.InboundTags, ListenPorts: n.ListenPorts,
+		}
+		if n.Capacity.Valid {
+			out[k].Capacity = int(n.Capacity.Int32)
+		}
 	}
 	return out, nil
 }
@@ -79,8 +85,9 @@ func newLoadMap(store *Store, publicIP string, capacity int, logger *slog.Logger
 
 // WithConfigLoad applies the CONFIG_LOAD_INDICATOR / CONFIG_LOAD_CAPACITY /
 // CONFIG_SORT_BY_LOAD settings: whether plain remarks get the ` {LOAD}` suffix
-// appended, how many concurrent connections read as 100%, and whether a
-// user's own configs are ordered least-loaded first. A setter rather than more
+// appended, how many open client connections read as 100% on a node that has no
+// capacity of its own, and whether a user's own configs are ordered
+// least-loaded first. A setter rather than more
 // NewHandler parameters, like WithSubscriptionURLPrefixes.
 func (h *Handler) WithConfigLoad(indicator bool, capacity int, sortByLoad bool) *Handler {
 	if capacity < 1 {
@@ -205,29 +212,49 @@ func sortPendingByLoad(items []pendingHost) {
 }
 
 type hostsLoadResponse struct {
+	// Capacity is the panel-wide default, used by nodes without their own.
 	Capacity   int             `json:"capacity"`
 	Indicator  bool            `json:"indicator"`
 	SortByLoad bool            `json:"sort_by_load"`
 	UpdatedAt  string          `json:"updated_at"`
 	Hosts      []hostLoadEntry `json:"hosts"`
+	// Nodes is the load of every node that is reporting right now.
+	Nodes []nodeLoadEntry `json:"nodes"`
 }
 
 // hostLoadEntry is one config's live load. A host nothing is reporting for has
-// conns/percent null and level "unknown".
+// conns/percents null and level "unknown". Percent is the larger of
+// PortPercent (the config's own connections against its busiest home node's
+// capacity) and NodePercent (that node's whole client total against the same
+// capacity); NodeIDs are those home nodes.
 type hostLoadEntry struct {
-	HostID  int32   `json:"host_id"`
-	Remark  string  `json:"remark"`
-	Address string  `json:"address"`
-	Port    *int    `json:"port"`
-	Conns   *int    `json:"conns"`
-	Percent *int    `json:"percent"`
-	Level   string  `json:"level"`
-	NodeIDs []int32 `json:"node_ids"`
+	HostID      int32   `json:"host_id"`
+	Remark      string  `json:"remark"`
+	Address     string  `json:"address"`
+	Port        *int    `json:"port"`
+	Conns       *int    `json:"conns"`
+	Percent     *int    `json:"percent"`
+	NodePercent *int    `json:"node_percent"`
+	PortPercent *int    `json:"port_percent"`
+	Level       string  `json:"level"`
+	NodeIDs     []int32 `json:"node_ids"`
+}
+
+// nodeLoadEntry is one node's open client connections against its capacity;
+// CapacitySource says whether that capacity is the node's own ("node") or the
+// panel default ("default").
+type nodeLoadEntry struct {
+	ID             int32  `json:"id"`
+	Name           string `json:"name"`
+	Conns          int    `json:"conns"`
+	Capacity       int    `json:"capacity"`
+	CapacitySource string `json:"capacity_source"`
+	Percent        int    `json:"percent"`
 }
 
 // handleGetHostsLoad implements GET /api/hosts/load (sudo only): the live load
-// of every enabled config (info hosts excluded), from the same cached snapshot
-// subscriptions are rendered with.
+// of every enabled config (info hosts excluded) and of every reporting node,
+// from the same cached snapshot subscriptions are rendered with.
 func (h *Handler) handleGetHostsLoad(c *gin.Context) {
 	snap := h.loadSnapshot(c.Request.Context())
 
@@ -237,7 +264,7 @@ func (h *Handler) handleGetHostsLoad(c *gin.Context) {
 	}
 	resp := hostsLoadResponse{
 		Capacity: capacity, Indicator: h.loadIndicator, SortByLoad: h.sortByLoad,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339), Hosts: []hostLoadEntry{},
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339), Hosts: []hostLoadEntry{}, Nodes: []nodeLoadEntry{},
 	}
 	if snap != nil {
 		resp.UpdatedAt = snap.At.UTC().Format(time.RFC3339)
@@ -251,11 +278,18 @@ func (h *Handler) handleGetHostsLoad(c *gin.Context) {
 				entry.Port = &port
 			}
 			if hl.Known {
-				conns, percent := hl.Conns, hl.Percent
+				conns, percent, nodePercent, portPercent := hl.Conns, hl.Percent, hl.NodePercent, hl.PortPercent
 				entry.Conns, entry.Percent = &conns, &percent
+				entry.NodePercent, entry.PortPercent = &nodePercent, &portPercent
 				entry.NodeIDs = hl.NodeIDs
 			}
 			resp.Hosts = append(resp.Hosts, entry)
+		}
+		for _, n := range snap.Nodes {
+			resp.Nodes = append(resp.Nodes, nodeLoadEntry{
+				ID: n.ID, Name: n.Name, Conns: n.Conns, Capacity: n.Capacity,
+				CapacitySource: n.CapacitySource, Percent: n.Percent,
+			})
 		}
 	}
 	c.JSON(http.StatusOK, resp)

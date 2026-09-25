@@ -158,11 +158,13 @@ services:
       USE_CUSTOM_JSON_FOR_NPVTUNNEL: ${USE_CUSTOM_JSON_FOR_NPVTUNNEL:-false}
       # Which config is emptier: every config name in a subscription gets its
       # live load appended (`🇩🇪 Germany 🟢 23%`) when the nodes report it.
-      # CAPACITY is the number of concurrent connections on one config that
-      # counts as 100%; SORT_BY_LOAD lists a user's configs least loaded first
-      # instead of in the Hosts page order (see .env.prod.example).
+      # CAPACITY is the fallback number of open client connections that counts
+      # as 100% for a node that has no capacity of its own (set per node on the
+      # Nodes page; the default suits a 16-core node); SORT_BY_LOAD lists a
+      # user's configs least loaded first instead of in the Hosts page order
+      # (see .env.prod.example).
       CONFIG_LOAD_INDICATOR: ${CONFIG_LOAD_INDICATOR:-true}
-      CONFIG_LOAD_CAPACITY: ${CONFIG_LOAD_CAPACITY:-1000}
+      CONFIG_LOAD_CAPACITY: ${CONFIG_LOAD_CAPACITY:-10000}
       CONFIG_SORT_BY_LOAD: ${CONFIG_SORT_BY_LOAD:-false}
     volumes:
       - ./templates:/app/templates:ro

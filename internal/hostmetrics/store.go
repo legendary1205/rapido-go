@@ -3,6 +3,7 @@ package hostmetrics
 import (
 	"context"
 	"encoding/json"
+	"math"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -48,8 +49,26 @@ func Store(ctx context.Context, queries *generated.Queries, nodeID *int32, s Sam
 		TunnelsTotal: pgtype.Int4{Int32: int32(len(s.Tunnels)), Valid: true},
 		Healthy:      healthy,
 		Payload:      pgtype.Text{String: string(payload), Valid: len(payload) > 0},
+		ClientConns:  clientConnsColumn(s),
 	})
 	return err
+}
+
+// clientConnsColumn is host_metrics.client_conns: the node's open client
+// connections, or NULL when the sample does not carry a reading (a node that
+// predates the field, the panel's own sample).
+func clientConnsColumn(s Sample) pgtype.Int4 {
+	if !s.ClientConnectionsKnown() {
+		return pgtype.Int4{}
+	}
+	n := s.ClientConnections
+	if n < 0 {
+		n = 0
+	}
+	if n > math.MaxInt32 {
+		n = math.MaxInt32
+	}
+	return pgtype.Int4{Int32: int32(n), Valid: true}
 }
 
 func pgInt4FromPtr(v *int32) pgtype.Int4 {

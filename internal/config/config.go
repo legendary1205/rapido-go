@@ -125,8 +125,10 @@ type Config struct {
 	// {LOAD}/{LOAD_EMOJI}/{LOAD_PERCENT}/{LOAD_LEVEL} itself is rendered as
 	// written whichever way this is set.
 	ConfigLoadIndicator bool
-	// ConfigLoadCapacity (CONFIG_LOAD_CAPACITY, default 1000) is how many
-	// concurrent connections on one config's port count as 100%.
+	// ConfigLoadCapacity (CONFIG_LOAD_CAPACITY, default 10000) is the fallback
+	// number of open client connections that count as 100% load on a node that
+	// has no capacity of its own (nodes.capacity); the default is sized for a
+	// 16-core node.
 	ConfigLoadCapacity int
 	// ConfigSortByLoad (CONFIG_SORT_BY_LOAD, default false) lists a user's own
 	// configs least loaded first instead of in the admin's priority order.
@@ -259,8 +261,8 @@ func Load() (*Config, error) {
 	// keeping the panel from starting.
 	cfg.ConfigLoadIndicator = getBool("CONFIG_LOAD_INDICATOR", true)
 	cfg.ConfigSortByLoad = getBool("CONFIG_SORT_BY_LOAD", false)
-	cfg.ConfigLoadCapacity = 1000
-	if n, err := strconv.Atoi(getEnv("CONFIG_LOAD_CAPACITY", "1000")); err == nil && n >= 1 {
+	cfg.ConfigLoadCapacity = 10000
+	if n, err := strconv.Atoi(getEnv("CONFIG_LOAD_CAPACITY", "10000")); err == nil && n >= 1 {
 		cfg.ConfigLoadCapacity = n
 	}
 

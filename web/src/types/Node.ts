@@ -14,6 +14,9 @@ export type Node = {
   api_port: number;
   status: NodeStatus;
   usage_coefficient: number;
+  // Open client connections that mean 100% load for this node. null (or
+  // absent, from a panel older than per-node capacity) = the panel default.
+  capacity?: number | null;
   // The node's profile. The backend leaves each key out while it is the
   // default (every inbound / every port / no overrides), so absent here means
   // "same as every other node", never "none".
@@ -34,6 +37,10 @@ export type NodeWritePayload = {
   port: number;
   api_port: number;
   usage_coefficient?: number;
+  // Client connections at 100% load, 1..10,000,000. null = the panel default:
+  // on update an explicit null clears a stored capacity while an omitted key
+  // leaves it alone, so the node form always sends the key.
+  capacity?: number | null;
   panel_url?: string;
   // Profile fields: on create, omit them for the default. On update an
   // omitted key leaves the stored value alone, so clearing one means sending

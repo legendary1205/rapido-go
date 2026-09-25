@@ -774,5 +774,19 @@
   "rapido.hosts.varLoadLevel": "The load level as a word: free, normal, busy or full",
   "rapido.onlineNowDesc": "connected right now",
   "rapido.userStatusLegend": "User status breakdown",
-  "rapido.underAMinute": "under a minute"
+  "rapido.underAMinute": "under a minute",
+  "rapido.nodes.capacity": "Capacity",
+  "rapido.nodes.capacityField": "Capacity (client connections at 100% load)",
+  "rapido.nodes.capacityHint": "Leave empty to use the panel default.",
+  "rapido.nodes.capacityDefault": "Default",
+  "rapido.nodes.capacityDefaultValue": "Default ({{value}})",
+  "rapido.nodes.capacityError.notInteger": "\"{{value}}\" is not a whole number.",
+  "rapido.nodes.capacityError.outOfRange": "{{value}} is not a valid capacity (use {{min}}-{{max}}).",
+  "rapido.nodes.loadTooltip_one": "{{count}} client connection of {{capacity}} ({{percent}}%)",
+  "rapido.nodes.loadTooltip_other": "{{count}} client connections of {{capacity}} ({{percent}}%)",
+  "rapido.nodes.loadDefaultCapacity": "default capacity",
+  "rapido.hosts.loadConns_one": "{{count}} open connection on this config",
+  "rapido.hosts.loadConns_other": "{{count}} open connections on this config",
+  "rapido.hosts.loadLimitConfig": "The percentage comes from this config itself ({{port}}%); its node is at {{node}}%.",
+  "rapido.hosts.loadLimitNode": "The percentage comes from its node ({{node}}%), which every config on it shares; this config alone is at {{port}}%."
 }

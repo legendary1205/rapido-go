@@ -1,7 +1,15 @@
-// Package loadmap turns the live per-port connection counts the nodes report
-// (Redis keys presence:node:<id>:ports, written by the node-live endpoint) into
-// a per-host "how crowded is this config" number: connections on the host's
-// port on the node(s) that serve it, as a percent of a configured capacity.
+// Package loadmap turns the live connection counts the nodes report (Redis
+// keys presence:node:<id>:ports and :total, written by the node-live endpoint)
+// into a per-host "how crowded is this config" number.
+//
+// A config is only as free as the node that carries it: every config on a node
+// shares that node's CPU. So the percent of a host is the larger of two
+// figures on its home node(s) - the connections on the host's own port and the
+// connections on the whole node - each measured against that node's capacity
+// (nodes.capacity, or the panel-wide default when the node has none). The home
+// nodes are the ones a port's traffic really sits on: a domain points at one
+// node, so a few stray connections that landed elsewhere must not drag the
+// other nodes into the figure.
 //
 // Everything here is read-only and best-effort. The subscription endpoint is
 // the hottest path of the panel, so a lookup is a map read on an immutable
@@ -35,9 +43,14 @@ const (
 )
 
 const (
-	// DefaultCapacity is the number of concurrent connections that counts as
-	// 100% when CONFIG_LOAD_CAPACITY is not set.
-	DefaultCapacity = 1000
+	// DefaultCapacity is the number of open client connections that counts as
+	// 100% load on a node without a capacity of its own, when
+	// CONFIG_LOAD_CAPACITY is not set. Sized for a 16-core node.
+	DefaultCapacity = 10000
+
+	// homeShareDivisor: a node is a home node of a port when it carries at
+	// least 1/homeShareDivisor (20%) of the connections on that port.
+	homeShareDivisor = 5
 
 	// DefaultTTL is how long one snapshot is served before the next request
 	// triggers a rebuild.
@@ -104,8 +117,12 @@ func Percent(conns float64, capacity int) int {
 // Node is the part of a nodes row the mapping needs.
 type Node struct {
 	ID      int32
+	Name    string
 	Address string // an IP, or a name (resolved like a host address)
 	Status  string
+	// Capacity is the open client connections that mean 100% load for this
+	// node; 0 means it has none of its own and the panel default applies.
+	Capacity int
 	// InboundTags / ListenPorts restrict what the node serves (see the node
 	// profile columns); empty means everything.
 	InboundTags []string
@@ -134,6 +151,19 @@ type NodePresence struct {
 	// binary, node down, key expired): its connection counts are unknown.
 	Reporting bool
 	Ports     map[int]int // open connections per listening port, only ports > 0
+	// Total is every open client connection on the node (the presence total).
+	Total int
+}
+
+// total is the node's client connections: the reported total, never less than
+// what its ports add up to (the two are written together, so they only differ
+// if a reader saw a half-written pair or a source left Total unset).
+func (np NodePresence) total() int {
+	sum := 0
+	for _, n := range np.Ports {
+		sum += n
+	}
+	return max(np.Total, sum)
 }
 
 // PresenceData is everything read from Redis for one snapshot.
@@ -156,25 +186,53 @@ type HostLoad struct {
 	Port    int
 
 	// Known is false when there is no usable data for this host.
-	Known   bool
-	Conns   int // open connections on the host's port, summed over NodeIDs
-	Percent int
-	Level   Level
-	NodeIDs []int32 // nodes the number was computed from (do not modify)
+	Known bool
+	// Conns is how many people are on this config: the open connections on the
+	// host's port, summed over every node that serves it (home or not).
+	Conns int
+	// PortPercent is the busiest home node's share of its capacity taken by the
+	// host's own port; NodePercent is the same for the node's whole client
+	// total. Percent is the larger of the two, the figure users see.
+	PortPercent int
+	NodePercent int
+	Percent     int
+	Level       Level
+	NodeIDs     []int32 // the home nodes the percent was computed from (do not modify)
 
 	// UsesLoad reports whether the remark template already contains a
 	// {LOAD...} variable and is therefore used as written.
 	UsesLoad bool
 }
 
+// Where a node's capacity came from.
+const (
+	CapacityNode    = "node"    // the node's own capacity
+	CapacityDefault = "default" // the panel-wide default
+)
+
+// NodeLoad is the load of one reporting node: its open client connections
+// against its capacity.
+type NodeLoad struct {
+	ID             int32
+	Name           string
+	Conns          int
+	Capacity       int
+	CapacitySource string // CapacityNode or CapacityDefault
+	Percent        int
+}
+
 // Snapshot is an immutable view of the fleet's load at one instant. A nil
 // *Snapshot is valid and knows nothing.
 type Snapshot struct {
-	At       time.Time
-	Live     bool
+	At time.Time
+	// Live mirrors presence:live.
+	Live bool
+	// Capacity is the panel-wide default, for nodes without their own.
 	Capacity int
 	// Hosts holds every enabled, non-info host in display order, known or not.
 	Hosts []HostLoad
+	// Nodes holds every enabled node that is reporting right now, by id.
+	Nodes []NodeLoad
 
 	byID  map[int32]int
 	known bool
@@ -363,6 +421,20 @@ func (m *Map) build(ctx context.Context) *Snapshot {
 		}
 	}
 	snap.Live = data.Live
+	if data.Live {
+		for _, n := range nodes {
+			np, ok := data.Nodes[n.ID]
+			if !ok || !np.Reporting {
+				continue
+			}
+			capacity, source := m.capacityOf(n)
+			snap.Nodes = append(snap.Nodes, NodeLoad{
+				ID: n.ID, Name: n.Name, Conns: np.total(),
+				Capacity: capacity, CapacitySource: source,
+				Percent: Percent(float64(np.total()), capacity),
+			})
+		}
+	}
 
 	// Resolve node addresses once per build; a name that is not cached yet
 	// just yields no addresses and the node then never matches by address.
@@ -392,11 +464,28 @@ func (m *Map) build(ctx context.Context) *Snapshot {
 	return snap
 }
 
-// compute fills hl from the nodes that serve host h. A node counts when it is
-// reporting and serves the host's inbound tag and port; among those the ones
-// whose address is the host's address are used, or all of them when none is
-// (a proxied or unresolved address). Several nodes -> the SUM: a config's
-// crowdedness is everyone connected on it, wherever the name sends them.
+// capacityOf is what counts as 100% load on a node, and where that number
+// came from.
+func (m *Map) capacityOf(n Node) (capacity int, source string) {
+	if n.Capacity >= 1 {
+		return n.Capacity, CapacityNode
+	}
+	return m.cfg.Capacity, CapacityDefault
+}
+
+// compute fills hl from the nodes that serve host h.
+//
+// Candidates are the reporting nodes that serve the host's inbound tag and
+// port; when the host's address is one of the candidates' own addresses only
+// those are kept (an address that matches no node - a proxied or unresolved
+// name, which is the usual case - leaves every candidate in).
+//
+// Of the candidates, the home nodes are the ones the port's traffic really sits
+// on: those carrying at least 20% of all connections on the port, or every
+// candidate while the port is idle everywhere. Conns counts the whole port
+// (everyone on this config); the percent is taken over the home nodes only, as
+// the larger of the port's share and the whole node's share of that node's
+// capacity, because a config is only as free as its node.
 func (m *Map) compute(hl *HostLoad, h Host, nodes []Node, nodeIPs map[int32]map[string]struct{}, data PresenceData) {
 	var candidates []Node
 	for _, n := range nodes {
@@ -426,14 +515,30 @@ func (m *Map) compute(hl *HostLoad, h Host, nodes []Node, nodeIPs map[int32]map[
 	}
 
 	sum := 0
-	ids := make([]int32, len(use))
-	for i, n := range use {
+	for _, n := range use {
 		sum += data.Nodes[n.ID].Ports[h.Port]
+	}
+	home := use
+	if sum > 0 {
+		home = make([]Node, 0, len(use))
+		for _, n := range use {
+			if data.Nodes[n.ID].Ports[h.Port]*homeShareDivisor >= sum {
+				home = append(home, n)
+			}
+		}
+	}
+
+	ids := make([]int32, len(home))
+	for i, n := range home {
+		np := data.Nodes[n.ID]
+		capacity, _ := m.capacityOf(n)
+		hl.PortPercent = max(hl.PortPercent, Percent(float64(np.Ports[h.Port]), capacity))
+		hl.NodePercent = max(hl.NodePercent, Percent(float64(np.total()), capacity))
 		ids[i] = n.ID
 	}
 	hl.Known = true
 	hl.Conns = sum
-	hl.Percent = Percent(float64(sum), m.cfg.Capacity)
+	hl.Percent = max(hl.PortPercent, hl.NodePercent)
 	hl.Level = LevelFor(hl.Percent)
 	hl.NodeIDs = ids
 }

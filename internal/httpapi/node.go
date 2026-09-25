@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/legendary1205/rapido-go/internal/certs"
@@ -52,6 +55,34 @@ type nodeCreateRequest struct {
 	InboundTags   tagsPatch                   `json:"inbound_tags"`
 	ListenPorts   portsPatch                  `json:"listen_ports"`
 	CoreOverrides patchField[json.RawMessage] `json:"core_overrides"`
+
+	// Capacity is the number of open client connections that mean 100% load for
+	// this node; absent or null means "use the panel default".
+	Capacity capacityPatch `json:"capacity"`
+}
+
+// maxNodeCapacity bounds nodes.capacity: far above any real node, and well
+// inside the INTEGER column.
+const maxNodeCapacity = 10_000_000
+
+// capacityPatch is a request's node capacity: absent, null (clear it), or a
+// whole number of connections in 1..maxNodeCapacity.
+type capacityPatch struct{ patchField[int64] }
+
+func (p *capacityPatch) UnmarshalJSON(b []byte) error {
+	return p.decode(b, "capacity must be a whole number or null")
+}
+
+// column validates the patch and returns the value to store (NULL when it is
+// null or absent). The string is a 422 message, empty when fine.
+func (p capacityPatch) column() (pgtype.Int4, string) {
+	if !p.Set || p.Null {
+		return pgtype.Int4{}, ""
+	}
+	if p.Value < 1 || p.Value > maxNodeCapacity {
+		return pgtype.Int4{}, fmt.Sprintf("capacity must be between 1 and %d, or null to use the panel default", maxNodeCapacity)
+	}
+	return pgtype.Int4{Int32: int32(p.Value), Valid: true}, ""
 }
 
 // nodeSetupBlob is everything cmd/node needs to trust and reach the panel,
@@ -93,6 +124,9 @@ type nodeDTO struct {
 	Status           string  `json:"status"`
 	Message          *string `json:"message"`
 	UsageCoefficient float64 `json:"usage_coefficient"`
+	// Capacity is how many open client connections read as 100% load on this
+	// node; null means the panel-wide default (CONFIG_LOAD_CAPACITY) applies.
+	Capacity *int32 `json:"capacity"`
 	// The node's profile, each omitted while it is the default (see
 	// nodeProfile), so a node nobody customised serializes as it always did.
 	InboundTags   []string        `json:"inbound_tags,omitempty"`
@@ -103,7 +137,7 @@ type nodeDTO struct {
 func toNodeDTO(n generated.Node) nodeDTO {
 	dto := nodeDTO{
 		ID: n.ID, Name: n.Name, Address: n.Address, Port: n.Port, APIPort: n.ApiPort,
-		Status: n.Status, UsageCoefficient: n.UsageCoefficient,
+		Status: n.Status, UsageCoefficient: n.UsageCoefficient, Capacity: pgInt4ToPtr(n.Capacity),
 	}
 	if n.XrayVersion.Valid {
 		v := n.XrayVersion.String
@@ -158,6 +192,12 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 		req.APIPort = defaultNodeAPIPort
 	}
 
+	capacity, msg := req.Capacity.column()
+	if msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": msg})
+		return
+	}
+
 	ctx := c.Request.Context()
 	profile, msg, err := h.resolveNodeProfile(ctx, nodeProfileFields{overrides: emptyCoreOverridesJSON},
 		req.InboundTags, req.ListenPorts, req.CoreOverrides)
@@ -195,6 +235,7 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 		Name: req.Name, Address: req.Address, Port: req.Port, ApiPort: req.APIPort, UsageCoefficient: usageCoefficient,
 		ReportSecret: pgtype.Text{String: reportSecret, Valid: true},
 		InboundTags:  profile.tags, ListenPorts: profile.ports, CoreOverrides: profile.overrides,
+		Capacity: capacity,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -259,6 +300,18 @@ type nodeUpdateRequest struct {
 	InboundTags   tagsPatch                   `json:"inbound_tags"`
 	ListenPorts   portsPatch                  `json:"listen_ports"`
 	CoreOverrides patchField[json.RawMessage] `json:"core_overrides"`
+
+	// Capacity: absent leaves the stored value alone, null clears it back to the
+	// panel default, a number sets it (1..10000000).
+	Capacity capacityPatch `json:"capacity"`
+}
+
+// onlyCapacity reports a request that changes nothing but the capacity.
+func (r nodeUpdateRequest) onlyCapacity() bool {
+	return r.Capacity.Set &&
+		r.Name == nil && r.Address == nil && r.Port == nil && r.APIPort == nil &&
+		r.UsageCoefficient == nil && r.Status == nil && r.Disabled == nil &&
+		!r.InboundTags.Set && !r.ListenPorts.Set && !r.CoreOverrides.Set
 }
 
 // handleUpdateNode implements PUT /api/node/:id (sudo only). A full-field
@@ -277,7 +330,30 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 		return
 	}
 
+	capacity, msg := req.Capacity.column()
+	if msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": msg})
+		return
+	}
+
 	ctx := c.Request.Context()
+	if req.onlyCapacity() {
+		// Its own statement: UpdateNode names the profile columns in its SET
+		// list, which would bump the node-config version for a change that no
+		// node needs to hear about.
+		node, err := h.store.Queries.SetNodeCapacity(ctx, generated.SetNodeCapacityParams{ID: id, Capacity: capacity})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"detail": "Node not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not update node"})
+			return
+		}
+		c.JSON(http.StatusOK, toNodeDTO(node))
+		return
+	}
+
 	// Every field is optional, so the stored row is the base and only what
 	// the caller actually sent is overlaid onto it.
 	current, err := h.store.Queries.GetNodeByID(ctx, id)
@@ -329,6 +405,7 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 		ID: id, Name: name, Address: address, Port: port, ApiPort: apiPort,
 		UsageCoefficient: usageCoefficient, Disabled: disabled,
 		InboundTags: profile.tags, ListenPorts: profile.ports, CoreOverrides: profile.overrides,
+		SetCapacity: req.Capacity.Set, Capacity: capacity,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
