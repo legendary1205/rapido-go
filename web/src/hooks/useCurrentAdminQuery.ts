@@ -16,3 +16,11 @@ export const useCurrentAdminQuery = () =>
     queryKey: queryKeys.currentAdmin,
     queryFn: fetchCurrentAdmin,
   });
+
+// Fails closed: false until /admin has resolved (and for a failed lookup), so
+// a query the backend answers with 403 for a reseller is never sent while the
+// role is still unknown.
+export const useIsSudo = () => {
+  const { data, isSuccess } = useCurrentAdminQuery();
+  return isSuccess && !!data?.is_sudo;
+};

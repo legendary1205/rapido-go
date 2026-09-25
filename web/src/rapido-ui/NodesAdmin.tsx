@@ -8,10 +8,27 @@ import {
   useNodesUsageQuery,
   useUpdateNodeMutation,
 } from "hooks/useNodesQuery";
+import { useInboundsQuery } from "hooks/useInboundsQuery";
 import { Node, NodeCreateResult, NodeWritePayload } from "types/Node";
 import { errorText } from "service/errors";
 import { formatBytes } from "utils/formatByte";
 import { toneForNodeStatus } from "utils/nodeStatus";
+import { buildNodeInstallCommand } from "utils/nodeInstall";
+import { PortInputError } from "utils/inboundPorts";
+import {
+  NodeProfileDraft,
+  OverridesInputError,
+  buildNodeProfile,
+  draftFromNode,
+  emptyNodeProfileDraft,
+  hasCustomProfile,
+  profileFieldOfServerError,
+  profileForCreate,
+  summarizeNodeProfile,
+  tagChoices,
+  toggleTag,
+} from "utils/nodeProfile";
+import { ltrIsolate } from "rapido-ui/bidi";
 import { Card } from "rapido-ui/Card";
 import { Badge, BadgeTone } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
@@ -54,6 +71,9 @@ type NodeFormValues = {
   // from an existing node (formValuesFromNode has no source for it, the
   // panel never stores it), so it's simply absent from the edit form.
   panel_url: string;
+  // Which inbounds/ports the node serves and what it overrides - see
+  // utils/nodeProfile.ts. Empty everywhere is the default profile.
+  profile: NodeProfileDraft;
 };
 
 const defaultFormValues = (): NodeFormValues => ({
@@ -64,6 +84,7 @@ const defaultFormValues = (): NodeFormValues => ({
   usage_coefficient: "1",
   disabled: false,
   panel_url: "",
+  profile: emptyNodeProfileDraft(),
 });
 
 const formValuesFromNode = (n: Node): NodeFormValues => ({
@@ -74,7 +95,22 @@ const formValuesFromNode = (n: Node): NodeFormValues => ({
   usage_coefficient: String(n.usage_coefficient),
   disabled: n.status === "disabled",
   panel_url: "",
+  profile: draftFromNode(n),
 });
+
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
+
+// The server's own validation messages for these fields are English and
+// technical, so they are shown as they come, left-to-right, under the field.
+const ServerFieldError: FC<{ message: string }> = ({ message }) => (
+  <span
+    role="alert"
+    dir="ltr"
+    className="whitespace-pre-wrap break-words rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+  >
+    {message}
+  </span>
+);
 
 const NodeFormModal: FC<{
   initial: Node | null;
@@ -87,15 +123,60 @@ const NodeFormModal: FC<{
     initial ? formValuesFromNode(initial) : defaultFormValues()
   );
   const [error, setError] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(!!initial && hasCustomProfile(initial));
 
   const createNode = useCreateNodeMutation();
   const updateNode = useUpdateNodeMutation();
   const saving = createNode.isPending || updateNode.isPending;
+  const inbounds = useInboundsQuery();
+  const knownTags = useMemo(
+    () => Object.values(inbounds.data ?? {}).flat().sort((a, b) => a.localeCompare(b)),
+    [inbounds.data]
+  );
 
   const set = (patch: Partial<NodeFormValues>) => setValues((v) => ({ ...v, ...patch }));
+  const setProfile = (patch: Partial<NodeProfileDraft>) =>
+    setValues((v) => ({ ...v, profile: { ...v.profile, ...patch } }));
+
+  const profileResult = useMemo(() => buildNodeProfile(values.profile), [values.profile]);
+  const portsError = profileResult.ok ? null : profileResult.ports ?? null;
+  const overridesError = profileResult.ok ? null : profileResult.overrides ?? null;
+  // The panel starts each profile validation message with the field's name,
+  // so it can be shown under that field instead of only at the bottom.
+  const serverField = error ? profileFieldOfServerError(error) : null;
+
+  const portsErrorText = (e: PortInputError) =>
+    t(`rapido.xrayConfig.portError${cap(e.kind)}`, { value: ltrIsolate(e.value) });
+  const overridesErrorText = (e: OverridesInputError): string => {
+    switch (e.kind) {
+      case "invalidJson":
+        return t("rapido.nodes.overrides.invalidJson", { message: ltrIsolate(e.message) });
+      case "notObject":
+        return t("rapido.nodes.overrides.notObject", { example: ltrIsolate('{"log_level": "debug"}') });
+      case "unknownKey":
+        return t("rapido.nodes.overrides.unknownKey", { key: ltrIsolate(e.key) });
+      case "notString":
+      case "notBoolean":
+      case "notList":
+        return t(`rapido.nodes.overrides.${e.kind}`, { key: ltrIsolate(e.key) });
+      case "invalidLogLevel":
+        return t("rapido.nodes.overrides.invalidLogLevel", { value: ltrIsolate(e.value) });
+    }
+  };
+
+  const onSaveError = (e: unknown) => {
+    const message = errorText(e, t("rapido.nodes.saveFailed"));
+    setError(message);
+    if (profileFieldOfServerError(message)) setAdvancedOpen(true);
+  };
 
   const submit = () => {
     setError("");
+    if (!profileResult.ok) {
+      setAdvancedOpen(true);
+      return;
+    }
+    const profile = profileResult.profile;
     const body: NodeWritePayload = {
       name: values.name,
       address: values.address,
@@ -108,29 +189,32 @@ const NodeFormModal: FC<{
       // update body never carries a stray key the backend would ignore
       // anyway but that has no business being there.
       ...(!isEdit && values.panel_url.trim() ? { panel_url: values.panel_url.trim() } : {}),
+      // Create sends only what is customised; an update sends all three
+      // explicitly, because an omitted key would leave the stored value alone
+      // and an emptied field has to clear it.
+      ...(isEdit ? profile : profileForCreate(profile)),
     };
 
     if (isEdit) {
       updateNode.mutate(
         { id: initial!.id, body: { ...body, disabled: values.disabled } },
-        {
-          onSuccess: onClose,
-          onError: (e) => setError(errorText(e, t("rapido.nodes.saveFailed"))),
-        }
+        { onSuccess: onClose, onError: onSaveError }
       );
     } else {
-      createNode.mutate(body, {
-        onSuccess: onCreated,
-        onError: (e) => setError(errorText(e, t("rapido.nodes.saveFailed"))),
-      });
+      createNode.mutate(body, { onSuccess: onCreated, onError: onSaveError });
     }
   };
 
   const canSubmit =
-    !!values.name.trim() && !!values.address.trim() && !!values.port && !!values.api_port;
+    !!values.name.trim() &&
+    !!values.address.trim() &&
+    !!values.port &&
+    !!values.api_port &&
+    profileResult.ok;
+  const choices = tagChoices(knownTags, values.profile.tags);
 
   return (
-    <Modal onClose={onClose} className="max-w-md">
+    <Modal onClose={onClose} className="max-w-lg">
       <h2 className="mb-4 text-lg font-semibold">
         {isEdit ? t("nodes.editNode") : t("nodes.addNode")}
       </h2>
@@ -204,7 +288,100 @@ const NodeFormModal: FC<{
           />
         )}
 
-        {error && (
+        {/* Closed unless the node already has a custom profile (or the panel
+            just rejected one): the common case is a plain node and should not
+            have to look at any of this. */}
+        <details
+          open={advancedOpen}
+          onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+          className="rounded-lg border border-rapido-border"
+        >
+          <summary className="cursor-pointer select-none px-3 py-2 text-sm text-rapido-muted">
+            {t("rapido.nodes.advanced")}
+          </summary>
+          <div className="flex flex-col gap-4 border-t border-rapido-border px-3 py-3">
+            <p className="text-xs text-rapido-muted">{t("rapido.nodes.advancedHint")}</p>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-rapido-text">{t("rapido.nodes.servesInbounds")}</span>
+              {choices.length > 0 ? (
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                  {choices.map((tag) => (
+                    <Checkbox
+                      key={tag}
+                      checked={values.profile.tags.includes(tag)}
+                      onChange={() => setProfile({ tags: toggleTag(values.profile.tags, tag) })}
+                      label={
+                        <>
+                          <span dir="ltr">{tag}</span>
+                          {!knownTags.includes(tag) && (
+                            <span className="ms-1 text-xs text-rapido-muted">
+                              ({t("rapido.nodes.inboundMissing")})
+                            </span>
+                          )}
+                        </>
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-rapido-muted">{t("rapido.nodes.noInbounds")}</p>
+              )}
+              <span className="text-xs text-rapido-muted">{t("rapido.nodes.servesInboundsHint")}</span>
+              {serverField === "inbound_tags" && <ServerFieldError message={error} />}
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-rapido-text">{t("rapido.nodes.listenPorts")}</span>
+              <Input
+                dir="ltr"
+                inputMode="numeric"
+                placeholder="20000, 20001"
+                hasError={!!portsError || serverField === "listen_ports"}
+                aria-invalid={!!portsError}
+                value={values.profile.portsText}
+                onChange={(e) => setProfile({ portsText: e.target.value })}
+              />
+              {portsError ? (
+                <span role="alert" className="text-xs text-red-400">
+                  {portsErrorText(portsError)}
+                </span>
+              ) : (
+                <span className="text-xs text-rapido-muted">
+                  {t("rapido.nodes.listenPortsHint", { example: ltrIsolate("20000, 20001") })}
+                </span>
+              )}
+              {serverField === "listen_ports" && <ServerFieldError message={error} />}
+            </label>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-rapido-text">{t("rapido.nodes.coreOverrides")}</span>
+              <textarea
+                dir="ltr"
+                spellCheck={false}
+                rows={8}
+                placeholder={'{\n  "log_level": "debug"\n}'}
+                aria-invalid={!!overridesError}
+                className={classNames(
+                  "w-full rounded-lg border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text placeholder:text-rapido-muted focus:outline-none focus:ring-1 focus:ring-rapido-accent",
+                  overridesError || serverField === "core_overrides" ? "border-red-500" : "border-rapido-border"
+                )}
+                value={values.profile.overridesText}
+                onChange={(e) => setProfile({ overridesText: e.target.value })}
+              />
+              {overridesError ? (
+                <span role="alert" className="text-xs text-red-400">
+                  {overridesErrorText(overridesError)}
+                </span>
+              ) : (
+                <span className="text-xs text-rapido-muted">{t("rapido.nodes.coreOverridesHint")}</span>
+              )}
+              {serverField === "core_overrides" && <ServerFieldError message={error} />}
+            </label>
+          </div>
+        </details>
+
+        {error && !serverField && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {error}
           </div>
@@ -247,6 +424,7 @@ const CopyField: FC<{ label: string; value: string }> = ({ label, value }) => {
         dir="ltr"
         spellCheck={false}
         rows={3}
+        aria-label={label}
         className="w-full resize-none rounded-lg border border-rapido-border bg-rapido-bg px-3 py-2 font-mono text-xs text-rapido-text focus:outline-none focus:ring-1 focus:ring-rapido-accent"
         value={value}
         onFocus={(e) => e.currentTarget.select()}
@@ -277,6 +455,18 @@ const NodeCreatedPanel: FC<{ result: NodeCreateResult; onClose: () => void }> = 
         {t("rapido.nodes.oneTimeWarning")}
       </div>
       <div className="flex flex-col gap-4">
+        {/* The way most admins will actually bring the node up, so it comes
+            first and looks like it: one command, built from where the panel is
+            reached from right now plus the one-time blob. */}
+        <div className="flex flex-col gap-2 rounded-lg border border-rapido-accent/50 bg-rapido-accent/[0.06] p-3">
+          <div className="text-sm font-semibold text-rapido-text">{t("rapido.nodes.installTitle")}</div>
+          <p className="text-xs text-rapido-muted">{t("rapido.nodes.installHelp")}</p>
+          <CopyField
+            label={t("rapido.nodes.installCommand")}
+            value={buildNodeInstallCommand(window.location.origin, result.setup_blob)}
+          />
+        </div>
+
         <CopyField label={t("rapido.nodes.setupBlob")} value={result.setup_blob} />
         <p className="text-xs text-rapido-muted">{t("rapido.nodes.setupBlobHint")}</p>
 
@@ -318,6 +508,15 @@ const NodeCard: FC<{ node: Node; onEdit: () => void }> = ({ node, onEdit }) => {
   const tone = toneForNodeStatus(node.status);
   const isDisabled = node.status === "disabled";
 
+  const custom = hasCustomProfile(node);
+  const profile = summarizeNodeProfile(node);
+  // Hover text for the badge: what exactly is different about this node.
+  const profileTitle = t("rapido.nodes.profileTitle", {
+    inbounds: profile.tags.length ? profile.tags.join(", ") : t("rapido.nodes.profileAll"),
+    ports: profile.ports.length ? profile.ports.join(", ") : t("rapido.nodes.profileAll"),
+    overrides: profile.overrideKeys.length ? profile.overrideKeys.join(", ") : t("rapido.nodes.profileNone"),
+  });
+
   const remove = () => {
     setMsg(null);
     deleteNode.mutate(node.id, {
@@ -356,6 +555,11 @@ const NodeCard: FC<{ node: Node; onEdit: () => void }> = ({ node, onEdit }) => {
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold">{node.name}</span>
             <Badge tone={tone}>{t(`nodes.status.${node.status}`, node.status)}</Badge>
+            {custom && (
+              <Badge tone="brand" title={profileTitle}>
+                {t("rapido.nodes.customProfile")}
+              </Badge>
+            )}
           </div>
         </div>
 

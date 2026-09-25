@@ -52,9 +52,9 @@ func (h *Handler) handleGetCoreVersion(c *gin.Context) {
 // API's contract is to push a freshly-rendered config to the core and every
 // connected node here; this architecture inverts that - nodes pull their
 // own config on a short interval (see handleGetNodeConfig) - so the honest equivalent
-// is to drop the cached fleet-wide payload, which makes every node rebuild
-// from current data on its very next poll instead of up to the cache TTL
-// later. Returns {} exactly as the real endpoint does.
+// is to bump the node-config data version, which makes every node's payload
+// rebuild from current data on its very next poll. Returns {} exactly as
+// the real endpoint does.
 func (h *Handler) handleRestartCore(c *gin.Context) {
 	if err := h.store.InvalidateNodeConfigPayload(c.Request.Context()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not trigger a core restart"})

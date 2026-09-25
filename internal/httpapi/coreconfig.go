@@ -334,6 +334,12 @@ func (h *Handler) applyCoreConfig(ctx context.Context, dto coreConfigDTO) (coreC
 		}
 	}
 
+	if msg, err := h.validateNodeOverridesAgainstFleet(ctx, dto); err != nil {
+		return coreConfigDTO{}, fmt.Errorf("could not validate node overrides: %w", err)
+	} else if msg != "" {
+		return coreConfigDTO{}, &coreConfigValidationError{msg}
+	}
+
 	outboundsJSON, _ := json.Marshal(dto.Outbounds)
 	rulesJSON, _ := json.Marshal(dto.RoutingRules)
 	dnsJSON, _ := json.Marshal(dto.DNSServers)

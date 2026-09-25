@@ -1,0 +1,11 @@
+# The installers are run straight from a curl on Linux, and the compose,
+# Caddy and Docker files are bind-mounted or built there - a CRLF checkout on
+# Windows breaks all of them ("bash\r: No such file", broken heredocs), so
+# these are always LF.
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile*     text eol=lf
+Caddyfile*      text eol=lf
+.env*.example   text eol=lf
+.dockerignore   text eol=lf

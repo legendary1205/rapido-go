@@ -1,10 +1,10 @@
-// Package telegram sends admin notifications via the Telegram Bot API's
-// sendMessage endpoint. This is deliberately notification-only: no command
-// handlers, no long-polling, no interactive admin console - that's the full
-// Telegram bot from the current Python system (app/telegram/handlers/admin.py),
-// out of scope here since it will largely be superseded by the dashboard
-// rewrite. See internal/report for the event-level dispatch policy this
-// package's Report is called from.
+// Package telegram is the one-way half of the Telegram integration: it sends
+// admin notifications via the Bot API's sendMessage endpoint, and holds no
+// connection or state between sends. The interactive half - the long-polling
+// admin console with inline keyboards - is internal/telegrambot; the two share
+// the bot token and admin list from the integration settings but nothing else.
+// See internal/report for the event-level dispatch policy this package's
+// Report is called from.
 package telegram
 
 import (

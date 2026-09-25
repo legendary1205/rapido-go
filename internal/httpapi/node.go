@@ -46,6 +46,12 @@ type nodeCreateRequest struct {
 	// to guess it. Left empty, the blob just omits panel_url and the node
 	// falls back to its own PANEL_URL env var, same as before this existed.
 	PanelURL string `json:"panel_url"`
+
+	// The node's profile - see nodeProfile. All optional; absent, null and
+	// empty all mean "same as every other node".
+	InboundTags   tagsPatch                   `json:"inbound_tags"`
+	ListenPorts   portsPatch                  `json:"listen_ports"`
+	CoreOverrides patchField[json.RawMessage] `json:"core_overrides"`
 }
 
 // nodeSetupBlob is everything cmd/node needs to trust and reach the panel,
@@ -87,6 +93,11 @@ type nodeDTO struct {
 	Status           string  `json:"status"`
 	Message          *string `json:"message"`
 	UsageCoefficient float64 `json:"usage_coefficient"`
+	// The node's profile, each omitted while it is the default (see
+	// nodeProfile), so a node nobody customised serializes as it always did.
+	InboundTags   []string        `json:"inbound_tags,omitempty"`
+	ListenPorts   []int32         `json:"listen_ports,omitempty"`
+	CoreOverrides json.RawMessage `json:"core_overrides,omitempty"`
 }
 
 func toNodeDTO(n generated.Node) nodeDTO {
@@ -101,6 +112,15 @@ func toNodeDTO(n generated.Node) nodeDTO {
 	if n.Message.Valid {
 		m := n.Message.String
 		dto.Message = &m
+	}
+	if len(n.InboundTags) > 0 {
+		dto.InboundTags = n.InboundTags
+	}
+	if len(n.ListenPorts) > 0 {
+		dto.ListenPorts = n.ListenPorts
+	}
+	if ov, err := parseCoreOverrides(n.CoreOverrides); err == nil && !ov.isZero() {
+		dto.CoreOverrides = n.CoreOverrides
 	}
 	return dto
 }
@@ -139,6 +159,17 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	profile, msg, err := h.resolveNodeProfile(ctx, nodeProfileFields{overrides: emptyCoreOverridesJSON},
+		req.InboundTags, req.ListenPorts, req.CoreOverrides)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not validate the node profile"})
+		return
+	}
+	if msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": msg})
+		return
+	}
+
 	ca, err := h.store.Queries.GetTLS(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not load the Rapido CA"})
@@ -163,6 +194,7 @@ func (h *Handler) handleCreateNode(c *gin.Context) {
 	node, err := h.store.Queries.CreateNode(ctx, generated.CreateNodeParams{
 		Name: req.Name, Address: req.Address, Port: req.Port, ApiPort: req.APIPort, UsageCoefficient: usageCoefficient,
 		ReportSecret: pgtype.Text{String: reportSecret, Valid: true},
+		InboundTags:  profile.tags, ListenPorts: profile.ports, CoreOverrides: profile.overrides,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -221,6 +253,12 @@ type nodeUpdateRequest struct {
 	// panel's older boolean, kept working for its own dashboard.
 	Status   *string `json:"status"`
 	Disabled *bool   `json:"disabled"`
+
+	// Profile fields, see nodeCreateRequest. Absent leaves the stored value
+	// alone; null or empty clears it back to the default.
+	InboundTags   tagsPatch                   `json:"inbound_tags"`
+	ListenPorts   portsPatch                  `json:"listen_ports"`
+	CoreOverrides patchField[json.RawMessage] `json:"core_overrides"`
 }
 
 // handleUpdateNode implements PUT /api/node/:id (sudo only). A full-field
@@ -261,6 +299,17 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 		apiPort = *req.APIPort
 	}
 
+	profile, msg, err := h.resolveNodeProfile(ctx, profileFieldsFromNode(current),
+		req.InboundTags, req.ListenPorts, req.CoreOverrides)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not validate the node profile"})
+		return
+	}
+	if msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": msg})
+		return
+	}
+
 	var usageCoefficient pgtype.Float8
 	if req.UsageCoefficient != nil {
 		usageCoefficient = pgtype.Float8{Float64: *req.UsageCoefficient, Valid: true}
@@ -279,6 +328,7 @@ func (h *Handler) handleUpdateNode(c *gin.Context) {
 	node, err := h.store.Queries.UpdateNode(ctx, generated.UpdateNodeParams{
 		ID: id, Name: name, Address: address, Port: port, ApiPort: apiPort,
 		UsageCoefficient: usageCoefficient, Disabled: disabled,
+		InboundTags: profile.tags, ListenPorts: profile.ports, CoreOverrides: profile.overrides,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {

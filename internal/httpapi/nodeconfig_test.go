@@ -198,7 +198,7 @@ func TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	payload, _, err := handler.buildNodeConfigPayload(ctx)
+	payload, _, err := handler.buildNodeConfigPayload(ctx, nodeProfile{})
 	if err != nil {
 		t.Fatalf("buildNodeConfigPayload: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	got, err := handler.buildNodeConfigBody(ctx)
+	got, err := handler.buildNodeConfigBody(ctx, nodeProfile{})
 	if err != nil {
 		t.Fatalf("buildNodeConfigBody: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestNodeConfigBodyStaysByteIdenticalWithAMultiPortInbound(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	payload, _, err := handler.buildNodeConfigPayload(ctx)
+	payload, _, err := handler.buildNodeConfigPayload(ctx, nodeProfile{})
 	if err != nil {
 		t.Fatalf("buildNodeConfigPayload: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestNodeConfigBodyStaysByteIdenticalWithAMultiPortInbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	got, err := handler.buildNodeConfigBody(ctx)
+	got, err := handler.buildNodeConfigBody(ctx, nodeProfile{})
 	if err != nil {
 		t.Fatalf("buildNodeConfigBody: %v", err)
 	}

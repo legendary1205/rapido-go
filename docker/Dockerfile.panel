@@ -1,66 +1,140 @@
+# syntax=docker/dockerfile:1
+
 # Rapido-Go panel image - builds the dashboard and the panel binary (plus
 # goose, for the docker-compose "migrate" service to reuse this same image
-# rather than needing a second one), then a small runtime layer with none
-# of the build toolchain in it.
+# rather than needing a second one), the node agent for linux/amd64 and
+# linux/arm64 (the panel serves those binaries to nodes it provisions), then
+# a small runtime layer with none of the build toolchain in it.
 #
-# Built and pushed automatically by .github/workflows/docker-publish.yml -
-# not meant to be built by hand on a target server; see the root
+# Built and pushed automatically by .github/workflows/docker-publish.yml
+# (every push to master) and .github/workflows/release.yml (v* tags) - not
+# meant to be built by hand on a target server; see the root
 # docker-compose.prod.yml, which just pulls ghcr.io/<owner>/rapido-go-panel.
+#
+# Multi-arch without emulation for the heavy work: every Node/Go stage below
+# runs on the BUILD machine's own architecture (--platform=$BUILDPLATFORM)
+# and cross-compiles with GOOS/GOARCH=$TARGET*. Only the final alpine stage
+# executes for the target architecture (one `apk add`), which is why the CI
+# job registers QEMU.
+#
+# Build args:
+#   VERSION   stamped into the panel/node binaries (-X main.version), into
+#             /app/nodebin/VERSION and into the image's
+#             org.opencontainers.image.version label. Default "dev".
+#
+# BuildKit cache mounts (npm, go modules, go build cache) make a rebuild on a
+# developer machine or a persistent builder incremental; they are not part of
+# the exported layer cache, so they cost nothing in the image.
 
 # --- dashboard -------------------------------------------------------------
-FROM node:18-alpine AS dashboard
+# Static files - identical for every target architecture, so this stage never
+# runs more than once per build.
+FROM --platform=$BUILDPLATFORM node:18-alpine AS dashboard
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY web/ ./
 RUN npm run build
 
+# --- go base ---------------------------------------------------------------
+# Shared by every Go stage below. GOPROXY is a PIPE-separated list: with a
+# pipe the go command falls through to the next entry on ANY error (403, 400,
+# a timeout), while a comma only falls through on 404/410. Both a 403 from
+# proxy.golang.org and a 400 from goproxy.io have failed real builds, and a
+# comma-separated list never reached the next entry for either. "direct" is
+# the last resort and needs git (installed here) to resolve a vanity import
+# path like golang.org/x/sys by cloning its VCS directly.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS gobase
+ENV GOPROXY=https://proxy.golang.org|https://goproxy.io|direct
+RUN apk add --no-cache git
+
 # --- goose (migration tool) - its own stage, unrelated to this module's
 # go.mod/go.sum, since it's a standalone CLI tool, not an import of the
-# project's own code -----------------------------------------------------------
-FROM golang:1.27-alpine AS goose
-# proxy.golang.org's CDN has answered some specific module zips with a
-# bare 403 (confirmed reproducible and global - the exact same URL 403s
-# from an unrelated, unrestricted machine too, so it is a real upstream
-# gap, not a network block here) - and the go command only falls back to
-# GOPROXY's ",direct" half on 404/410, never on 403, so the default
-# GOPROXY=https://proxy.golang.org,direct never actually reaches "direct"
-# for this. goproxy.io mirrors the same module data from separate
-# infrastructure. ",direct" is kept as a second fallback, which needs git
-# (not in this base image) to resolve a vanity import path like
-# golang.org/x/sys by cloning its VCS directly.
-ENV GOPROXY=https://goproxy.io,direct
-RUN apk add --no-cache git
-RUN CGO_ENABLED=0 go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
+# project's own code. Cross-compiled for the TARGET (it runs in the runtime
+# image). `go install` refuses GOBIN for a cross-compiled binary and puts it
+# in /go/bin/<os>_<arch>/ instead of /go/bin/, so the final copy looks in
+# both places. -----------------------------------------------------------------
+FROM gobase AS goose
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go install github.com/pressly/goose/v3/cmd/goose@v3.28.0 \
+    && mkdir -p /out \
+    && cp "$(find /go/bin -type f -name goose | head -n 1)" /out/goose
 
-# --- sqlc (query code generator) - same reasoning as goose above -----------------
-FROM golang:1.27-alpine AS sqlc
-ENV GOPROXY=https://goproxy.io,direct
-RUN apk add --no-cache git
-RUN CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+# --- sqlc (query code generator) - a build-time tool, so it runs on the
+# BUILD machine's architecture, not the target's. ---------------------------------
+FROM gobase AS sqlc
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
-# --- go binary -----------------------------------------------------------------
+# --- go sources + generated code ----------------------------------------------
 # internal/db/generated/ is gitignored (sqlc-generated, regenerated from
 # internal/db/queries/*.sql - see sqlc.yaml) rather than committed, so it
 # has to be generated here before `go build` can see those packages at all.
-FROM golang:1.27-alpine AS gobuild
-# Same goproxy.io reasoning as the goose/sqlc stages above - this project's
-# own dependency tree transitively pulls in klauspost/compress too (a
-# different version, but the same package that was 403ing), so the plain
-# default GOPROXY hits the exact same gap here.
-ENV GOPROXY=https://goproxy.io,direct
-RUN apk add --no-cache git
+# The panel AND the node agent both need it (cmd/node imports
+# internal/hostmetrics, which imports internal/db/generated), so both build
+# stages below start from this one.
+FROM gobase AS gosrc
 WORKDIR /src
 COPY --from=sqlc /go/bin/sqlc /usr/local/bin/sqlc
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY sqlc.yaml ./
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN sqlc generate
-RUN CGO_ENABLED=0 go build -o /out/panel ./cmd/panel
+
+# --- panel binary -----------------------------------------------------------------
+FROM gosrc AS panelbuild
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/panel ./cmd/panel
+
+# --- node agent binaries ------------------------------------------------------------
+# Built for BOTH linux architectures whatever the panel image's own target is:
+# the panel serves these to the nodes it provisions (env NODE_BIN_DIR, default
+# /app/nodebin), and a node can be either architecture. Two stages, not a
+# loop, so BuildKit builds them in parallel. Each leaves
+# rapido-go-node-linux-<arch>, its .sha256 (standard `sha256sum` output, so
+# `sha256sum -c` works in that directory) and a VERSION file.
+FROM gosrc AS node-amd64
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    mkdir -p /out/nodebin; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+        go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/nodebin/rapido-go-node-linux-amd64 ./cmd/node; \
+    cd /out/nodebin; \
+    sha256sum rapido-go-node-linux-amd64 > rapido-go-node-linux-amd64.sha256; \
+    printf '%s\n' "${VERSION}" > VERSION
+
+FROM gosrc AS node-arm64
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    mkdir -p /out/nodebin; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+        go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/nodebin/rapido-go-node-linux-arm64 ./cmd/node; \
+    cd /out/nodebin; \
+    sha256sum rapido-go-node-linux-arm64 > rapido-go-node-linux-arm64.sha256; \
+    printf '%s\n' "${VERSION}" > VERSION
 
 # --- runtime -------------------------------------------------------------------
+# The only stage that runs for the target architecture.
 FROM alpine:3.20
 # postgresql16-client: the panel shells out to the real pg_dump/psql
 # binaries for its own backup/restore and legacy-panel-import endpoints
@@ -71,9 +145,15 @@ FROM alpine:3.20
 # $PATH". Matches postgres:16-alpine in docker-compose.prod.yml.
 RUN apk add --no-cache ca-certificates postgresql16-client
 WORKDIR /app
-COPY --from=gobuild /out/panel ./panel
-COPY --from=goose /go/bin/goose /usr/local/bin/goose
+COPY --from=goose /out/goose /usr/local/bin/goose
 COPY internal/db/migrations ./internal/db/migrations
 COPY --from=dashboard /src/web/dist ./web/dist
+COPY --from=node-amd64 /out/nodebin/ ./nodebin/
+COPY --from=node-arm64 /out/nodebin/ ./nodebin/
+COPY --from=panelbuild /out/panel ./panel
+# Last, so a new VERSION only touches this metadata layer. `rapido-go doctor`
+# and `rapido-go version` read it from the running container.
+ARG VERSION=dev
+LABEL org.opencontainers.image.version="${VERSION}"
 EXPOSE 8000 8001
 ENTRYPOINT ["./panel"]

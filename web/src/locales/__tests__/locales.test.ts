@@ -10,7 +10,7 @@ const locales: Record<string, Record<string, string>> = { en, fa, ru, zh };
 // The Core Config and Monitoring namespaces are the ones every locale must
 // cover completely. (Other namespaces have known older gaps - e.g. ru/zh have
 // no rapido.templates.* - which are not this test's business.)
-const NAMESPACES = ["rapido.xrayConfig.", "rapido.monitoring."];
+const NAMESPACES = ["rapido.xrayConfig.", "rapido.monitoring.", "rapido.nodes."];
 const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
 
 const inScope = (key: string) => NAMESPACES.some((ns) => key.startsWith(ns));

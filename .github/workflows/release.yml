@@ -1,0 +1,90 @@
+name: Release
+
+# Pushing a tag like v1.2.3 publishes the panel image as :v1.2.3 and :latest
+# (multi-arch, version-stamped) and creates a GitHub Release with
+# auto-generated notes, attaching what an operator needs to install by hand:
+# the installer script, the compose file, the Caddyfile example and checksums.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# A tag with a hyphen (v1.2.3-rc1) is published as a pre-release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the Release and upload its files
+      packages: write   # push the image
+    # Same group as docker-publish.yml's panel job: one writer of :latest.
+    concurrency:
+      group: panel-image
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the installer scripts before publishing anything
+        run: |
+          for f in rapido-go.sh migrate-from-rapido.sh scripts/installer_test.sh; do
+            bash -n "$f"
+          done
+          bash scripts/installer_test.sh
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the panel image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.panel
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/rapido-go-panel:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/rapido-go-panel:latest
+          cache-from: type=gha,scope=panel
+          cache-to: type=gha,mode=max,scope=panel
+
+      - name: Collect the release files
+        run: |
+          mkdir -p dist
+          cp rapido-go.sh docker-compose.prod.yml Caddyfile.example dist/
+
+          # The node agent binaries (rapido-go-node-linux-amd64 / -arm64 and
+          # their .sha256 files) are built into the panel image at /app/nodebin,
+          # where the panel serves them to nodes. Attach the same files to the
+          # Release so they are checksummed and inspectable.
+          cid=$(docker create "ghcr.io/${{ github.repository_owner }}/rapido-go-panel:${{ github.ref_name }}")
+          docker cp "$cid:/app/nodebin/." dist/
+          docker rm "$cid" >/dev/null
+
+          (cd dist && sha256sum -- * > ../SHA256SUMS)
+          mv SHA256SUMS dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag $flags

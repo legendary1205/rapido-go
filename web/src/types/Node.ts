@@ -2,6 +2,8 @@
 // nodeUpdateRequest. "Node" here is the physical/VPS server a node agent
 // runs on - not to be confused with types/Host.ts's Host, which is a proxy
 // connection endpoint handed out in subscriptions.
+import { NodeCoreOverrides } from "types/CoreConfig";
+
 export type NodeStatus = "connected" | "connecting" | "error" | "disabled";
 
 export type Node = {
@@ -12,6 +14,12 @@ export type Node = {
   api_port: number;
   status: NodeStatus;
   usage_coefficient: number;
+  // The node's profile. The backend leaves each key out while it is the
+  // default (every inbound / every port / no overrides), so absent here means
+  // "same as every other node", never "none".
+  inbound_tags?: string[];
+  listen_ports?: number[];
+  core_overrides?: NodeCoreOverrides;
 };
 
 // POST /api/node and PUT /api/node/:id both take the full field set -
@@ -27,6 +35,12 @@ export type NodeWritePayload = {
   api_port: number;
   usage_coefficient?: number;
   panel_url?: string;
+  // Profile fields: on create, omit them for the default. On update an
+  // omitted key leaves the stored value alone, so clearing one means sending
+  // [] / {} explicitly.
+  inbound_tags?: string[];
+  listen_ports?: number[];
+  core_overrides?: NodeCoreOverrides;
 };
 
 // PUT-only: disabled omitted keeps the node's current enabled/disabled

@@ -38,6 +38,11 @@ type Handler struct {
 	loginNotifyWhitelist []string
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
+	loginVerifier        *auth.VerifyCache
+	nodeBinDir           string
+
+	// The node-config payloads currently being served - see cachedNodeConfig.
+	nodeConfig nodeConfigCache
 
 	// Memoized direct host read for GET /api/system - see cachedHostSample.
 	hostSampleMu    sync.Mutex
@@ -94,6 +99,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		dumpDatabase:    func(ctx context.Context, w *os.File) error { return execPgDump(ctx, databaseURL, w) },
 		restoreDatabase: func(ctx context.Context, gz io.Reader) error { return execPsqlRestore(ctx, databaseURL, gz) },
 		logger:          logger,
+		loginVerifier:   auth.NewVerifyCache(),
 	}
 }
 
@@ -304,6 +310,8 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		api.POST("/internal/gateway/users/sync", h.requireGatewaySecret, h.handleGatewaySyncUser)
 		api.GET("/internal/gateway/status", h.requireGatewaySecret, h.handleGatewayStatus)
 	}
+
+	h.registerNodeInstallRoutes(r)
 
 	r.GET("/sub/:token", h.handleGetSubscription)
 	r.GET("/sub/:token/:format", h.handleGetSubscriptionFormat)

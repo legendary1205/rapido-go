@@ -76,12 +76,11 @@ const (
 	nsInboundTagsByProto = "rapido:inbound_tags"
 	nsExcludedInbounds   = "rapido:excluded_inbounds"
 
-	// nsNodeConfig caches the fully-computed node-config payload (see
-	// internal/httpapi/nodeconfig.go) - inbounds + their active users +
-	// core_config's outbounds/routing/dns - not the raw core_config row
-	// nsCoreConfig above caches. Every node in the fleet is served the
-	// identical payload (same architecture as the current Python system's
-	// single shared config), so this is one global key, not per-node.
+	// nsNodeConfig is the key earlier releases cached one fleet-wide
+	// node-config payload under. Payloads are now per node profile and held
+	// in process memory, validated against a data version (see
+	// internal/httpapi/nodeconfigcache.go); the key is only still deleted so
+	// a process from an older release stops serving what it stored.
 	nsNodeConfig = "rapido:node_config"
 
 	// nsMaintenance gates the whole panel during a destructive database

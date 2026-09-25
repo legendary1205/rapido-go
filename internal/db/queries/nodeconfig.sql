@@ -41,3 +41,12 @@ FROM users u
 JOIN proxies p ON p.user_id = u.id
 WHERE u.status IN ('active', 'on_hold')
 ORDER BY u.id;
+
+-- name: GetDataVersion :one
+-- The change counter the node-config endpoint compares on every poll - see
+-- migration 00015 for what bumps it. A missing row is an error on purpose:
+-- the caller then rebuilds instead of trusting a version it cannot read.
+SELECT version FROM data_versions WHERE name = $1;
+
+-- name: BumpDataVersion :one
+SELECT bump_data_version($1::text)::bigint AS version;

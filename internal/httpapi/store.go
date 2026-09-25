@@ -26,19 +26,6 @@ const (
 	// pair here.
 	integrationSettingsCacheTTL = 1 * time.Hour
 	coreConfigCacheTTL          = 1 * time.Hour
-	// nodeConfigCacheTTL is deliberately short and IS the primary
-	// correctness mechanism here, not just a safety net: every node in the
-	// fleet now polls GET /api/internal/node-config on its own report
-	// interval (a few seconds - see cmd/node/main.go), so without this
-	// cache the full active-user/proxy scan (previously run once per whole
-	// fleet by Python's pull-based collector) would instead run once per
-	// node per poll. Explicit invalidation on host/inbound/core-config
-	// writes still happens below for prompt pickup; a plain user
-	// create/modify/delete is NOT wired to invalidate this key - the short
-	// TTL alone bounds that staleness to a few seconds, which is cheaper
-	// than hunting down every user-mutation call site for a cache that
-	// expires almost immediately anyway.
-	nodeConfigCacheTTL = 2 * time.Second
 )
 
 type Store struct {
@@ -154,9 +141,16 @@ func (s *Store) InvalidateCoreConfig(ctx context.Context) error {
 	return s.Cache.Del(ctx, cache.CoreConfigKey())
 }
 
-// InvalidateNodeConfigPayload busts the computed node-config cache - call
-// after any write to hosts/inbounds/core_config (see nodeConfigCacheTTL's
-// own comment for why plain user writes don't also call this).
+// InvalidateNodeConfigPayload makes the next node-config poll of every panel
+// process rebuild, by bumping the node_config data version those polls compare
+// against. Writes to the tables that feed the payload already bump it through
+// triggers (migration 00015); this is for a caller that changed something
+// those triggers cannot see. The Redis key is what earlier releases cached the
+// payload under - dropped so a process still running one stops serving it.
 func (s *Store) InvalidateNodeConfigPayload(ctx context.Context) error {
-	return s.Cache.Del(ctx, cache.NodeConfigKey())
+	_, err := s.Queries.BumpDataVersion(ctx, dataVersionNodeConfig)
+	if delErr := s.Cache.Del(ctx, cache.NodeConfigKey()); err == nil {
+		err = delErr
+	}
+	return err
 }

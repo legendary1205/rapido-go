@@ -7,13 +7,18 @@ import { queryKeys } from "utils/queryClient";
 // reinstated fleet sections - both read this exact query key, so react-query
 // serves them from one cache entry/poller instead of two independent 30s
 // pollers hitting the backend for the same snapshot.
-export const useMonitoringQuery = () =>
+//
+// GET /monitoring is sudo-only, so a caller that can render for a reseller
+// admin passes `enabled: false` for them - a disabled query never fires, and
+// with it never produces a 403 in the browser or in the panel's logs.
+export const useMonitoringQuery = (enabled = true) =>
   useQuery({
     queryKey: queryKeys.monitoring,
     queryFn: () => fetch<MonitoringSnapshot>("/monitoring"),
     // Matches the collector's own write cadence - asking more often than
     // that would just re-render the same numbers.
     refetchInterval: 30_000,
+    enabled,
   });
 
 // Fetched on demand (enabled) rather than eagerly for every card, since a

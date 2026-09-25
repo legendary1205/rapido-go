@@ -37,6 +37,8 @@ import (
 	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/reviewjob"
 	"github.com/legendary1205/rapido-go/internal/telegram"
+	"github.com/legendary1205/rapido-go/internal/telegrambot"
+	"github.com/legendary1205/rapido-go/internal/usagejob"
 )
 
 func main() {
@@ -48,12 +50,16 @@ func main() {
 	}
 }
 
+// version is stamped at build time (-ldflags "-X main.version=..." in
+// docker/Dockerfile.panel); "dev" means a plain `go build`.
+var version = "dev"
+
 func run(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	logger.Info("starting", "role", cfg.Role)
+	logger.Info("starting", "role", cfg.Role, "version", version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -112,11 +118,18 @@ func run(logger *slog.Logger) error {
 	resellerAPIClient := resellerapi.NewClient(&http.Client{Timeout: 3 * time.Second})
 	hostMetricsTracker := hostmetrics.NewPreviousTracker()
 
+	// The Telegram admin console runs only in the backend singleton; it is
+	// handed the router below once that exists (SetAPI).
+	var telegramConsole *telegrambot.Console
 	if cfg.Role == config.RoleBackend {
 		// Its own client: see internal/resellerusagejob for why a usage
 		// report must not share the 3s timeout of the per-request lookups.
 		usageReporter := resellerapi.NewClient(&http.Client{Timeout: 30 * time.Second})
-		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, usageReporter, settingsFn, logger)
+		telegramConsole = telegrambot.New(telegrambot.Deps{
+			Queries: queries, Cache: redisClient, Issuer: issuer, SudoUsername: cfg.SudoUsername,
+			Settings: settingsFn, Logger: logger,
+		})
+		go runAsBackendSingleton(ctx, cfg.DatabaseURL, queries, dispatcher, hostMetricsTracker, redisClient, usageReporter, settingsFn, cfg.UsageRetentionDays, telegramConsole.Run, logger)
 	}
 
 	formatFlags := httpapi.SubscriptionFormatFlags{
@@ -129,9 +142,12 @@ func run(logger *slog.Logger) error {
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
 		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags, subBranding,
 		envDefaults, dispatcher, resellerAPIClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
-		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger).WithSubscriptionURLPrefixes(cfg.SubscriptionURLPrefixes)
+		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger).WithSubscriptionURLPrefixes(cfg.SubscriptionURLPrefixes).WithNodeBinDir(cfg.NodeBinDir)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
+	if telegramConsole != nil {
+		telegramConsole.SetAPI(router)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPHost + ":" + strconv.Itoa(cfg.HTTPPort),
@@ -171,7 +187,7 @@ func run(logger *slog.Logger) error {
 // as long as its holding connection does, and a pool connection can be
 // silently recycled or closed at any time, which would release the lock
 // out from under this process without it noticing.
-func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, redisClient *cache.Client, usageReporter *resellerapi.Client, settingsFn resellerusagejob.SettingsFunc, logger *slog.Logger) {
+func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *generated.Queries, dispatcher *report.Dispatcher, hostMetricsTracker *hostmetrics.PreviousTracker, redisClient *cache.Client, usageReporter *resellerapi.Client, settingsFn resellerusagejob.SettingsFunc, usageRetentionDays int, runConsole func(context.Context), logger *slog.Logger) {
 	const retryInterval = 10 * time.Second
 	for {
 		select {
@@ -218,6 +234,11 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		// Bills resellers through the reseller bot. Singleton-only so the
 		// same queued traffic is never sent by two processes at once.
 		go resellerusagejob.Run(ctx, queries, usageReporter, settingsFn, redisClient, logger, 10*time.Second)
+		// Prunes node_user_usages hourly (USAGE_RETENTION_DAYS, 0 = keep all).
+		go usagejob.Run(ctx, queries, redisClient, usageRetentionDays, logger, time.Hour)
+		// Long polling: two pollers on one bot token fight, so it lives here.
+		// Dormant until a Telegram bot token is configured.
+		go runConsole(ctx)
 		reviewjob.Run(ctx, queries, dispatcher, redisClient, logger, 10*time.Second)
 
 		// reviewjob.Run only returns once ctx is canceled (process shutdown) -

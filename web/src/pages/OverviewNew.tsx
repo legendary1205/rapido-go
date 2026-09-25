@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
+import { useIsSudo } from "hooks/useCurrentAdminQuery";
 import { useSystemStatsQuery } from "hooks/useSystemStatsQuery";
 import { useSystemUsageHistoryQuery } from "hooks/useSystemUsageHistoryQuery";
 import { useMonitoringQuery } from "hooks/useMonitoringQuery";
@@ -109,9 +110,13 @@ const FleetChip: FC<{ host: MonitoringHost }> = ({ host }) => {
   );
 };
 
+// Both fleet sections read GET /monitoring, which is sudo-only: they are only
+// mounted for a sudo admin (OverviewContent), and the query itself is also
+// told so, so a reseller's browser never issues a request that must 403.
 const FleetStatus: FC = () => {
   const { t } = useTranslation();
-  const { data: snap } = useMonitoringQuery();
+  const isSudo = useIsSudo();
+  const { data: snap } = useMonitoringQuery(isSudo);
   const hosts = snap?.hosts ?? [];
 
   return (
@@ -165,7 +170,8 @@ const NodeResourceCard: FC<{ host: MonitoringHost }> = ({ host }) => {
 // click away, not a second copy of it here.
 const FleetHealth: FC = () => {
   const { t } = useTranslation();
-  const { data: snap } = useMonitoringQuery();
+  const isSudo = useIsSudo();
+  const { data: snap } = useMonitoringQuery(isSudo);
   const hosts = snap?.hosts ?? [];
 
   if (hosts.length === 0) return null;
@@ -193,6 +199,7 @@ const FleetHealth: FC = () => {
 const OverviewContent: FC = () => {
   const { t } = useTranslation();
 
+  const isSudo = useIsSudo();
   const { data: stats, isLoading: statsLoading } = useSystemStatsQuery();
   const { data: history, isLoading: historyLoading } =
     useSystemUsageHistoryQuery(14);
@@ -225,15 +232,17 @@ const OverviewContent: FC = () => {
       <h1 className="mb-1 text-2xl font-bold">{t("rapido.overview")}</h1>
       <p className="mb-6 text-sm text-rapido-muted">{t("rapido.overviewSubtitle")}</p>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className={`grid grid-cols-1 gap-4 ${isSudo ? "lg:grid-cols-3" : ""}`}>
         <HeroStat
           label={t("rapido.onlineNow")}
           value={statsLoading ? "…" : numberWithCommas(stats?.online_users ?? 0) ?? "0"}
           sub={t("rapido.activeLast24h")}
         />
-        <div className="lg:col-span-2">
-          <FleetStatus />
-        </div>
+        {isSudo && (
+          <div className="lg:col-span-2">
+            <FleetStatus />
+          </div>
+        )}
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -342,7 +351,7 @@ const OverviewContent: FC = () => {
         </Card>
       </div>
 
-      <FleetHealth />
+      {isSudo && <FleetHealth />}
     </div>
   );
 };

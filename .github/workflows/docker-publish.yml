@@ -1,9 +1,13 @@
 name: Build and publish Docker images
 
-# Pushes ghcr.io/<owner>/rapido-go-panel and rapido-go-node on every push
-# to master, tagged both :latest and :<short-sha> - this is the ONLY way
-# the images referenced by docker-compose.prod.yml/docker-compose.node.yml
-# get built; there is no local/manual build step for a real deployment.
+# Pushes ghcr.io/<owner>/rapido-go-panel on every push to master, tagged both
+# :latest and :<sha> - this is the ONLY way the image referenced by
+# docker-compose.prod.yml gets built; there is no local/manual build step for
+# a real deployment.
+#
+# The panel image is multi-arch (linux/amd64 + linux/arm64) and carries the
+# node agent binaries it serves to nodes (docker/Dockerfile.panel). Release
+# tags (v*) are built by release.yml.
 on:
   push:
     branches: [master]
@@ -17,23 +21,56 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash -n rapido-go.sh && bash -n rapido-go-node.sh && bash -n migrate-from-rapido.sh
-      - run: bash scripts/installer_test.sh
 
-  build-and-push:
+      - name: Syntax-check the shell scripts
+        run: |
+          for f in rapido-go.sh migrate-from-rapido.sh scripts/installer_test.sh; do
+            bash -n "$f"
+            echo "ok  $f"
+          done
+
+      - name: Installer tests
+        run: bash scripts/installer_test.sh
+
+      - name: Render the installer's .env and Caddyfile
+        run: |
+          sed '/^main "\$@"$/d' rapido-go.sh > /tmp/rapido-go-lib.sh
+          bash -c '. /tmp/rapido-go-lib.sh
+            RAPIDO_DOMAIN=panel.example.com RAPIDO_EXTRA_DOMAINS=panel2.example.com RAPIDO_SUB_DOMAIN=sub.example.com,sub2.example.com
+            render_env dbpw admin "pa\$\$word-123" 256MB 614MB 203.0.113.7 > /tmp/ci.env
+            render_caddyfile > /tmp/Caddyfile'
+
+      - name: Validate the compose file with that .env
+        run: docker compose -f docker-compose.prod.yml --env-file /tmp/ci.env config -q
+
+      - name: Validate the generated Caddyfile and the example
+        run: |
+          docker run --rm -v /tmp/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+          docker run --rm -v "$PWD/Caddyfile.example:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+  build-panel:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - image: rapido-go-panel
-            dockerfile: docker/Dockerfile.panel
-          - image: rapido-go-node
-            dockerfile: docker/Dockerfile.node
+    # One publisher of the panel image's :latest at a time - a v* tag pushed
+    # right after a master commit runs release.yml too, and this keeps the two
+    # from racing over the tag.
+    concurrency:
+      group: panel-image
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version stamp (short commit sha)
+        id: version
+        run: echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # The final alpine stage of the multi-arch build runs once per target
+      # architecture; the Go and Node stages cross-compile natively.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - uses: docker/login-action@v3
         with:
@@ -46,10 +83,14 @@ jobs:
       - uses: docker/build-push-action@v5
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: docker/Dockerfile.panel
+          platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ghcr.io/${{ github.repository_owner }}/rapido-go-panel:latest
+            ghcr.io/${{ github.repository_owner }}/rapido-go-panel:${{ github.sha }}
+          cache-from: type=gha,scope=panel
+          cache-to: type=gha,mode=max,scope=panel

@@ -171,3 +171,28 @@ export type CoreConfig = {
   dns_servers: DNSServer[];
   updated_at?: string | null;
 };
+
+// A node's own layer over the fleet CoreConfig above (nodes.core_overrides,
+// see coreOverridesDTO in internal/httpapi/nodeprofile.go). Every key is
+// optional and only that node is affected; the panel checks that the merged
+// result is a valid config before saving it.
+export const NODE_CORE_OVERRIDE_KEYS = [
+  "log_level",
+  "sniff_enabled",
+  "dns_servers",
+  "outbounds",
+  "routing_rules_first",
+] as const;
+export type NodeCoreOverrideKey = (typeof NODE_CORE_OVERRIDE_KEYS)[number];
+
+export type NodeCoreOverrides = {
+  log_level?: LogLevel;
+  sniff_enabled?: boolean;
+  /** Replaces the fleet list outright; [] means "no DNS servers on this node". */
+  dns_servers?: DNSServer[];
+  /** Merged by tag: the same tag replaces the fleet outbound, a new tag is
+   * appended. A tag can never remove one. */
+  outbounds?: Outbound[];
+  /** Placed before the fleet's routing rules, so they win for what they match. */
+  routing_rules_first?: RoutingRule[];
+};

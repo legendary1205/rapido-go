@@ -158,7 +158,12 @@ func (h *Handler) handleLogin(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"detail": "Incorrect username or password"})
 			return
 		}
-		if !auth.VerifyPassword(password, admin.HashedPassword) {
+		// Memoized bcrypt: reseller bots log in before every call and one
+		// misconfigured client retried the same wrong password ~190x/hour, at
+		// ~280 ms of CPU each. The verdict is keyed on the stored hash too, so
+		// a password change is picked up at once; a wrong attempt still lands
+		// in the failure limiter and the login report below.
+		if !h.loginVerifier.Verify(username, password, admin.HashedPassword) {
 			c.Set(contextLoginErrorKey, "wrong password")
 			h.recordFailedLogin(ctx, ip)
 			h.reports.Login(ctx, username, ip, loginStatusFailed)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/legendary1205/rapido-go/internal/nodecore"
@@ -13,38 +14,102 @@ func vlessInbound(tag string, users ...userSpec) inboundSpec {
 }
 
 func TestDiffPulledConfigFirstPullAlwaysRestarts(t *testing.T) {
-	needsRestart, tags := diffPulledConfig(nil, pulledConfig{Inbounds: []inboundSpec{vlessInbound("in1")}})
-	if !needsRestart || tags != nil {
-		t.Errorf("first pull: needsRestart=%v tags=%v, want true/nil", needsRestart, tags)
+	needsRestart, hot := diffPulledConfig(nil, pulledConfig{Inbounds: []inboundSpec{vlessInbound("in1")}})
+	if !needsRestart || hot != nil {
+		t.Errorf("first pull: needsRestart=%v hot=%v, want true/nil", needsRestart, hot)
 	}
 }
 
 func TestDiffPulledConfigIdenticalIsNoOp(t *testing.T) {
 	cfg := pulledConfig{Version: "v1", Inbounds: []inboundSpec{vlessInbound("in1", userSpec{Name: "a", UUID: "u1"})}}
-	needsRestart, tags := diffPulledConfig(&cfg, cfg)
-	if needsRestart || len(tags) != 0 {
-		t.Errorf("identical config: needsRestart=%v tags=%v, want false/empty", needsRestart, tags)
+	needsRestart, hot := diffPulledConfig(&cfg, cfg)
+	if needsRestart || len(hot) != 0 {
+		t.Errorf("identical config: needsRestart=%v hot=%v, want false/empty", needsRestart, hot)
 	}
 }
 
 func TestDiffPulledConfigOnlyVlessUsersChangedHotApplies(t *testing.T) {
 	old := pulledConfig{Inbounds: []inboundSpec{vlessInbound("in1", userSpec{Name: "a", UUID: "u1"})}}
 	next := pulledConfig{Inbounds: []inboundSpec{vlessInbound("in1", userSpec{Name: "a", UUID: "u1"}, userSpec{Name: "b", UUID: "u2"})}}
-	needsRestart, tags := diffPulledConfig(&old, next)
+	needsRestart, hot := diffPulledConfig(&old, next)
 	if needsRestart {
 		t.Fatal("only a vless inbound's users changed - want a hot apply, not a restart")
 	}
-	if len(tags) != 1 || tags[0] != "in1" {
-		t.Errorf("tags = %v, want [in1]", tags)
+	if want := []userUpdate{{Tag: "in1", Protocol: "vless"}}; !reflect.DeepEqual(hot, want) {
+		t.Errorf("hot = %v, want %v", hot, want)
 	}
 }
 
-func TestDiffPulledConfigNonVlessUsersChangedNeedsRestart(t *testing.T) {
-	old := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "trojan", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p1"}}}}}
-	next := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "trojan", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p2"}}}}}
-	needsRestart, _ := diffPulledConfig(&old, next)
-	if !needsRestart {
-		t.Error("a non-vless inbound's user list changed - there is no hot-update path for it, want a restart")
+// Every protocol has a hot-update path now, so a change that is only an
+// inbound's user list must never restart the core - and must name the protocol
+// so pullOnce calls the right update.
+func TestDiffPulledConfigOnlyUsersChangedHotAppliesForEveryProtocol(t *testing.T) {
+	cases := []struct {
+		protocol string
+		before   []userSpec
+		after    []userSpec
+	}{
+		{"vless", []userSpec{{Name: "a", UUID: "u1"}}, []userSpec{{Name: "a", UUID: "u1"}, {Name: "b", UUID: "u2"}}},
+		{"vmess", []userSpec{{Name: "a", UUID: "u1"}}, []userSpec{{Name: "a", UUID: "u9"}}},
+		{"trojan", []userSpec{{Name: "a", Password: "p1"}}, []userSpec{{Name: "a", Password: "p2"}}},
+		{"trojan", []userSpec{{Name: "a", Password: "p1"}}, nil},
+		{"shadowsocks", []userSpec{{Name: "a", Password: "p1", Method: "aes-256-gcm"}}, []userSpec{{Name: "a", Password: "p1", Method: "aes-256-gcm"}, {Name: "b", Password: "p2", Method: "aes-256-gcm"}}},
+		{"shadowsocks", nil, []userSpec{{Name: "a", Password: "p1"}}},
+	}
+	for _, c := range cases {
+		old := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: c.protocol, ListenPort: 443, Users: c.before}}}
+		next := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: c.protocol, ListenPort: 443, Users: c.after}}}
+		needsRestart, hot := diffPulledConfig(&old, next)
+		if needsRestart {
+			t.Errorf("%s: only the user list changed - want a hot apply, not a restart", c.protocol)
+			continue
+		}
+		if want := []userUpdate{{Tag: "in1", Protocol: c.protocol}}; !reflect.DeepEqual(hot, want) {
+			t.Errorf("%s: hot = %v, want %v", c.protocol, hot, want)
+		}
+	}
+}
+
+func TestDiffPulledConfigHotListNamesEachChangedInboundWithItsOwnProtocol(t *testing.T) {
+	inbounds := func(trojanPass, vmessID string) []inboundSpec {
+		return []inboundSpec{
+			vlessInbound("untouched", userSpec{Name: "a", UUID: "u1"}),
+			{Tag: "t", Protocol: "trojan", ListenPort: 443, Users: []userSpec{{Name: "a", Password: trojanPass}}},
+			{Tag: "m", Protocol: "vmess", ListenPort: 444, Users: []userSpec{{Name: "a", UUID: vmessID}}},
+		}
+	}
+	needsRestart, hot := diffPulledConfig(&pulledConfig{Inbounds: inbounds("p1", "v1")}, pulledConfig{Inbounds: inbounds("p2", "v2")})
+	if needsRestart {
+		t.Fatal("only user lists changed - want a hot apply")
+	}
+	if want := []userUpdate{{Tag: "t", Protocol: "trojan"}, {Tag: "m", Protocol: "vmess"}}; !reflect.DeepEqual(hot, want) {
+		t.Errorf("hot = %v, want %v", hot, want)
+	}
+}
+
+func TestDiffPulledConfigUserChangeOnAnUnknownProtocolNeedsRestart(t *testing.T) {
+	old := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "hysteria2", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p1"}}}}}
+	next := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "hysteria2", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p2"}}}}}
+	if needsRestart, _ := diffPulledConfig(&old, next); !needsRestart {
+		t.Error("a protocol with no hot-update path changed its users - want a restart")
+	}
+}
+
+// The cipher rides on the users in the wire contract but belongs to the
+// listener: a hot update would accept the new users and silently keep the old
+// cipher, so a change of it has to restart.
+func TestDiffPulledConfigShadowsocksCipherChangeNeedsRestart(t *testing.T) {
+	ss := func(method string) pulledConfig {
+		return pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "shadowsocks", ListenPort: 8388, Users: []userSpec{{Name: "a", Password: "p1", Method: method}}}}}
+	}
+	old, next := ss("aes-128-gcm"), ss("aes-256-gcm")
+	if needsRestart, _ := diffPulledConfig(&old, next); !needsRestart {
+		t.Error("the shadowsocks cipher changed - want a restart, a running listener cannot swap it")
+	}
+	// Spelling out the default is not a change.
+	old, next = ss(""), ss(defaultShadowsocksMethod)
+	if needsRestart, hot := diffPulledConfig(&old, next); needsRestart || len(hot) != 1 {
+		t.Errorf("default cipher spelled out: needsRestart=%v hot=%v, want a hot apply", needsRestart, hot)
 	}
 }
 

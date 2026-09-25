@@ -25,8 +25,8 @@ func stringList(t *testing.T, v interface{}) []string {
 // says.
 func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T) {
 	router, token, handler := newTestRouterAndHandler(t)
-	handler.subURLPrefix = "https://sub.officialvpn.shop"
-	handler.WithSubscriptionURLPrefixes([]string{"https://sub.ts01.ir/", "https://sub.officialvpn.shop"})
+	handler.subURLPrefix = "https://sub.old.example"
+	handler.WithSubscriptionURLPrefixes([]string{"https://sub.new.example/", "https://sub.old.example"})
 
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "SubURLs VLESS", "protocol": "vless"}})
 	created := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
@@ -34,12 +34,12 @@ func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T
 	})
 
 	single, _ := created.Body["subscription_url"].(string)
-	if !strings.HasPrefix(single, "https://sub.ts01.ir/sub/") {
+	if !strings.HasPrefix(single, "https://sub.new.example/sub/") {
 		t.Fatalf("subscription_url = %q, want the first listed address (what bots hand to customers)", single)
 	}
 	tok := single[strings.LastIndex(single, "/")+1:]
 
-	want := []string{"https://sub.ts01.ir/sub/" + tok, "https://sub.officialvpn.shop/sub/" + tok}
+	want := []string{"https://sub.new.example/sub/" + tok, "https://sub.old.example/sub/" + tok}
 	if got := stringList(t, created.Body["subscription_urls"]); !reflect.DeepEqual(got, want) {
 		t.Errorf("create: subscription_urls = %v, want %v (trailing slash trimmed, new address first)", got, want)
 	}
@@ -53,11 +53,11 @@ func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T
 	// fresh one; what must hold is that its two addresses share that token.
 	first := users[0].(map[string]interface{})
 	listSingle, _ := first["subscription_url"].(string)
-	if !strings.HasPrefix(listSingle, "https://sub.ts01.ir/sub/") {
+	if !strings.HasPrefix(listSingle, "https://sub.new.example/sub/") {
 		t.Errorf("list: subscription_url = %q, want the first listed address", listSingle)
 	}
 	listTok := listSingle[strings.LastIndex(listSingle, "/")+1:]
-	wantList := []string{"https://sub.ts01.ir/sub/" + listTok, "https://sub.officialvpn.shop/sub/" + listTok}
+	wantList := []string{"https://sub.new.example/sub/" + listTok, "https://sub.old.example/sub/" + listTok}
 	if got := stringList(t, first["subscription_urls"]); !reflect.DeepEqual(got, wantList) {
 		t.Errorf("list: subscription_urls = %v, want %v", got, wantList)
 	}
@@ -74,7 +74,7 @@ func TestUserResponseListsEverySubscriptionAddressInConfiguredOrder(t *testing.T
 
 func TestUserResponseSubscriptionAddressListFallsBackToTheSingleAddress(t *testing.T) {
 	router, token, handler := newTestRouterAndHandler(t)
-	handler.subURLPrefix = "https://sub.officialvpn.shop"
+	handler.subURLPrefix = "https://sub.old.example"
 
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{{"tag": "SubURLs VLESS", "protocol": "vless"}})
 	created := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{

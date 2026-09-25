@@ -1,6 +1,6 @@
 -- name: CreateNode :one
-INSERT INTO nodes (name, address, port, api_port, usage_coefficient, report_secret)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO nodes (name, address, port, api_port, usage_coefficient, report_secret, inbound_tags, listen_ports, core_overrides)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetNodeByID :one
@@ -26,7 +26,10 @@ UPDATE nodes SET
     usage_coefficient = COALESCE(sqlc.narg('usage_coefficient')::float8, usage_coefficient),
     status = CASE WHEN sqlc.narg('disabled')::bool IS TRUE THEN 'disabled'
                   WHEN sqlc.narg('disabled')::bool IS FALSE AND status = 'disabled' THEN 'connecting'
-                  ELSE status END
+                  ELSE status END,
+    inbound_tags = sqlc.narg('inbound_tags')::text[],
+    listen_ports = sqlc.narg('listen_ports')::int[],
+    core_overrides = sqlc.arg('core_overrides')::jsonb
 WHERE id = $1
 RETURNING *;
 

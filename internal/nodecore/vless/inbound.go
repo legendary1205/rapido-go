@@ -1,8 +1,10 @@
 // Package vless is a minimal fork of sing-box's protocol/vless inbound
 // (github.com/sagernet/sing-box@v1.14.0, protocol/vless/inbound.go),
-// copied verbatim except for one addition: UpdateUsers, an exported method
+// copied verbatim except for three additions: UpdateUsers, an exported method
 // that calls the same underlying sing-vmess vless.Service.UpdateUsers the
-// original constructor already calls internally.
+// original constructor already calls internally; per-user byte counting on
+// every accepted connection; and userkey.Key user identities in place of
+// option-slice indexes.
 //
 // Why this fork exists: sing-box's own Inbound keeps that service on an
 // unexported field, so a caller outside this package - i.e. the rest of
@@ -41,12 +43,12 @@ import (
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
-	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
 	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
+	"github.com/legendary1205/rapido-go/internal/nodecore/userkey"
 )
 
 func RegisterInbound(registry *inbound.Registry) {
@@ -61,8 +63,7 @@ type Inbound struct {
 	router     adapter.ConnectionRouterEx
 	logger     logger.ContextLogger
 	listener   *listener.Listener
-	users      []option.VLESSUser
-	service    *vless.Service[int]
+	service    *vless.Service[*userkey.Key]
 	tlsConfig  tls.ServerConfig
 	transport  adapter.V2RayServerTransport
 	references []string
@@ -75,7 +76,6 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		ctx:        ctx,
 		router:     uot.NewRouter(router, logger),
 		logger:     logger,
-		users:      options.Users,
 		trafficMgr: traffic.FromContext(ctx),
 	}
 	var err error
@@ -83,15 +83,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, err
 	}
-	service := vless.NewService[int](logger, adapter.NewUpstreamContextHandler(inbound.newConnectionEx, inbound.newPacketConnectionEx))
-	service.UpdateUsers(common.MapIndexed(inbound.users, func(index int, _ option.VLESSUser) int {
-		return index
-	}), common.Map(inbound.users, func(it option.VLESSUser) string {
-		return it.UUID
-	}), common.Map(inbound.users, func(it option.VLESSUser) string {
-		return it.Flow
-	}))
-	inbound.service = service
+	inbound.service = vless.NewService[*userkey.Key](logger, adapter.NewUpstreamContextHandler(inbound.newConnectionEx, inbound.newPacketConnectionEx))
+	inbound.UpdateUsers(options.Users)
 	if options.TLS != nil {
 		inbound.tlsConfig, err = tls.NewServerWithOptions(tls.ServerOptions{
 			Context: ctx,
@@ -131,10 +124,12 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 // is exactly what NewInbound does internally to seed the initial user list;
 // calling it again is what sing-vmess's vless.Service is designed to
 // support, sing-box's own adapter.Inbound just never exposes the hook.
+//
+// Users are keyed by userkey.Key rather than upstream's index into the option
+// slice; see that package for why.
 func (h *Inbound) UpdateUsers(users []option.VLESSUser) {
-	h.users = users
 	h.service.UpdateUsers(
-		common.MapIndexed(users, func(index int, _ option.VLESSUser) int { return index }),
+		userkey.Build(common.Map(users, func(it option.VLESSUser) string { return it.Name })),
 		common.Map(users, func(it option.VLESSUser) string { return it.UUID }),
 		common.Map(users, func(it option.VLESSUser) string { return it.Flow }),
 	)
@@ -209,16 +204,14 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
-	userIndex, loaded := auth.UserFromContext[int](ctx)
+	key, loaded := auth.UserFromContext[*userkey.Key](ctx)
 	if !loaded {
 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
 		return
 	}
-	user := h.users[userIndex].Name
-	if user == "" {
-		user = F.ToString(userIndex)
-	} else {
-		metadata.User = user
+	user := key.Label
+	if key.Name != "" {
+		metadata.User = key.Name
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	if h.trafficMgr != nil {
@@ -230,16 +223,14 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
 func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
-	userIndex, loaded := auth.UserFromContext[int](ctx)
+	key, loaded := auth.UserFromContext[*userkey.Key](ctx)
 	if !loaded {
 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
 		return
 	}
-	user := h.users[userIndex].Name
-	if user == "" {
-		user = F.ToString(userIndex)
-	} else {
-		metadata.User = user
+	user := key.Label
+	if key.Name != "" {
+		metadata.User = key.Name
 	}
 	if metadata.Destination.Fqdn == packetaddr.SeqPacketMagicAddress {
 		metadata.Destination = M.Socksaddr{}

@@ -36,6 +36,7 @@ func (h *Handler) requireNodeSecret(c *gin.Context) {
 		return
 	}
 	c.Set(nodeIDContextKey, node.ID)
+	c.Set(nodeRowContextKey, node)
 	c.Next()
 }
 

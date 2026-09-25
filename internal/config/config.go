@@ -102,10 +102,21 @@ type Config struct {
 	// BackupDir is where pg_dump output lands (internal/httpapi/backup.go) -
 	// same relative-to-working-directory convention as CertsDir/DashboardDir.
 	BackupDir string
+
+	// NodeBinDir holds the node builds (rapido-go-node-linux-<arch>, their
+	// .sha256 files and VERSION) that the panel serves to nodes for install
+	// and self-update. The panel image ships them at /app/nodebin.
+	NodeBinDir string
 	// BackupKeep mirrors DB_BACKUP_KEEP in the current Python system: how
 	// many of the most recent backups survive automatic pruning after each
 	// new one is created.
 	BackupKeep int
+
+	// UsageRetentionDays is how long node_user_usages rows (one per user per
+	// node per hour) are kept before the backend job deletes them; 0 keeps
+	// them forever. Reported totals come from counters on users/admins/nodes,
+	// so this only limits how far back a ?start= window can reach.
+	UsageRetentionDays int
 
 	// --- Integration env defaults (overridable per-row via PUT
 	// /api/settings/integrations - see internal/integrationsettings) ---
@@ -162,6 +173,7 @@ func Load() (*Config, error) {
 		V2raySubscriptionTemplateFile: getEnv("V2RAY_SUBSCRIPTION_TEMPLATE", ""),
 		DashboardDir:                  getEnv("DASHBOARD_DIR", "./web/dist"),
 		BackupDir:                     getEnv("BACKUP_DIR", "./db_backups"),
+		NodeBinDir:                    getEnv("NODE_BIN_DIR", "/app/nodebin"),
 
 		ResellerApiSecret:  getEnv("RESELLER_API_SECRET", ""),
 		ResellerApiUrl:     getEnv("RESELLER_API_URL", "http://127.0.0.1:8080"),
@@ -222,6 +234,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: invalid DB_BACKUP_KEEP: %w", err)
 	}
 	cfg.BackupKeep = backupKeep
+
+	usageRetention, err := strconv.Atoi(getEnv("USAGE_RETENTION_DAYS", "90"))
+	if err != nil || usageRetention < 0 {
+		return nil, fmt.Errorf("config: USAGE_RETENTION_DAYS must be a non-negative integer (0 disables)")
+	}
+	cfg.UsageRetentionDays = usageRetention
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("config: DATABASE_URL is required")

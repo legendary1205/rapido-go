@@ -1,8 +1,10 @@
 // Package nodecore wraps a sing-box instance for Rapido's node agent, using
-// a locally-forked VLESS inbound (internal/nodecore/vless) in place of
-// sing-box's own so users can be hot-added/removed on a running listener -
-// see that package's doc comment for why. Every other protocol/outbound
-// registered here is unmodified upstream sing-box code.
+// locally-forked VLESS, VMess, Trojan and Shadowsocks inbounds
+// (internal/nodecore/{vless,vmess,trojan,shadowsocks}) in place of sing-box's
+// own so users can be hot-added/removed on a running listener and every
+// connection's bytes are counted per user - see the vless package's doc
+// comment for why. Every other protocol/outbound registered here is
+// unmodified upstream sing-box code.
 package nodecore
 
 import (
@@ -26,18 +28,22 @@ import (
 	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
 
+	forkedshadowsocks "github.com/legendary1205/rapido-go/internal/nodecore/shadowsocks"
+	forkedtrojan "github.com/legendary1205/rapido-go/internal/nodecore/trojan"
 	forkedvless "github.com/legendary1205/rapido-go/internal/nodecore/vless"
+	forkedvmess "github.com/legendary1205/rapido-go/internal/nodecore/vmess"
 )
 
-// InboundRegistry registers only the protocols Rapido actually serves
-// (vmess/trojan/shadowsocks from upstream sing-box, vless from the local
-// fork) - not sing-box's full protocol/transport surface (tun, socks,
-// http proxy, WireGuard, etc.), none of which this node needs.
+// InboundRegistry registers only the protocols Rapido actually serves, all
+// from the local forks - not sing-box's full protocol/transport surface (tun,
+// socks, http proxy, WireGuard, etc.), none of which this node needs. The
+// upstream vmess/trojan/shadowsocks packages are still imported here, but only
+// for their outbounds.
 func InboundRegistry() *inbound.Registry {
 	registry := inbound.NewRegistry()
-	vmess.RegisterInbound(registry)
-	trojan.RegisterInbound(registry)
-	shadowsocks.RegisterInbound(registry)
+	forkedvmess.RegisterInbound(registry)
+	forkedtrojan.RegisterInbound(registry)
+	forkedshadowsocks.RegisterInbound(registry)
 	forkedvless.RegisterInbound(registry)
 	return registry
 }

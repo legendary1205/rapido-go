@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/legendary1205/rapido-go/internal/cache"
+	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 )
 
@@ -80,10 +81,8 @@ type nodeConfigInboundWire struct {
 }
 
 // nodeConfigResponse is the full payload a node self-applies - see
-// cmd/node/main.go's pull loop. Every node in the fleet is served the
-// identical payload (this schema has no per-node inbound assignment, same
-// as the current Python system), so Version is a single fleet-wide hash,
-// not per-node.
+// cmd/node/main.go's pull loop. Version is a hash of the payload's own
+// content, so nodes whose profiles produce the same payload share it.
 type nodeConfigResponse struct {
 	Version  string                  `json:"version"`
 	Inbounds []nodeConfigInboundSpec `json:"inbounds"`
@@ -117,26 +116,41 @@ func multiListenPorts(ports []int32) []uint16 {
 	return out
 }
 
-// buildNodeConfigPayload is the Go equivalent of
+// nodeConfigSnapshot is everything in the payload that is the same whichever
+// node asks: the fleet's inbounds with their user lists, each protocol's user
+// list already encoded, and the fleet core config. It is built once per data
+// version and rendered once per node profile, so several distinct profiles do
+// not each re-read and re-marshal ~10k users.
+type nodeConfigSnapshot struct {
+	version   int64 // the data version read BEFORE the queries below ran
+	builtAt   time.Time
+	inbounds  []nodeConfigInboundSpec
+	usersJSON map[string]json.RawMessage
+	core      coreConfigDTO
+}
+
+// loadNodeConfigSnapshot is the Go equivalent of
 // XRayConfig.include_db_users(): groups every active/on_hold user's proxy
 // credentials by protocol, and stuffs them into every auto-sync-eligible
 // inbound of that protocol. An inbound is one row per tag however many
 // ports its hosts use - those go out as listen_ports.
 //
-// It returns the canonical bytes it hashed to produce Version alongside the
-// payload, because those bytes are the response body bar its first field -
-// see buildNodeConfigBody. Marshalling this structure is expensive enough
-// (~14 MB in production) that handing the result back is worth the slightly
-// wider signature; the alternative was marshalling it a second time purely
-// to reproduce what this function already had in hand.
-func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigResponse, []byte, error) {
+// The core config is read straight from the table, not through its Redis
+// cache: this snapshot is stored under a data version that changes whenever
+// core_config does, and a stale cached row would defeat exactly that.
+func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*nodeConfigSnapshot, error) {
+	h.nodeConfig.snapshotLoads.Add(1)
 	inboundRows, err := h.store.Queries.ListAutoSyncInbounds(ctx)
 	if err != nil {
-		return nodeConfigResponse{}, nil, err
+		return nil, err
 	}
 	proxyRows, err := h.store.Queries.ListActiveUserProxiesForNodeConfig(ctx)
 	if err != nil {
-		return nodeConfigResponse{}, nil, err
+		return nil, err
+	}
+	coreRow, err := h.store.Queries.GetCoreConfig(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	usersByProtocol := make(map[string][]nodeConfigUserSpec)
@@ -198,30 +212,41 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 		inbounds = append(inbounds, spec)
 	}
 
-	coreRow, err := h.store.CachedGetCoreConfig(ctx)
-	if err != nil {
-		return nodeConfigResponse{}, nil, err
-	}
-	core := toCoreConfigDTO(coreRow)
-
-	payload := nodeConfigResponse{Inbounds: inbounds, Core: core}
-
-	// One encode per protocol, reused by every inbound of that protocol -
-	// see nodeConfigInboundWire for why. emptyUsers matches what the spec
-	// form emits for the `if spec.Users == nil` case set above.
-	emptyUsers := json.RawMessage("[]")
+	// One encode per protocol, reused by every inbound of that protocol - see
+	// nodeConfigInboundWire for why.
 	usersJSON := make(map[string]json.RawMessage, len(usersByProtocol))
 	for proto, list := range usersByProtocol {
 		raw, mErr := json.Marshal(list)
 		if mErr != nil {
-			return nodeConfigResponse{}, nil, mErr
+			return nil, mErr
 		}
 		usersJSON[proto] = raw
 	}
+
+	return &nodeConfigSnapshot{
+		version: version, builtAt: time.Now(),
+		inbounds: inbounds, usersJSON: usersJSON, core: toCoreConfigDTO(coreRow),
+	}, nil
+}
+
+// render produces one node profile's payload from the snapshot, together with
+// the canonical bytes it hashed to produce Version - those bytes are the
+// response body bar its first field, see nodeConfigBodyBytes. Marshalling this
+// structure is expensive enough (~14 MB in production) that handing the
+// result back is worth the slightly wider signature; the alternative was
+// marshalling it a second time purely to reproduce what this already had in
+// hand.
+func (s *nodeConfigSnapshot) render(p nodeProfile) (nodeConfigResponse, []byte, error) {
+	inbounds := p.filterInbounds(s.inbounds)
+	core := p.CoreOverrides.apply(s.core)
+	payload := nodeConfigResponse{Inbounds: inbounds, Core: core}
+
+	// emptyUsers matches what the spec form emits for an inbound with no users.
+	emptyUsers := json.RawMessage("[]")
 	wire := make([]nodeConfigInboundWire, 0, len(inbounds))
 	for i := range inbounds {
 		in := &inbounds[i]
-		users, ok := usersJSON[in.Protocol]
+		users, ok := s.usersJSON[in.Protocol]
 		if !ok {
 			users = emptyUsers
 		}
@@ -243,63 +268,113 @@ func (h *Handler) buildNodeConfigPayload(ctx context.Context) (nodeConfigRespons
 	return payload, canonical, nil
 }
 
-// buildNodeConfigBody returns the exact bytes GET /api/internal/node-config
-// answers with - identical JSON to marshalling buildNodeConfigPayload's
-// result, produced with ONE marshal instead of three.
+// buildNodeConfigPayload reads the database and renders one profile's
+// payload without touching the cache - the reference the cached path is
+// tested against.
+func (h *Handler) buildNodeConfigPayload(ctx context.Context, p nodeProfile) (nodeConfigResponse, []byte, error) {
+	snap, err := h.loadNodeConfigSnapshot(ctx, 0)
+	if err != nil {
+		return nodeConfigResponse{}, nil, err
+	}
+	return snap.render(p)
+}
+
+// nodeConfigBodyBytes returns the exact bytes GET /api/internal/node-config
+// answers with - identical JSON to marshalling the payload, produced with ONE
+// marshal instead of three.
 //
 // Why that matters: this body is ~14 MB on the production fleet (every
 // active user's credentials, repeated once per inbound of their protocol),
-// and four nodes re-pull it every few seconds. The previous shape marshalled
-// it three times per rebuild - once for the version hash, once for the cache
-// entry, once for the response - and on a cache HIT still paid a full
-// unmarshal into Go structs plus a fresh marshal out, because the cache
-// stored a typed value rather than the bytes. Measured on production, that
-// made this single endpoint 662 ms per call and the panel's largest CPU
-// consumer by far (79 s of CPU per 5 minutes, ~4x the entire user-list
-// traffic of every reseller bot combined).
+// and four nodes re-pull it every few seconds. Marshalling it once for the
+// version hash, once for the cache entry and once for the response made this
+// single endpoint 662 ms per call and the panel's largest CPU consumer by
+// far (79 s of CPU per 5 minutes, ~4x the entire user-list traffic of every
+// reseller bot combined).
 //
 // The splice is exact rather than clever: the canonical struct always
 // marshals both fields, so it always begins `{"inbounds":` - putting
 // `"version":"..."` directly after the opening brace yields byte-for-byte
 // what marshalling nodeConfigResponse produces, since Version is its first
 // field. The guard covers the impossible case rather than trusting it.
-func (h *Handler) buildNodeConfigBody(ctx context.Context) (string, error) {
-	payload, canonical, err := h.buildNodeConfigPayload(ctx)
+func nodeConfigBodyBytes(payload nodeConfigResponse, canonical []byte) ([]byte, error) {
+	if len(canonical) < 2 || canonical[0] != '{' || canonical[1] != '"' {
+		return json.Marshal(payload)
+	}
+	b := make([]byte, 0, len(canonical)+len(payload.Version)+14)
+	b = append(b, `{"version":"`...)
+	b = append(b, payload.Version...)
+	b = append(b, `",`...)
+	b = append(b, canonical[1:]...)
+	return b, nil
+}
+
+// buildNodeConfigBody is buildNodeConfigPayload plus nodeConfigBodyBytes.
+func (h *Handler) buildNodeConfigBody(ctx context.Context, p nodeProfile) (string, error) {
+	payload, canonical, err := h.buildNodeConfigPayload(ctx, p)
 	if err != nil {
 		return "", err
 	}
-	if len(canonical) < 2 || canonical[0] != '{' || canonical[1] != '"' {
-		full, mErr := json.Marshal(payload)
-		if mErr != nil {
-			return "", mErr
+	body, err := nodeConfigBodyBytes(payload, canonical)
+	return string(body), err
+}
+
+const nodeRowContextKey = "node.row"
+
+// nodeFromContext is the calling node's row: requireNodeSecret already read
+// it to authenticate, so the profile costs no second query.
+func (h *Handler) nodeFromContext(c *gin.Context) (generated.Node, error) {
+	if v, ok := c.Get(nodeRowContextKey); ok {
+		if n, ok := v.(generated.Node); ok {
+			return n, nil
 		}
-		return string(full), nil
 	}
-	var b strings.Builder
-	b.Grow(len(canonical) + len(payload.Version) + 14)
-	b.WriteString(`{"version":"`)
-	b.WriteString(payload.Version)
-	b.WriteString(`",`)
-	b.Write(canonical[1:])
-	return b.String(), nil
+	return h.store.Queries.GetNodeByID(c.Request.Context(), c.MustGet(nodeIDContextKey).(int32))
+}
+
+// etagMatches implements If-None-Match's list, weak-tag and "*" forms.
+func etagMatches(header, etag string) bool {
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" || strings.TrimPrefix(part, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // handleGetNodeConfig implements GET /api/internal/node-config - a node's
 // pull half of the config-sync mechanism (see cmd/node/main.go's pull
 // loop). Authenticated the same way as POST /api/internal/node-report
-// (requireNodeSecret), but every node receives the identical payload -
-// there's no per-node inbound assignment in this architecture, so the
-// secret only proves "this is a real node," not "which one."
+// (requireNodeSecret), which also tells it WHICH node is asking: each node
+// is served the payload of its own profile (see nodeProfile), and nodes with
+// equal profiles share one cached body.
 //
-// The cache holds the finished response body, so a hit writes bytes
-// straight to the wire - no decode, no re-encode. See buildNodeConfigBody.
+// A poll whose data version is unchanged is answered from memory - see
+// cachedNodeConfig - and a node that echoes the ETag back in If-None-Match
+// gets an empty 304 instead of the whole body again.
 func (h *Handler) handleGetNodeConfig(c *gin.Context) {
 	ctx := c.Request.Context()
-	body, err := cache.GetOrSetString(ctx, h.store.Cache, cache.NodeConfigKey(), nodeConfigCacheTTL,
-		h.buildNodeConfigBody)
+	node, err := h.nodeFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not load the node"})
+		return
+	}
+	profile, err := profileFromNode(node)
+	if err != nil {
+		// Failing closed keeps the node on the config it already runs;
+		// falling back to the default would make it serve every inbound.
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Node profile is invalid: " + err.Error()})
+		return
+	}
+	entry, err := h.cachedNodeConfig(ctx, profile)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not build node config"})
 		return
 	}
-	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
+	c.Header("ETag", entry.etag)
+	if etagMatches(c.GetHeader("If-None-Match"), entry.etag) {
+		c.AbortWithStatus(http.StatusNotModified)
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", entry.body)
 }

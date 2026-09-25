@@ -75,8 +75,8 @@ RETURNING *;
 -- name: DisableActiveUsersByAdminID :many
 -- Mirrors crud.disable_all_active_users(admin=...): every active or
 -- on_hold user under this admin goes to disabled in one statement - no
--- separate node-side dispatch needed, since node config is polled with a
--- short cache TTL (see nodeConfigCacheTTL) rather than push-invalidated.
+-- separate node-side dispatch needed, since nodes poll their config and see
+-- the change through its data version (see migration 00015).
 UPDATE users SET status = 'disabled', last_status_change = now()
 WHERE admin_id = $1 AND status IN ('active', 'on_hold')
 RETURNING *;

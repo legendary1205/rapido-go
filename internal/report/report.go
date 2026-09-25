@@ -32,8 +32,9 @@ type NotifyFlags struct {
 // Store.CachedGetIntegrationSettings already caches the underlying Postgres
 // read. This is what makes a sudo admin's PUT /api/settings/integrations
 // take effect immediately, matching every integration in Python except its
-// Telegram bot object (a restart-only limitation that doesn't exist here,
-// since this phase only sends messages and holds no persistent connection).
+// Telegram bot object (a restart-only limitation that doesn't exist here:
+// sending holds no persistent connection, and the interactive console in
+// internal/telegrambot re-resolves the same settings every ~30s).
 type SettingsFunc func(ctx context.Context) (integrationsettings.Values, error)
 
 // AdminRef and UserSummary are deliberately narrow - no db/generated

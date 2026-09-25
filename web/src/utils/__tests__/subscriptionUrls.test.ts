@@ -10,20 +10,20 @@ describe("subscriptionUrlsOf", () => {
   it("keeps the server's order, so the address listed first is shown first", () => {
     expect(
       subscriptionUrlsOf(
-        user("https://sub.officialvpn.shop/sub/T", [
-          "https://sub.ts01.ir/sub/T",
-          "https://sub.officialvpn.shop/sub/T",
+        user("https://sub.old.example/sub/T", [
+          "https://sub.new.example/sub/T",
+          "https://sub.old.example/sub/T",
         ])
       )
-    ).toEqual(["https://sub.ts01.ir/sub/T", "https://sub.officialvpn.shop/sub/T"]);
+    ).toEqual(["https://sub.new.example/sub/T", "https://sub.old.example/sub/T"]);
   });
 
   it("falls back to the single subscription_url from a backend that predates the list", () => {
-    expect(subscriptionUrlsOf(user("https://sub.officialvpn.shop/sub/T"))).toEqual([
-      "https://sub.officialvpn.shop/sub/T",
+    expect(subscriptionUrlsOf(user("https://sub.old.example/sub/T"))).toEqual([
+      "https://sub.old.example/sub/T",
     ]);
-    expect(subscriptionUrlsOf(user("https://sub.officialvpn.shop/sub/T", []))).toEqual([
-      "https://sub.officialvpn.shop/sub/T",
+    expect(subscriptionUrlsOf(user("https://sub.old.example/sub/T", []))).toEqual([
+      "https://sub.old.example/sub/T",
     ]);
   });
 
@@ -40,7 +40,7 @@ describe("subscriptionUrlsOf", () => {
 
 describe("hostOf", () => {
   it("returns the host, and the input itself when it is not a URL", () => {
-    expect(hostOf("https://sub.ts01.ir/sub/T")).toBe("sub.ts01.ir");
+    expect(hostOf("https://sub.new.example/sub/T")).toBe("sub.new.example");
     expect(hostOf("not a url")).toBe("not a url");
   });
 });

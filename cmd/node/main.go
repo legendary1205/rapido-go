@@ -1,8 +1,8 @@
 // Command node is the Rapido Go node agent: an HTTP control plane over
-// mTLS, driving a sing-box instance (internal/nodecore) with a locally
-// forked VLESS inbound that supports hot user add/remove with no listener
-// restart - see internal/nodecore/vless's doc comment for why that fork
-// exists.
+// mTLS, driving a sing-box instance (internal/nodecore) whose VLESS, VMess,
+// Trojan and Shadowsocks inbounds are local forks that support hot user
+// add/remove with no listener restart - see internal/nodecore/vless's doc
+// comment for why those forks exist.
 package main
 
 import (
@@ -27,6 +27,8 @@ import (
 	"time"
 
 	sbox "github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-shadowsocks/shadowaead"
+	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
 	"github.com/sagernet/sing/common/json/badoption"
 
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
@@ -259,6 +261,9 @@ func (s *server) startSupervisorLocked(plan nodePlan) {
 }
 
 func main() {
+	if runCLI(os.Args[1:]) {
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := loadConfig()
 	if os.Getenv("NODE_SETUP_BLOB") != "" {
@@ -339,11 +344,6 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // inboundSpec is Rapido's own wire contract for one inbound, deliberately
 // simpler than sing-box's full JSON schema (which needs a registry-aware
 // decoder) - the node translates this into option.Options directly in Go.
-// Only vless currently supports hot user updates (handleUpdateUsers below);
-// vmess/trojan/shadowsocks inbounds start fine (same upstream sing-box
-// packages, unmodified) but a user-list change on those requires a full
-// POST /start to rebuild the instance, until they get the same fork
-// treatment as vless.
 type inboundSpec struct {
 	Tag        string `json:"tag"`
 	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks
@@ -536,24 +536,76 @@ func (s *server) handleUpdateUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Protocol != "vless" {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"detail": "hot user update is only implemented for vless inbounds so far - restart with POST /start to change users on a " + req.Protocol + " inbound",
+	if !hotUpdatableProtocol(req.Protocol) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"detail": "unsupported protocol " + strconv.Quote(req.Protocol) + ": want vless, vmess, trojan or shadowsocks",
 		})
 		return
 	}
-
-	users := make([]sbox.VLESSUser, 0, len(req.Users))
-	for _, u := range req.Users {
-		users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
+	if req.Protocol == "shadowsocks" && len(req.Users) > 0 {
+		// The cipher is fixed while the listener runs; a different one would be
+		// accepted and silently not applied.
+		if running, ok := s.plan.shadowsocksMethods[tag]; ok && shadowsocksMethod(req.Users) != running {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"detail": "the cipher of a running shadowsocks inbound cannot change (running " + running + ") - restart with POST /start",
+			})
+			return
+		}
 	}
+
+	users := nodeUsers(req.Users)
 	for _, listener := range s.plan.listenerTags(tag) {
-		if err := s.node.UpdateVLESSUsers(listener, users); err != nil {
+		if err := s.node.UpdateUsers(listener, req.Protocol, users); err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"detail": err.Error()})
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"detail": "updated"})
+}
+
+// hotUpdatableProtocol reports whether an inbound of this protocol can have
+// its user list replaced on the running listener.
+func hotUpdatableProtocol(protocol string) bool {
+	switch protocol {
+	case "vless", "vmess", "trojan", "shadowsocks":
+		return true
+	}
+	return false
+}
+
+func nodeUsers(specs []userSpec) []nodecore.User {
+	users := make([]nodecore.User, len(specs))
+	for i, u := range specs {
+		users[i] = nodecore.User{Name: u.Name, UUID: u.UUID, Password: u.Password, Flow: u.Flow}
+	}
+	return users
+}
+
+// defaultShadowsocksMethod is the cipher an inbound gets when no user names
+// one. Classic AEAD, because a multi-user 2022 cipher needs a server key that
+// the panel never sends.
+const defaultShadowsocksMethod = "chacha20-ietf-poly1305"
+
+// shadowsocksMethod is the cipher a shadowsocks inbound runs: the first one any
+// user names, else the default. A multi-user inbound has one cipher for all of
+// its users, and it cannot change while the listener runs.
+func shadowsocksMethod(users []userSpec) string {
+	for _, u := range users {
+		if u.Method != "" {
+			return u.Method
+		}
+	}
+	return defaultShadowsocksMethod
+}
+
+func checkShadowsocksMethod(method string) error {
+	if slices.Contains(shadowaead_2022.List, method) {
+		return fmt.Errorf("shadowsocks method %q is a 2022 cipher, which needs a server key this node is never sent: use a classic AEAD cipher such as %s", method, defaultShadowsocksMethod)
+	}
+	if !slices.Contains(shadowaead.List, method) {
+		return fmt.Errorf("unsupported shadowsocks method %q (supported: %v)", method, shadowaead.List)
+	}
+	return nil
 }
 
 // nodePlan is what buildOptionsPlan learned while translating a config that
@@ -563,6 +615,9 @@ type nodePlan struct {
 	// listeners it expanded into. A single-port inbound is not in it - its
 	// tag is the listener's tag.
 	derivedTags map[string][]string
+	// shadowsocksMethods is the cipher each shadowsocks inbound (by its own
+	// tag) was built with.
+	shadowsocksMethods map[string]string
 	// fallbacks are the outbounds that must fail over to a direct connection
 	// when their WireGuard interface is down.
 	fallbacks []nodecore.FallbackGroup
@@ -617,7 +672,7 @@ func buildInboundTLS(in inboundSpec) *sbox.InboundTLSOptions {
 }
 
 func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
-	plan := nodePlan{derivedTags: make(map[string][]string)}
+	plan := nodePlan{derivedTags: make(map[string][]string), shadowsocksMethods: make(map[string]string)}
 	portsByTag := make(map[string][]uint16, len(req.Inbounds))
 	inbounds := make([]sbox.Inbound, 0, len(req.Inbounds))
 	for _, in := range req.Inbounds {
@@ -672,10 +727,11 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 				for _, u := range in.Users {
 					users = append(users, sbox.ShadowsocksUser{Name: u.Name, Password: u.Password})
 				}
-				method := "2022-blake3-aes-128-gcm"
-				if len(in.Users) > 0 && in.Users[0].Method != "" {
-					method = in.Users[0].Method
+				method := shadowsocksMethod(in.Users)
+				if err := checkShadowsocksMethod(method); err != nil {
+					return sbox.Options{}, nodePlan{}, fmt.Errorf("inbound %q: %w", in.Tag, err)
 				}
+				plan.shadowsocksMethods[in.Tag] = method
 				inbounds = append(inbounds, sbox.Inbound{Type: "shadowsocks", Tag: tag, Options: &sbox.ShadowsocksInboundOptions{
 					ListenOptions: listenOptions,
 					Method:        method,
@@ -1134,10 +1190,15 @@ type pulledConfig struct {
 }
 
 // pullOnce fetches the panel's current desired config and, if it differs
-// from what's currently running, applies it - hot where possible (only a
-// VLESS inbound's user list changed, using the same UpdateVLESSUsers path
-// PUT /inbounds/{tag}/users already exposes), otherwise a full stop+
-// rebuild+start. See diffPulledConfig for exactly what counts as which.
+// from what's currently running, applies it - hot where possible (only an
+// inbound's user list changed, via Node.UpdateUsers, the same path
+// PUT /inbounds/{tag}/users exposes), otherwise a full stop+rebuild+start.
+// See diffPulledConfig for exactly what counts as which.
+//
+// The request is conditional: once a config has been applied, its version goes
+// out as If-None-Match, and a 304 means nothing changed. A panel that does not
+// implement that just answers 200 with the full body, which the version
+// comparison below handles exactly as it always did.
 func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.PanelURL+"/api/internal/node-config", nil)
 	if err != nil {
@@ -1145,6 +1206,11 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.ReportSecret)
+	s.mu.Lock()
+	if s.runningLastPulledLocked() {
+		req.Header.Set("If-None-Match", `"`+s.lastPulled.Version+`"`)
+	}
+	s.mu.Unlock()
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1152,6 +1218,9 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Warn("pull config: panel rejected request", "status", resp.StatusCode)
 		return
@@ -1165,11 +1234,11 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.lastPulled != nil && s.lastPulled.Version == pulled.Version {
+	if s.runningLastPulledLocked() && s.lastPulled.Version == pulled.Version {
 		return
 	}
 
-	needsRestart, vlessTagsChanged := diffPulledConfig(s.lastPulled, pulled)
+	needsRestart, hot := diffPulledConfig(s.lastPulled, pulled)
 
 	if s.node == nil {
 		if len(pulled.Inbounds) == 0 {
@@ -1188,20 +1257,36 @@ func (s *server) pullOnce(ctx context.Context, client *http.Client, cfg config) 
 	for _, in := range pulled.Inbounds {
 		byTag[in.Tag] = in
 	}
-	for _, tag := range vlessTagsChanged {
-		in := byTag[tag]
-		users := make([]sbox.VLESSUser, 0, len(in.Users))
-		for _, u := range in.Users {
-			users = append(users, sbox.VLESSUser{Name: u.Name, UUID: u.UUID, Flow: u.Flow})
-		}
-		for _, listener := range s.plan.listenerTags(tag) {
-			if err := s.node.UpdateVLESSUsers(listener, users); err != nil {
-				s.logger.Error("pull config: hot-apply users", "tag", listener, "error", err)
+	failed := false
+	for _, update := range hot {
+		users := nodeUsers(byTag[update.Tag].Users)
+		applied := true
+		for _, listener := range s.plan.listenerTags(update.Tag) {
+			if err := s.node.UpdateUsers(listener, update.Protocol, users); err != nil {
+				s.logger.Error("pull config: hot-apply users", "tag", listener, "protocol", update.Protocol, "error", err)
+				applied = false
 			}
 		}
-		s.logger.Info("pull config: hot-applied user list", "tag", tag, "users", len(users))
+		if applied {
+			s.logger.Info("pull config: hot-applied user list", "tag", update.Tag, "protocol", update.Protocol, "users", len(users))
+		}
+		failed = failed || !applied
+	}
+	if failed {
+		// Keep the previous version so the next tick diffs against what is really
+		// running and tries again; recording this one would hide the failure.
+		return
 	}
 	s.lastPulled = &pulled
+}
+
+// runningLastPulledLocked reports whether what this node is running is
+// lastPulled: a core is up, or lastPulled asked for none. After a failed
+// restart lastPulled still names the previous config while nothing runs, and
+// "unchanged" must not be believed then - a later revert to that same version
+// would otherwise be answered 304 and leave the node down. Caller holds s.mu.
+func (s *server) runningLastPulledLocked() bool {
+	return s.lastPulled != nil && (s.node != nil || len(s.lastPulled.Inbounds) == 0)
 }
 
 // applyFullLocked stops whatever's currently running (if anything) and
@@ -1219,17 +1304,21 @@ func (s *server) applyFullLocked(pulled pulledConfig) {
 	s.logger.Info("pull config: applied full restart", "inbounds", len(pulled.Inbounds), "version", pulled.Version)
 }
 
+// userUpdate names an inbound whose user list changed and should be hot-applied.
+type userUpdate struct {
+	Tag      string
+	Protocol string
+}
+
 // diffPulledConfig decides what changed between the last applied config
 // and a newly-pulled one. needsRestart covers anything a hot update can't
 // handle: a first-ever config (old == nil), any inbound added/removed,
 // any inbound's shape changing (protocol/port/TLS - everything except its
-// user list), the fleet-wide Core section changing at all, or a non-VLESS
-// inbound's user list changing (no hot-update path exists for those
-// protocols yet - see internal/nodecore/vless's own doc comment on why
-// only VLESS has the fork this needs). When needsRestart is false,
-// vlessTags lists exactly the VLESS-tagged inbounds whose user list
-// actually changed and should be hot-applied.
-func diffPulledConfig(old *pulledConfig, next pulledConfig) (needsRestart bool, vlessTags []string) {
+// user list), the fleet-wide Core section changing at all, or a shadowsocks
+// inbound's cipher changing (a running listener cannot swap it). When
+// needsRestart is false, hot lists exactly the inbounds - of any protocol -
+// whose user list actually changed and should be hot-applied.
+func diffPulledConfig(old *pulledConfig, next pulledConfig) (needsRestart bool, hot []userUpdate) {
 	if old == nil {
 		return true, nil
 	}
@@ -1254,11 +1343,14 @@ func diffPulledConfig(old *pulledConfig, next pulledConfig) (needsRestart bool, 
 			return true, nil
 		}
 		if !reflect.DeepEqual(oldIn.Users, in.Users) {
-			if in.Protocol != "vless" {
+			if !hotUpdatableProtocol(in.Protocol) {
 				return true, nil
 			}
-			vlessTags = append(vlessTags, in.Tag)
+			if in.Protocol == "shadowsocks" && shadowsocksMethod(oldIn.Users) != shadowsocksMethod(in.Users) {
+				return true, nil
+			}
+			hot = append(hot, userUpdate{Tag: in.Tag, Protocol: in.Protocol})
 		}
 	}
-	return false, vlessTags
+	return false, hot
 }
