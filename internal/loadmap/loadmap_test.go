@@ -179,7 +179,7 @@ func TestPercentRoundsAndClamps(t *testing.T) {
 		{500, -3, 50}, //
 		{1, 3, 33},
 		{1000, 1000, 100},
-		{12.5, 25, 50}, // a mean over several nodes need not be an integer
+		{12.5, 25, 50}, // a fractional count still rounds to a percent
 	}
 	for _, c := range cases {
 		if got := Percent(c.conns, c.capacity); got != c.want {
@@ -245,8 +245,8 @@ func TestNodeMatchedByIPUsesOnlyThatNode(t *testing.T) {
 	}
 }
 
-func TestSeveralMatchingNodesUseTheMean(t *testing.T) {
-	// One name resolving to both nodes' IPs: the load is the mean of the two.
+func TestSeveralMatchingNodesUseTheSum(t *testing.T) {
+	// One name resolving to both nodes' IPs: the load is what both carry together.
 	res := newResolver(map[string][]string{"lb.example.test": {"10.0.0.1", "10.0.0.2"}})
 	inv := &fakeInventory{
 		nodes: []Node{
@@ -276,9 +276,9 @@ func TestSeveralMatchingNodesUseTheMean(t *testing.T) {
 	if len(hl.NodeIDs) != 2 || hl.NodeIDs[0] != 1 || hl.NodeIDs[1] != 2 {
 		t.Fatalf("node ids = %v, want [1 2]", hl.NodeIDs)
 	}
-	// mean(100, 301) = 200.5 -> 20% (20.05), conns rounds to 201
-	if hl.Percent != 20 || hl.Conns != 201 {
-		t.Errorf("mean load = conns %d percent %d, want 201 / 20", hl.Conns, hl.Percent)
+	// 100 + 301 = 401 of the default capacity 1000 -> 40%
+	if hl.Percent != 40 || hl.Conns != 401 {
+		t.Errorf("summed load = conns %d percent %d, want 401 / 40", hl.Conns, hl.Percent)
 	}
 }
 
@@ -293,8 +293,8 @@ func TestNoAddressMatchFallsBackToEveryNodeServingThePort(t *testing.T) {
 		2: reporting(map[int]int{20001: 300}),
 	})}
 	hl := build(newMap(inv, pres, newResolver(nil), nil)).For(7)
-	if hl == nil || !hl.Known || hl.Conns != 200 || hl.Percent != 20 {
-		t.Fatalf("want mean 200 / 20%% over both nodes, got %+v", hl)
+	if hl == nil || !hl.Known || hl.Conns != 400 || hl.Percent != 40 {
+		t.Fatalf("want the sum 400 / 40%% over both nodes, got %+v", hl)
 	}
 	if len(hl.NodeIDs) != 2 {
 		t.Errorf("node ids = %v, want both nodes", hl.NodeIDs)
@@ -471,7 +471,7 @@ func TestDNSNeverBlocksTheBuildAndFillsInAfterwards(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("build blocked on DNS")
 	}
-	if hl := s.For(7); hl == nil || len(hl.NodeIDs) != 2 || hl.Conns != 500 {
+	if hl := s.For(7); hl == nil || len(hl.NodeIDs) != 2 || hl.Conns != 1000 {
 		t.Fatalf("first miss must fall back to every serving node, got %+v", hl)
 	}
 

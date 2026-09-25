@@ -157,7 +157,7 @@ type HostLoad struct {
 
 	// Known is false when there is no usable data for this host.
 	Known   bool
-	Conns   int // rounded; the mean over NodeIDs when several serve the host
+	Conns   int // open connections on the host's port, summed over NodeIDs
 	Percent int
 	Level   Level
 	NodeIDs []int32 // nodes the number was computed from (do not modify)
@@ -395,7 +395,8 @@ func (m *Map) build(ctx context.Context) *Snapshot {
 // compute fills hl from the nodes that serve host h. A node counts when it is
 // reporting and serves the host's inbound tag and port; among those the ones
 // whose address is the host's address are used, or all of them when none is
-// (a proxied or unresolved address). Several nodes -> the mean.
+// (a proxied or unresolved address). Several nodes -> the SUM: a config's
+// crowdedness is everyone connected on it, wherever the name sends them.
 func (m *Map) compute(hl *HostLoad, h Host, nodes []Node, nodeIPs map[int32]map[string]struct{}, data PresenceData) {
 	var candidates []Node
 	for _, n := range nodes {
@@ -430,10 +431,9 @@ func (m *Map) compute(hl *HostLoad, h Host, nodes []Node, nodeIPs map[int32]map[
 		sum += data.Nodes[n.ID].Ports[h.Port]
 		ids[i] = n.ID
 	}
-	mean := float64(sum) / float64(len(use))
 	hl.Known = true
-	hl.Conns = int(math.Round(mean))
-	hl.Percent = Percent(mean, m.cfg.Capacity)
+	hl.Conns = sum
+	hl.Percent = Percent(float64(sum), m.cfg.Capacity)
 	hl.Level = LevelFor(hl.Percent)
 	hl.NodeIDs = ids
 }

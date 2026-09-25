@@ -148,7 +148,8 @@ func (r *requestLoad) remark(vars subscription.Variables, host generated.Host) (
 			if template == "" {
 				template = "{LOAD}"
 			} else {
-				template += subscription.AutoLoadSuffix
+				// A remark often ends in a space of its own; one separator is enough.
+				template = strings.TrimRight(template, " ") + subscription.AutoLoadSuffix
 			}
 		}
 	} else {
