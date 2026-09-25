@@ -14,9 +14,9 @@ import (
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 )
 
-// onlineWindow mirrors the dashboard's own 180s "online" presence window
-// (UsersTable's lastSeenOf) so the Overview hero stat and each row's
-// presence dot always agree on what "online" means.
+// onlineWindow is the legacy 180s "online" definition (users.online_at within
+// it). It is what the online count and each user's `online` flag fall back to
+// while no node is sending live presence - see presence.go.
 const onlineWindow = 180 * time.Second
 
 // hostSampleTTL bounds how often GET /api/system may read this host
@@ -158,9 +158,7 @@ func (h *Handler) handleGetSystemStats(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read system stats"})
 		return
 	}
-	online, err := h.store.Queries.CountOnlineUsersSince(ctx, generated.CountOnlineUsersSinceParams{
-		Cutoff: timestamptzFromTime(time.Now().UTC().Add(-onlineWindow)), AdminID: scopedAdminID,
-	})
+	online, err := h.onlineUsersCount(ctx, scopedAdminID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "Could not read system stats"})
 		return

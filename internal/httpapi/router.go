@@ -15,8 +15,9 @@ import (
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
-	"github.com/legendary1205/rapido-go/internal/resellerapi"
+	"github.com/legendary1205/rapido-go/internal/loadmap"
 	"github.com/legendary1205/rapido-go/internal/report"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 )
 
 type Handler struct {
@@ -34,7 +35,7 @@ type Handler struct {
 	subBranding          SubscriptionBranding
 	envDefaults          integrationsettings.Values
 	reports              *report.Dispatcher
-	resellerapi               *resellerapi.Client
+	resellerapi          *resellerapi.Client
 	loginNotifyWhitelist []string
 	hostMetricsTracker   *hostmetrics.PreviousTracker
 	logger               *slog.Logger
@@ -50,6 +51,18 @@ type Handler struct {
 	hostSampleTotal int64
 	hostSampleUsed  int64
 	hostSampleCores int
+
+	// Last online-user count per scope, reused for a second - see
+	// onlineUsersCount in presence.go.
+	onlineCache onlineCountCache
+	liveNodes   connectedNodesCache
+
+	// Per-config load (which config is least crowded) - see hostsload.go. The
+	// map is nil when there is no Redis to read node presence from.
+	loads         *loadmap.Map
+	loadIndicator bool
+	loadCapacity  int
+	sortByLoad    bool
 
 	databaseURL     string
 	backupDir       string
@@ -88,7 +101,7 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 	resellerAPIClient *resellerapi.Client, loginNotifyWhitelist []string, hostMetricsTracker *hostmetrics.PreviousTracker,
 	databaseURL, backupDir string, backupKeep int,
 	logger *slog.Logger) *Handler {
-	return &Handler{
+	h := &Handler{
 		store: store, issuer: issuer, sudoUsername: sudoUsername, sudoPassword: sudoPassword,
 		jwtSecret: jwtSecret, publicIP: publicIP, subURLPrefix: subURLPrefix,
 		clashTemplatePath: clashTemplatePath, v2rayTemplatePath: v2rayTemplatePath, formatFlags: formatFlags,
@@ -101,6 +114,9 @@ func NewHandler(store *Store, issuer *auth.TokenIssuer, sudoUsername, sudoPasswo
 		logger:          logger,
 		loginVerifier:   auth.NewVerifyCache(),
 	}
+	// The load indicator is on out of the box (CONFIG_LOAD_INDICATOR's default);
+	// WithConfigLoad applies the operator's own settings on top.
+	return h.WithConfigLoad(true, loadmap.DefaultCapacity, false)
 }
 
 // WithSubscriptionURLPrefixes sets every address a subscription is reachable
@@ -207,6 +223,7 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 
 		api.GET("/hosts", requireSudo, h.handleGetHosts)
 		api.PUT("/hosts", requireSudo, h.handlePutHosts)
+		api.GET("/hosts/load", requireSudo, h.handleGetHostsLoad)
 
 		api.POST("/user", requireAdmin, h.handleCreateUser)
 		api.GET("/users", requireAdmin, h.handleListUsers)
@@ -300,6 +317,13 @@ func NewRouter(h *Handler, logger *slog.Logger, allowedOrigins []string) *gin.En
 		// Panel -> node config pull (see handleGetNodeConfig's doc comment) -
 		// every node polls this on the same interval as node-report above.
 		api.GET("/internal/node-config", h.requireNodeSecret, h.handleGetNodeConfig)
+		// Node -> panel live channel (presence, per-port load, log streaming):
+		// Redis only, so unlike node-report any panel process can take it.
+		api.POST("/internal/node-live", h.requireNodeSecret, h.handleNodeLive)
+
+		// Live logs of the panel processes and of each node (sudo only).
+		api.GET("/logs/sources", requireSudo, h.handleLogSources)
+		api.GET("/logs", requireSudo, h.handleGetLogs)
 
 		// Panel -> panel (Gateway / multi-panel load balancer), never an
 		// admin JWT - authenticated by this panel's own gateway secret
@@ -350,6 +374,9 @@ func slogMiddleware(logger *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
+		if quietWhenOK(c.Request.URL.Path) && c.Writer.Status() < 400 {
+			return
+		}
 		logger.Info("http",
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,

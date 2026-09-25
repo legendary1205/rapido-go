@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import i18n from "locales/i18n";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,14 +15,15 @@ beforeAll(async () => {
   await i18n.changeLanguage("en");
 });
 
+// The five statuses add up to total_user, as they do on a real panel.
 const stats = {
   total_user: 9400,
   online_users: 120,
   users_active: 9000,
-  users_on_hold: 0,
-  users_disabled: 0,
-  users_expired: 0,
-  users_limited: 0,
+  users_on_hold: 200,
+  users_disabled: 20,
+  users_expired: 80,
+  users_limited: 100,
   incoming_bandwidth: 0,
   outgoing_bandwidth: 0,
 };
@@ -52,12 +53,14 @@ const snapshot = {
   ],
 };
 
+let currentStats: typeof stats = stats;
+
 const answer = (isSudo: boolean) => (url: string) => {
   switch (url) {
     case "/admin":
       return Promise.resolve({ username: "someone", is_sudo: isSudo, is_owner: false });
     case "/system":
-      return Promise.resolve(stats);
+      return Promise.resolve(currentStats);
     case "/system/usage-history?days=14":
       return Promise.resolve([]);
     case "/monitoring":
@@ -84,9 +87,13 @@ const renderOverview = () => {
 // Braces matter: a function returned from beforeEach is run as its cleanup hook.
 beforeEach(() => {
   fetchMock.mockReset();
+  currentStats = stats;
 });
 afterEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete (document as any).visibilityState;
 });
 
 describe("Overview page and sudo-only endpoints", () => {
@@ -126,5 +133,112 @@ describe("Overview page and sudo-only endpoints", () => {
     expect(await screen.findByText("Fleet status")).toBeInTheDocument();
     expect(await screen.findByText("Node resource status")).toBeInTheDocument();
     expect((await screen.findAllByText("de-node")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("Overview user status legend", () => {
+  const legend = async () => within(await screen.findByRole("list", { name: "User status breakdown" }));
+
+  it("lists every status next to the donut with its swatch, label, count and percentage", async () => {
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+
+    const items = (await legend()).getAllByRole("listitem");
+    expect(items).toHaveLength(5);
+    expect(items.map((li) => li.textContent)).toEqual([
+      "Active9,00096%",
+      "On Hold2002.1%",
+      "Limited1001.1%",
+      "Expired800.9%",
+      "Disabled200.2%",
+    ]);
+    // A swatch per row, in the same colour the donut slice uses.
+    const swatches = items.map((li) => (li.querySelector("[aria-hidden]") as HTMLElement).style.backgroundColor);
+    expect(new Set(swatches).size).toBe(5);
+    expect(swatches[0]).toBe("rgb(52, 211, 153)"); // #34d399, active
+  });
+
+  it("sits in the same wrapping flex row as the donut, so it drops under it on a narrow card", async () => {
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+    const list = await screen.findByRole("list", { name: "User status breakdown" });
+    const row = list.parentElement as HTMLElement;
+    expect(row.className).toContain("flex-wrap");
+    // The donut box is the legend's sibling, not its ancestor.
+    expect(row.querySelector(":scope > div[dir='ltr']")).not.toBeNull();
+  });
+
+  it("keeps a status with no users in the list, dimmed, so the list keeps its shape", async () => {
+    currentStats = { ...stats, users_active: 9400, users_on_hold: 0, users_limited: 0, users_expired: 0, users_disabled: 0 };
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+
+    const items = (await legend()).getAllByRole("listitem");
+    expect(items).toHaveLength(5);
+    expect(items[0].textContent).toBe("Active9,400100%");
+    expect(items[1].textContent).toBe("On Hold00%");
+    expect(items[1].className).toContain("opacity-50");
+    expect(items[0].className).not.toContain("opacity-50");
+  });
+
+  it("translates the labels", async () => {
+    await i18n.changeLanguage("ru");
+    try {
+      fetchMock.mockImplementation(answer(true));
+      renderOverview();
+      const list = await screen.findByRole("list", { name: "Распределение пользователей по статусам" });
+      expect(within(list).getAllByRole("listitem")[0].textContent).toContain(i18n.getFixedT("ru")("status.active"));
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+});
+
+describe("Overview online count", () => {
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const systemCalls = () => requested().filter((u) => u === "/system").length;
+
+  it("shows online_users from /system as the live count", async () => {
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+    const card = (await screen.findByText("Online Now")).closest("div.rounded-xl2") as HTMLElement;
+    expect(await within(card).findByText("120")).toBeInTheDocument();
+    expect(within(card).getByText("connected right now")).toBeInTheDocument();
+  });
+
+  it("refetches /system every 5 s, so the count follows connections as they open and close", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+    await advance(0);
+    expect(systemCalls()).toBe(1);
+    expect(screen.getByText("120")).toBeInTheDocument();
+
+    currentStats = { ...stats, online_users: 121 };
+    await advance(4900);
+    expect(systemCalls()).toBe(1);
+    await advance(200);
+    expect(systemCalls()).toBe(2);
+    expect(screen.getByText("121")).toBeInTheDocument();
+
+    currentStats = { ...stats, online_users: 95 };
+    await advance(5000);
+    expect(systemCalls()).toBe(3);
+    expect(screen.getByText("95")).toBeInTheDocument();
+  });
+
+  it("does not poll while the tab is hidden", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(answer(true));
+    renderOverview();
+    await advance(0);
+    expect(systemCalls()).toBe(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    await advance(30_000);
+    expect(systemCalls()).toBe(1);
   });
 });

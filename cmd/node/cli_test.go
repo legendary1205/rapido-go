@@ -78,6 +78,7 @@ func newCLIHost(t *testing.T) *cliHost {
 			CertDir:      filepath.Join(dir, "etc", "rapido-node"),
 			WireGuardDir: filepath.Join(dir, "etc", "wireguard"),
 			BBRList:      filepath.Join(dir, "proc", "tcp_available_congestion_control"),
+			Live:         filepath.Join(dir, "run", "live.json"),
 		},
 		goos: "linux", goarch: "amd64",
 		euid:  func() int { return 0 },
@@ -993,6 +994,223 @@ func TestStatusPrintsTheWholePicture(t *testing.T) {
 	h.state = func() string { return "inactive" }
 	if code := h.run("status"); code != 1 {
 		t.Errorf("status of a stopped service exited %d, want 1", code)
+	}
+}
+
+const busySyncLine = `{"time":"2026-09-25T11:30:00Z","level":"INFO","msg":"pull config: applied full restart","inbounds":2,"version":"v9"}`
+
+// A core that logs thousands of lines an hour scrolls the agent's own rare lines
+// out of any fixed tail of the journal. Status must instead have journalctl pick
+// the agent's sync lines out, over everything since the service started.
+func TestStatusFindsTheSyncLineOnABusyNode(t *testing.T) {
+	p := newCLIPanel(t, "unused")
+	h := newCLIHost(t)
+	h.seedInstalled(t, p, "NODE-BINARY-1")
+
+	noise := strings.Repeat("ERROR[0001] inbound/vless[main#20001]: process connection from 1.2.3.4:5: EOF\n", 3000)
+	var journalCalls []string
+	h.override = func(line string) (string, error, bool) {
+		switch {
+		case strings.HasPrefix(line, "systemctl show -p ActiveEnterTimestamp"):
+			return "ActiveEnterTimestamp=Fri 2026-09-25 11:00:00 UTC\n", nil, true
+		case strings.HasPrefix(line, "journalctl"):
+			journalCalls = append(journalCalls, line)
+			if strings.Contains(line, " -g ") {
+				return busySyncLine + "\n", nil, true // journalctl did the filtering
+			}
+			return noise, nil, true // a plain tail sees only the noise
+		}
+		return "", nil, false
+	}
+
+	if code := h.run("status"); code != 0 {
+		t.Fatalf("status exited %d\n%s\n%s", code, h.out, h.errOut)
+	}
+	if out := h.out.String(); !strings.Contains(out, "pull config: applied full restart inbounds=2 version=v9") {
+		t.Errorf("status did not find the sync line on a busy node:\n%s", out)
+	}
+	if len(journalCalls) != 1 {
+		t.Fatalf("journalctl ran %d times, want once: %v", len(journalCalls), journalCalls)
+	}
+	call := journalCalls[0]
+	for _, want := range []string{"-u " + unitName, "--since 2026-09-25 11:00:00", ` -g "msg":"(pull config|push report)`} {
+		if !strings.Contains(call, want) {
+			t.Errorf("journalctl call lacks %q: %s", want, call)
+		}
+	}
+	if strings.Contains(call, " -n ") {
+		t.Errorf("journalctl call limits lines next to --since, which drops the wrong end on some versions: %s", call)
+	}
+}
+
+// A journalctl too old for -g (or built without pattern matching) cannot filter;
+// status then reads a long tail and filters it itself.
+func TestStatusFallsBackWhenJournalctlHasNoGrep(t *testing.T) {
+	p := newCLIPanel(t, "unused")
+	h := newCLIHost(t)
+	h.seedInstalled(t, p, "NODE-BINARY-1")
+
+	tail := strings.Repeat("ERROR[0001] some core noise\n", 2000) + busySyncLine + "\n" + strings.Repeat("ERROR[0002] more noise\n", 500)
+	var journalCalls []string
+	h.override = func(line string) (string, error, bool) {
+		switch {
+		case strings.HasPrefix(line, "systemctl show -p ActiveEnterTimestamp"):
+			return "ActiveEnterTimestamp=Fri 2026-09-25 11:00:00 UTC\n", nil, true
+		case strings.HasPrefix(line, "journalctl"):
+			journalCalls = append(journalCalls, line)
+			if strings.Contains(line, " -g ") {
+				return "journalctl: invalid option -- 'g'\n", errors.New("exit status 1"), true
+			}
+			return tail, nil, true
+		}
+		return "", nil, false
+	}
+
+	if code := h.run("status"); code != 0 {
+		t.Fatalf("status exited %d\n%s\n%s", code, h.out, h.errOut)
+	}
+	if out := h.out.String(); !strings.Contains(out, "pull config: applied full restart") {
+		t.Errorf("status lost the sync line when -g was unavailable:\n%s", out)
+	}
+	if len(journalCalls) != 2 || !strings.Contains(journalCalls[1], "-n 50000") || strings.Contains(journalCalls[1], " -g ") {
+		t.Errorf("journalctl calls = %v, want the -g attempt and then a plain long tail", journalCalls)
+	}
+}
+
+// "No entries" is journalctl's answer, not a reason to try again.
+func TestStatusNoSyncLinesIsAnAnswer(t *testing.T) {
+	p := newCLIPanel(t, "unused")
+	h := newCLIHost(t)
+	h.seedInstalled(t, p, "NODE-BINARY-1")
+	var journalCalls int
+	h.override = func(line string) (string, error, bool) {
+		switch {
+		case strings.HasPrefix(line, "systemctl show -p ActiveEnterTimestamp"):
+			return "ActiveEnterTimestamp=\n", nil, true // never active: no --since
+		case strings.HasPrefix(line, "journalctl"):
+			journalCalls++
+			if !strings.Contains(line, "-n 3000") || strings.Contains(line, "--since") {
+				t.Errorf("without a start time the read is a bounded tail: %s", line)
+			}
+			return "-- No entries --\n", errors.New("exit status 1"), true
+		}
+		return "", nil, false
+	}
+	h.run("status")
+	if out := h.out.String(); !strings.Contains(out, "nothing logged yet") {
+		t.Errorf("status output:\n%s", out)
+	}
+	if journalCalls != 1 {
+		t.Errorf("journalctl ran %d times, want 1", journalCalls)
+	}
+}
+
+func TestServiceStartSinceParsesSystemctlOutput(t *testing.T) {
+	cases := map[string]string{
+		"ActiveEnterTimestamp=Fri 2026-09-25 03:00:00 UTC\n":   "2026-09-25 03:00:00",
+		"ActiveEnterTimestamp=Sat 2026-09-26 21:14:07 +0330\n": "2026-09-26 21:14:07",
+		"ActiveEnterTimestamp=Mon 2026-01-05 00:00:01 CEST\n":  "2026-01-05 00:00:01",
+		"ActiveEnterTimestamp=\n":                              "",
+		"":                                                     "",
+		"Failed to get properties: Unit not found.\n":          "",
+	}
+	for out, want := range cases {
+		h := newCLIHost(t)
+		h.override = func(line string) (string, error, bool) {
+			if strings.HasPrefix(line, "systemctl show") {
+				return out, nil, true
+			}
+			return "", nil, false
+		}
+		if got := h.c.serviceStartSince(); got != want {
+			t.Errorf("serviceStartSince for %q = %q, want %q", out, got, want)
+		}
+	}
+	h := newCLIHost(t)
+	h.override = func(line string) (string, error, bool) {
+		return "ActiveEnterTimestamp=Fri 2026-09-25 03:00:00 UTC\n", errors.New("exit status 1"), strings.HasPrefix(line, "systemctl show")
+	}
+	if got := h.c.serviceStartSince(); got != "" {
+		t.Errorf("a failing systemctl still produced %q", got)
+	}
+}
+
+func TestJournalGrepUnsupportedTellsRefusalFromNoMatch(t *testing.T) {
+	boom := errors.New("exit status 1")
+	cases := []struct {
+		out  string
+		err  error
+		want bool
+	}{
+		{"journalctl: invalid option -- 'g'\n", boom, true},
+		{"journalctl: unrecognized option '--grep'\n", boom, true},
+		{"Compiled without pattern matching support\n", boom, true},
+		{"-- No entries --\n", boom, false},
+		{"", boom, false},
+		{busySyncLine, nil, false},
+		{"invalid option", nil, false},
+	}
+	for _, tc := range cases {
+		if got := journalGrepUnsupported(tc.out, tc.err); got != tc.want {
+			t.Errorf("journalGrepUnsupported(%q, %v) = %v, want %v", tc.out, tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestStatusShowsOpenConnectionsFromTheLiveSnapshot(t *testing.T) {
+	p := newCLIPanel(t, "unused")
+	h := newCLIHost(t)
+	h.seedInstalled(t, p, "NODE-BINARY-1")
+
+	clients := func() string {
+		h.out.Reset()
+		h.run("status")
+		for _, line := range strings.Split(h.out.String(), "\n") {
+			if strings.HasPrefix(line, "  clients   : ") {
+				return strings.TrimPrefix(line, "  clients   : ")
+			}
+		}
+		t.Fatalf("status prints no clients line:\n%s", h.out)
+		return ""
+	}
+	writeSnap := func(raw []byte) {
+		if err := os.MkdirAll(filepath.Dir(h.c.paths.Live), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(h.c.paths.Live, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const none = "n/a (the agent has not written a live snapshot yet)"
+
+	if got := clients(); got != none {
+		t.Errorf("no snapshot: %q", got)
+	}
+
+	raw, _ := json.Marshal(liveSnapshot{At: h.now().Add(-3 * time.Second), ConnsTotal: 2400, UsersOnline: 312})
+	writeSnap(raw)
+	if got := clients(); got != "312 users online, 2400 connections open" {
+		t.Errorf("fresh snapshot: %q", got)
+	}
+
+	raw, _ = json.Marshal(liveSnapshot{At: h.now().Add(-5 * time.Minute), ConnsTotal: 2400, UsersOnline: 312})
+	writeSnap(raw)
+	if got := clients(); got != "n/a (the last snapshot is 5m ago)" {
+		t.Errorf("stale snapshot: %q", got)
+	}
+
+	writeSnap([]byte("not json"))
+	if got := clients(); got != none {
+		t.Errorf("garbled snapshot: %q", got)
+	}
+	writeSnap([]byte(`{"conns_total":5}`))
+	if got := clients(); got != none {
+		t.Errorf("snapshot without a time: %q", got)
+	}
+
+	h.c.paths.Live = ""
+	if got := clients(); got != none {
+		t.Errorf("no path: %q", got)
 	}
 }
 

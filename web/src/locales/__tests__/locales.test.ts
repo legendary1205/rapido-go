@@ -7,10 +7,17 @@ import zh from "../../../public/statics/locales/zh.json";
 
 const locales: Record<string, Record<string, string>> = { en, fa, ru, zh };
 
-// The Core Config and Monitoring namespaces are the ones every locale must
-// cover completely. (Other namespaces have known older gaps - e.g. ru/zh have
-// no rapido.templates.* - which are not this test's business.)
-const NAMESPACES = ["rapido.xrayConfig.", "rapido.monitoring.", "rapido.nodes."];
+// The Core Config, Monitoring, Logs and per-host load namespaces are the ones
+// every locale must cover completely. (Other namespaces have known older gaps -
+// e.g. ru/zh have no rapido.templates.* - which are not this test's business.)
+const NAMESPACES = [
+  "rapido.xrayConfig.",
+  "rapido.monitoring.",
+  "rapido.nodes.",
+  "rapido.logs.",
+  "rapido.hosts.load",
+  "rapido.hosts.varLoad",
+];
 const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
 
 const inScope = (key: string) => NAMESPACES.some((ns) => key.startsWith(ns));
@@ -47,6 +54,54 @@ describe("locale files", () => {
         expect(placeholders(dict[key]), `${lang} ${key}`).toEqual(placeholders(en[key as keyof typeof en]));
       }
     }
+  });
+});
+
+// Single keys the Logs / Overview / Users / Hosts work added outside a namespace.
+const V12_KEYS = ["rapido.onlineNowDesc", "rapido.userStatusLegend", "rapido.underAMinute"];
+
+// Left as-is in a translation on purpose: a log level or the word LIVE reads the
+// same in that language's UI.
+const SAME_AS_ENGLISH_OK = new Set(["ru:rapido.logs.live"]);
+
+describe("logs, load and presence strings", () => {
+  it("exist in all four languages", () => {
+    for (const [lang, dict] of Object.entries(locales)) {
+      for (const key of V12_KEYS) expect(dict[key], `${lang} ${key}`).toBeTruthy();
+    }
+  });
+
+  it("are actually translated, not English copied into fa, ru and zh", () => {
+    const keys = Object.keys(en).filter(
+      (k) =>
+        k.startsWith("rapido.logs.") ||
+        k.startsWith("rapido.hosts.load") ||
+        k.startsWith("rapido.hosts.varLoad") ||
+        V12_KEYS.includes(k)
+    );
+    expect(keys.length).toBeGreaterThan(30);
+    for (const lang of ["fa", "ru", "zh"]) {
+      const dict = locales[lang];
+      for (const key of keys) {
+        if (SAME_AS_ENGLISH_OK.has(`${lang}:${key}`) || !(key in dict)) continue;
+        expect(dict[key], `${lang} ${key}`).not.toBe((en as Record<string, string>)[key]);
+      }
+    }
+  });
+
+  it("fill the tooltip and count strings with real values", () => {
+    for (const lang of ["en", "fa", "ru", "zh"]) {
+      const t = i18n.getFixedT(lang);
+      expect(t("rapido.hosts.loadTooltip", { count: 312, capacity: 1000, percent: 31 })).toMatch(/312.*1000.*31/);
+      expect(t("rapido.logs.count", { shown: 7, total: 20 })).toMatch(/7.*20|20.*7/);
+      expect(t("rapido.hosts.loadHint", { token: "{LOAD}" })).toContain("{LOAD}");
+    }
+    expect(i18n.getFixedT("en")("rapido.hosts.loadTooltip", { count: 1, capacity: 1000, percent: 0 })).toBe(
+      "1 open connection of 1000 (0%)"
+    );
+    // Russian needs all four plural forms; 2 and 5 pick different ones.
+    expect(i18n.getFixedT("ru")("rapido.hosts.loadTooltip", { count: 2, capacity: 1000, percent: 0 })).toContain("открытых соединения");
+    expect(i18n.getFixedT("ru")("rapido.hosts.loadTooltip", { count: 5, capacity: 1000, percent: 0 })).toContain("открытых соединений");
   });
 });
 

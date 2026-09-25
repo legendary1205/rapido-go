@@ -7,6 +7,7 @@ import { useUsersUiStore } from "rapido-ui/usersUiStore";
 import { User, Status } from "types/User";
 import { formatBytes } from "utils/formatByte";
 import { relativeExpiryDate } from "utils/dateFormatter";
+import { LastSeen, lastSeenOf } from "utils/presence";
 import { setUsersPerPageLimitSize } from "utils/userPreferenceStorage";
 import { Card, CardTitle, CardSubtitle } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
@@ -44,22 +45,6 @@ const sortOptions: { value: string; labelKey: string }[] = [
   { value: "-used_traffic", labelKey: "rapido.sortMostUsed" },
   { value: "expire", labelKey: "rapido.sortSoonestExpiry" },
 ];
-
-type LastSeen =
-  | { kind: "online" }
-  | { kind: "never" }
-  | { kind: "seen"; time: string };
-
-// online_at is the clearest "since when" signal User exposes for this.
-const lastSeenOf = (onlineAt: string | null): LastSeen => {
-  if (!onlineAt) return { kind: "never" };
-  const unix = Math.floor(new Date(onlineAt).getTime() / 1000);
-  if (Number.isNaN(unix)) return { kind: "never" };
-  const diffSeconds = Math.floor(Date.now() / 1000) - unix;
-  if (diffSeconds <= 180) return { kind: "online" };
-  const { time } = relativeExpiryDate(unix);
-  return time ? { kind: "seen", time } : { kind: "online" };
-};
 
 // Card edge + faint tint per state. Written as whole class strings because
 // Tailwind only generates classes it can find literally in the source.
@@ -179,7 +164,7 @@ const UserRow: FC<{ user: User }> = ({ user }) => {
     ? Math.min((user.used_traffic / (user.data_limit as number)) * 100, 100)
     : 0;
   const expiryInfo = relativeExpiryDate(user.expire);
-  const lastSeen = lastSeenOf(user.online_at);
+  const lastSeen = lastSeenOf(user.online_at, user.online);
 
   // A connected customer is shown green regardless of status, since presence is
   // the more immediate signal; otherwise the card carries its status colour, so
@@ -214,7 +199,9 @@ const UserRow: FC<{ user: User }> = ({ user }) => {
                 {lastSeen.kind === "online" && t("rapido.onlineNowLabel")}
                 {lastSeen.kind === "never" && t("rapido.neverConnected")}
                 {lastSeen.kind === "seen" &&
-                  t("rapido.lastSeen", { time: ltrIsolate(lastSeen.time) })}
+                  t("rapido.lastSeen", {
+                    time: ltrIsolate(lastSeen.time || t("rapido.underAMinute")),
+                  })}
               </CardSubtitle>
             </span>
           </div>

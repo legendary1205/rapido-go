@@ -1,4 +1,5 @@
 import { FC } from "react";
+import classNames from "classnames";
 import {
   Area,
   AreaChart,
@@ -19,6 +20,7 @@ import { useSystemUsageHistoryQuery } from "hooks/useSystemUsageHistoryQuery";
 import { useMonitoringQuery } from "hooks/useMonitoringQuery";
 import { MonitoringHost } from "types/Monitoring";
 import { formatBytes, numberWithCommas } from "utils/formatByte";
+import { formatPercent } from "utils/formatPercent";
 import { hostDisplayState, hostTone } from "utils/monitoringHost";
 import { Card, CardSubtitle, CardTitle } from "rapido-ui/Card";
 import { PulseDot, BadgeTone } from "rapido-ui/Badge";
@@ -61,6 +63,35 @@ const TOOLTIP_CONTENT_STYLE = {
 // Recharts paints tooltip item/label text from the series colour rather than
 // inheriting contentStyle.color, which renders near-black on the dark surface.
 const TOOLTIP_TEXT_STYLE = { color: "#e7f1f4" };
+
+type StatusRow = { status: string; label: string; value: number };
+
+// The donut alone says "some slices" but not which is which or how many; this
+// is the key to it. Every status is listed - a zero row is dimmed rather than
+// dropped - so the list keeps its shape as the counts change on each poll.
+const StatusLegend: FC<{ rows: StatusRow[]; label: string }> = ({ rows, label }) => {
+  const total = rows.reduce((sum, r) => sum + r.value, 0);
+  return (
+    <ul aria-label={label} className="flex min-w-[12rem] max-w-xs flex-1 flex-col gap-2.5">
+      {rows.map((r) => (
+        <li key={r.status} className={classNames("flex items-center gap-2.5 text-sm", r.value === 0 && "opacity-50")}>
+          <span
+            aria-hidden="true"
+            className="h-2.5 w-2.5 shrink-0 rounded-sm"
+            style={{ backgroundColor: STATUS_COLORS[r.status] }}
+          />
+          <span className="min-w-0 flex-1 truncate text-rapido-text">{r.label}</span>
+          <span className="font-medium tabular-nums text-rapido-text" dir="ltr">
+            {numberWithCommas(r.value) ?? "0"}
+          </span>
+          <span className="w-14 text-end text-xs tabular-nums text-rapido-muted" dir="ltr">
+            {formatPercent(r.value, total)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+};
 
 const HeroStat: FC<{ label: string; value: string; sub?: string }> = ({
   label,
@@ -205,7 +236,7 @@ const OverviewContent: FC = () => {
     useSystemUsageHistoryQuery(14);
 
   // `status` keys the colour map, `label` is what the tooltip shows.
-  const donutData = stats
+  const statusRows: StatusRow[] = stats
     ? [
         { status: "active", label: t("status.active"), value: stats.users_active },
         { status: "on_hold", label: t("status.on_hold"), value: stats.users_on_hold },
@@ -216,8 +247,9 @@ const OverviewContent: FC = () => {
           label: t("status.disabled"),
           value: stats.users_disabled,
         },
-      ].filter((d) => d.value > 0)
+      ]
     : [];
+  const donutData = statusRows.filter((d) => d.value > 0);
 
   // incoming_bandwidth/outgoing_bandwidth are always 0 today - honestly, per
   // internal/httpapi/system.go's own comment, because there is no
@@ -236,7 +268,7 @@ const OverviewContent: FC = () => {
         <HeroStat
           label={t("rapido.onlineNow")}
           value={statsLoading ? "…" : numberWithCommas(stats?.online_users ?? 0) ?? "0"}
-          sub={t("rapido.activeLast24h")}
+          sub={t("rapido.onlineNowDesc")}
         />
         {isSudo && (
           <div className="lg:col-span-2">
@@ -268,29 +300,37 @@ const OverviewContent: FC = () => {
               offsets computed from an LTR box; rendering the plot area LTR
               keeps them under the cursor on a Persian page. The axis content
               is numbers and dates, so nothing here reads right-to-left. */}
-          <div dir="ltr" className="mt-4 h-64">
-            {!statsLoading && donutData.length > 0 && (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={donutData}
-                    dataKey="value"
-                    nameKey="label"
-                    innerRadius={60}
-                    outerRadius={90}
-                    paddingAngle={2}
-                  >
-                    {donutData.map((d) => (
-                      <Cell key={d.status} fill={STATUS_COLORS[d.status]} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={TOOLTIP_CONTENT_STYLE}
-                    itemStyle={TOOLTIP_TEXT_STYLE}
-                    labelStyle={TOOLTIP_TEXT_STYLE}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+          {/* The legend sits beside the donut and drops under it when the card
+              is too narrow for both (flex-wrap; the donut has a fixed size, the
+              legend takes the rest of the row). */}
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-x-8 gap-y-4 sm:justify-start">
+            <div dir="ltr" className="h-56 w-56 shrink-0">
+              {!statsLoading && donutData.length > 0 && (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={donutData}
+                      dataKey="value"
+                      nameKey="label"
+                      innerRadius={60}
+                      outerRadius={90}
+                      paddingAngle={2}
+                    >
+                      {donutData.map((d) => (
+                        <Cell key={d.status} fill={STATUS_COLORS[d.status]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      itemStyle={TOOLTIP_TEXT_STYLE}
+                      labelStyle={TOOLTIP_TEXT_STYLE}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+            {!statsLoading && stats && (
+              <StatusLegend rows={statusRows} label={t("rapido.userStatusLegend")} />
             )}
           </div>
         </Card>

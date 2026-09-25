@@ -17,9 +17,9 @@ import (
 
 	"github.com/legendary1205/rapido-go/internal/auth"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
-	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
 	"github.com/legendary1205/rapido-go/internal/report"
+	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/subscription"
 )
 
@@ -124,8 +124,12 @@ type userResponseDTO struct {
 	// SubscriptionURLs lists every address the same subscription answers on,
 	// the first being the one to show first. SubscriptionURL is kept as it
 	// always was for clients (reseller bots) that only know that field.
-	SubscriptionURLs    []string                   `json:"subscription_urls"`
-	OnlineAt            *time.Time                 `json:"online_at"`
+	SubscriptionURLs []string `json:"subscription_urls"`
+	// OnlineAt is the later of the database value and the last time a node
+	// listed the user as connected; Online is true while they are connected
+	// right now (see presence.go for the exact definition).
+	OnlineAt *time.Time `json:"online_at"`
+	Online   bool       `json:"online"`
 	// Links is populated only by handleGetUser (the single-user GET), never
 	// by the batched buildUserResponses a paginated user-list page shares -
 	// generating every proxy's share links is real per-user work, and this
@@ -946,8 +950,17 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 		}
 	}
 
+	// One Redis round trip for the whole page, however many users it holds.
+	usernames := make([]string, len(users))
+	for i, u := range users {
+		usernames[i] = u.Username
+	}
+	presence := h.loadPresence(ctx, usernames)
+	now := time.Now()
+
 	out := make([]userResponseDTO, 0, len(users))
 	for _, u := range users {
+		online, onlineAt := presence.userStatus(u.Username, u.OnlineAt, now)
 		proxiesOut := map[string]json.RawMessage{}
 		inboundsOut := map[string][]string{}
 		excludedOut := map[string][]string{}
@@ -998,7 +1011,7 @@ func (h *Handler) buildUserResponses(ctx context.Context, users []generated.User
 			EmergencyUsedAt:     timestamptzToPtr(u.EmergencyUsedAt),
 			SyncedFromPanelName: textToPtr(u.SyncedFromPanelName),
 			Proxies:             proxiesOut, Inbounds: inboundsOut, ExcludedInbounds: excludedOut, NextPlan: nextPlan,
-			SubscriptionURL: subURL, SubscriptionURLs: h.subscriptionURLs(subToken), OnlineAt: timestamptzToPtr(u.OnlineAt),
+			SubscriptionURL: subURL, SubscriptionURLs: h.subscriptionURLs(subToken), OnlineAt: onlineAt, Online: online,
 			// Not the real per-user links list (see handleGetUser, the only
 			// caller that pays for that) - a literal empty slice here is
 			// free and keeps every other endpoint's JSON shape as "links":[]

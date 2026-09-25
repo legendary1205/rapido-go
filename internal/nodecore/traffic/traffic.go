@@ -3,7 +3,8 @@
 // StatsService (gRPC QueryStats) to poll, so byte counting happens
 // in-process at the one place a connection's user identity is already
 // resolved: internal/nodecore/vless's forked newConnectionEx/
-// newPacketConnectionEx.
+// newPacketConnectionEx. The same place feeds the exact count of connections
+// open right now (see presence.go).
 package traffic
 
 import (
@@ -48,6 +49,9 @@ type userCounter struct {
 // Write of every active connection - a genuine hot path.
 type Manager struct {
 	users sync.Map // string (username) -> *userCounter
+
+	// presence is the open-connection bookkeeping - see presence.go.
+	presence atomic.Pointer[presenceSet]
 }
 
 func NewManager() *Manager {

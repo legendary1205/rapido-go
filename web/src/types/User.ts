@@ -83,7 +83,13 @@ export type User = {
   subscription_url: string;
   /** Every address the subscription answers on, the one to show first first. */
   subscription_urls?: string[];
+  /** Last traffic seen. With live presence it is the later of that and the last
+   * time the user had an open connection. */
   online_at: string | null;
+  /** Connected right now, from live connection counts (an open connection on a
+   * node within the last 15 s). Absent on a backend that predates it - then the
+   * old rule applies: traffic within 180 s of `online_at` (see utils/presence.ts). */
+  online?: boolean;
 };
 
 export type UsersListResponse = {

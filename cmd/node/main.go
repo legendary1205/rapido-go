@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/nodecore"
 	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
+	"github.com/legendary1205/rapido-go/internal/nodelog"
 	"github.com/legendary1205/rapido-go/internal/tunnelhealth"
 )
 
@@ -181,6 +183,15 @@ type server struct {
 	// in-flight byte counts the push loop hasn't drained yet.
 	traffic *traffic.Manager
 
+	// ring holds the newest log lines (the core's that were not dropped as
+	// benign noise, and this agent's own) for the panel's live log view;
+	// suppressed counts the noise that was dropped. Both are nil in tests.
+	ring       *nodelog.Ring
+	suppressed *nodelog.Aggregator
+	// liveStateFile is where liveLoop leaves its latest snapshot for the
+	// status command ("" = don't).
+	liveStateFile string
+
 	// lastPulled is the last config successfully fetched from
 	// GET /api/internal/node-config and applied (hot or full) - nil until
 	// the first successful pull. Guarded by mu, same as node: applying a
@@ -242,6 +253,11 @@ func (s *server) stopNodeLocked() error {
 	}
 	err := s.node.Close()
 	s.node = nil
+	// Nothing the closed core accepted is open any more. Its close signals may
+	// still be on the way or lost, and a stale count would outlive them.
+	if s.traffic != nil {
+		s.traffic.ResetPresence()
+	}
 	return err
 }
 
@@ -264,7 +280,10 @@ func main() {
 	if runCLI(os.Args[1:]) {
 		return
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// The agent's own log goes to stdout as before, and every line of it is also
+	// kept in the ring the panel's live log view reads.
+	ring := nodelog.NewRing(nodelog.DefaultRingSize)
+	logger := slog.New(slog.NewJSONHandler(ring.TeeJSON(os.Stdout), nil))
 	cfg := loadConfig()
 	if os.Getenv("NODE_SETUP_BLOB") != "" {
 		logger.Info("applied NODE_SETUP_BLOB", "cert_file", cfg.CertFile, "key_file", cfg.KeyFile, "ca_file", cfg.CAFile)
@@ -289,7 +308,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := &server{logger: logger, ctx: ctx, traffic: traffic.NewManager()}
+	// The sing-box core writes its log to os.Stderr, captured when a core is
+	// built - so this must come before the first one is. Benign client errors
+	// are dropped and summed into one INFO line a minute; the rest goes on to the
+	// real stderr (the journal) unchanged. See internal/nodelog.
+	suppressed := nodelog.NewAggregator()
+	capture, err := nodelog.InterceptStderr(ring, suppressed)
+	if err != nil {
+		logger.Warn("cannot intercept the core's log: client errors will not be filtered and the live log will lack core lines", "error", err)
+	}
+	flushed := make(chan struct{})
+	go func() {
+		defer close(flushed)
+		suppressed.Run(ctx, logger, nodelog.FlushInterval)
+	}()
+
+	srv := &server{logger: logger, ctx: ctx, traffic: traffic.NewManager(), ring: ring, suppressed: suppressed}
+	if runtime.GOOS == "linux" {
+		srv.liveStateFile = defaultLiveStatePath
+	}
 	srv.monitor = tunnelhealth.New(tunnelhealth.Options{Logger: logger})
 	go srv.monitor.Run(ctx)
 	mux := http.NewServeMux()
@@ -300,6 +337,7 @@ func main() {
 
 	if cfg.PanelURL != "" && cfg.ReportSecret != "" {
 		go srv.syncLoop(ctx, cfg)
+		go srv.liveLoop(ctx, cfg)
 	} else {
 		logger.Warn("PANEL_URL/NODE_REPORT_SECRET not set - usage/health reporting and config sync with the panel are both disabled")
 	}
@@ -316,7 +354,9 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		logger.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -327,11 +367,32 @@ func main() {
 		srv.mu.Unlock()
 	}()
 
+	// finish is the ordered end of the process: let the shutdown above close the
+	// core (ListenAndServeTLS returns the moment Shutdown starts, not when it is
+	// done), then the last noise summary, and only then the log capture, so no
+	// line is written into a closed pipe.
+	finish := func() {
+		stop()
+		select {
+		case <-shutdownDone:
+		case <-time.After(15 * time.Second):
+		}
+		select {
+		case <-flushed:
+		case <-time.After(2 * time.Second):
+		}
+		if capture != nil {
+			capture.Close()
+		}
+	}
+
 	logger.Info("listening", "addr", cfg.ListenAddr)
 	if err := httpServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 		logger.Error("serve", "error", err)
+		finish()
 		os.Exit(1)
 	}
+	finish()
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -919,7 +980,7 @@ func buildCoreOptions(core *coreSpec, portsByTag map[string][]uint16) ([]sbox.Ou
 	}
 	route := &sbox.RouteOptions{Final: implicitOutboundTagDirect}
 	if core == nil {
-		return outbounds, route, nil, nil, nil, nil
+		return outbounds, route, nil, coreLogOptions(""), nil, nil
 	}
 
 	var fallbacks []nodecore.FallbackGroup
@@ -1062,12 +1123,15 @@ func buildCoreOptions(core *coreSpec, portsByTag map[string][]uint16) ([]sbox.Ou
 		dns = &sbox.DNSOptions{RawDNSOptions: sbox.RawDNSOptions{Servers: servers}}
 	}
 
-	var log *sbox.LogOptions
-	if core.LogLevel != "" {
-		log = &sbox.LogOptions{Level: core.LogLevel}
-	}
+	return outbounds, route, dns, coreLogOptions(core.LogLevel), fallbacks, nil
+}
 
-	return outbounds, route, dns, log, fallbacks, nil
+// coreLogOptions is how the core logs. Colour is always off: the node reads the
+// core's log through a pipe (internal/nodelog) and journald shows escape codes
+// as noise. The level is the configured one; an empty level is sing-box's own
+// default, exactly as before.
+func coreLogOptions(level string) *sbox.LogOptions {
+	return &sbox.LogOptions{Level: level, DisableColor: true}
 }
 
 func resolveOutboundTags(tags []string) []string {

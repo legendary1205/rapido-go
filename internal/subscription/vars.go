@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,11 @@ var placeholderPattern = regexp.MustCompile(`\{[A-Z_]+\}`)
 // "<missing>", ...) behavior exactly, so a typo'd placeholder in an admin's
 // remark template renders visibly wrong rather than raising an error.
 func (v Variables) Format(s string) string {
+	// Most host remarks/addresses are plain text; skip the regexp for them -
+	// this runs for every host of every subscription request.
+	if strings.IndexByte(s, '{') < 0 {
+		return s
+	}
 	return placeholderPattern.ReplaceAllStringFunc(s, func(token string) string {
 		key := token[1 : len(token)-1]
 		if val, ok := v[key]; ok {
@@ -28,6 +34,40 @@ func (v Variables) Format(s string) string {
 		}
 		return "<missing>"
 	})
+}
+
+// AutoLoadSuffix is what a plain remark (one with no {VARIABLE} at all) gets
+// appended when the load indicator is on, so `🇩🇪 Germany` becomes
+// `🇩🇪 Germany 🟢 23%`.
+const AutoLoadSuffix = " {LOAD}"
+
+// SetLoad sets the four config-load variables for the host about to be
+// formatted: {LOAD} (emoji and percent, e.g. "🟢 23%"), {LOAD_EMOJI},
+// {LOAD_PERCENT} and {LOAD_LEVEL}. Empty strings for all of them mean "no load
+// data" - the variables then render as nothing. Variables is one map shared by
+// every host of a request, so call this for every host, data or not, or the
+// previous host's values leak into the next remark.
+func (v Variables) SetLoad(emoji, percent, level string) {
+	load := ""
+	if emoji != "" || percent != "" {
+		load = strings.TrimSpace(emoji + " " + percent)
+	}
+	v["LOAD"] = load
+	v["LOAD_EMOJI"] = emoji
+	v["LOAD_PERCENT"] = percent
+	v["LOAD_LEVEL"] = level
+}
+
+// FormatRemark is Format for a host's remark template. When the template uses
+// a {LOAD...} variable and there is no load data for the host, the separator
+// space that variable leaves at an end of the result ("🇩🇪 Germany ") is
+// trimmed. Every other template is formatted exactly as Format does.
+func (v Variables) FormatRemark(template string) string {
+	out := v.Format(template)
+	if v["LOAD"] == "" && strings.Contains(template, "{LOAD") {
+		out = strings.TrimSpace(out)
+	}
+	return out
 }
 
 // UserInfo is the subset of a user's state needed to compute the

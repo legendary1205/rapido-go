@@ -41,6 +41,8 @@ const (
 // temp directory; the systemd unit text itself always names the canonical paths.
 type cliPaths struct {
 	Bin, Env, Unit, Sysctl, CertDir, WireGuardDir, BBRList string
+	// Live is the snapshot the running agent keeps of its open connections.
+	Live string
 }
 
 func defaultCLIPaths() cliPaths {
@@ -52,6 +54,7 @@ func defaultCLIPaths() cliPaths {
 		CertDir:      "/etc/rapido-node",
 		WireGuardDir: "/etc/wireguard",
 		BBRList:      "/proc/sys/net/ipv4/tcp_available_congestion_control",
+		Live:         defaultLiveStatePath,
 	}
 }
 

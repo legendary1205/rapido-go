@@ -82,7 +82,10 @@ func TestNodeReportUpdatesUserUsageAndOnlineAt(t *testing.T) {
 		t.Fatalf("create user: %d %v", createResp.Code, createResp.Body)
 	}
 
-	before := time.Now().UTC()
+	// online_at is stamped with the database's now(), which is not this
+	// machine's clock (a test database behind a tunnel runs a few hundred ms
+	// off), so allow a couple of seconds of skew.
+	before := time.Now().UTC().Add(-2 * time.Second)
 	reportResp := doRequest(t, router, "POST", "/api/internal/node-report", secret, nodeReportPayload([]map[string]interface{}{
 		{"username": "node_report_user_a", "uplink": 1000, "downlink": 2000},
 	}))

@@ -96,7 +96,7 @@ func apiClientLogMiddleware(logger *slog.Logger) gin.HandlerFunc {
 		// it would bury the handful of bot calls under the dashboard's own
 		// polling. Failures are always kept, from any client, since those
 		// are the whole point.
-		if status < 400 && isBrowserUserAgent(ua) {
+		if status < 400 && (isBrowserUserAgent(ua) || quietWhenOK(c.Request.URL.Path)) {
 			return
 		}
 

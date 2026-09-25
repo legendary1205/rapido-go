@@ -118,6 +118,20 @@ type Config struct {
 	// so this only limits how far back a ?start= window can reach.
 	UsageRetentionDays int
 
+	// ConfigLoadIndicator (CONFIG_LOAD_INDICATOR, default true) appends the
+	// live load of each config to its name in every subscription format
+	// (`🇩🇪 Germany 🟢 23%`) - the hint that lets a user pick the emptiest one.
+	// It only touches remarks without any {VARIABLE}; a remark that uses
+	// {LOAD}/{LOAD_EMOJI}/{LOAD_PERCENT}/{LOAD_LEVEL} itself is rendered as
+	// written whichever way this is set.
+	ConfigLoadIndicator bool
+	// ConfigLoadCapacity (CONFIG_LOAD_CAPACITY, default 1000) is how many
+	// concurrent connections on one config's port count as 100%.
+	ConfigLoadCapacity int
+	// ConfigSortByLoad (CONFIG_SORT_BY_LOAD, default false) lists a user's own
+	// configs least loaded first instead of in the admin's priority order.
+	ConfigSortByLoad bool
+
 	// --- Integration env defaults (overridable per-row via PUT
 	// /api/settings/integrations - see internal/integrationsettings) ---
 	ResellerApiSecret  string
@@ -240,6 +254,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: USAGE_RETENTION_DAYS must be a non-negative integer (0 disables)")
 	}
 	cfg.UsageRetentionDays = usageRetention
+
+	// Cosmetic settings: a bad value falls back to the default rather than
+	// keeping the panel from starting.
+	cfg.ConfigLoadIndicator = getBool("CONFIG_LOAD_INDICATOR", true)
+	cfg.ConfigSortByLoad = getBool("CONFIG_SORT_BY_LOAD", false)
+	cfg.ConfigLoadCapacity = 1000
+	if n, err := strconv.Atoi(getEnv("CONFIG_LOAD_CAPACITY", "1000")); err == nil && n >= 1 {
+		cfg.ConfigLoadCapacity = n
+	}
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("config: DATABASE_URL is required")

@@ -212,6 +212,9 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
 	if h.trafficMgr != nil {
+		// Presence: the user is known, so this connection is now open. The router
+		// calls onClose for every way it can end, including a refused route.
+		onClose = h.trafficMgr.TrackClose(user, conn, h.listener.ListenOptions().ListenPort, onClose)
 		conn = traffic.WrapConn(conn, user, h.trafficMgr)
 	}
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)

@@ -12,6 +12,7 @@ import {
   TicketIcon,
   ServerStackIcon,
   ChartBarIcon,
+  CommandLineIcon,
   Cog6ToothIcon,
   CircleStackIcon,
   ArrowsRightLeftIcon,
@@ -63,6 +64,7 @@ export type RapidoNavKey =
   | "coreConfig"
   | "nodes"
   | "monitoring"
+  | "logs"
   | "admins"
   | "templates"
   | "integrations"
@@ -100,6 +102,8 @@ const NAV_ITEMS: {
     icon: ChartBarIcon,
     sudoOnly: true,
   },
+  // GET /api/logs and /api/logs/sources are requireSudo, same as Monitoring.
+  { key: "logs", href: "/logs/", labelKey: "rapido.logs.nav", icon: CommandLineIcon, sudoOnly: true },
   { key: "admins", href: "/admins/", labelKey: "rapido.admins.nav", icon: ShieldCheckIcon, sudoOnly: true },
   // Not sudoOnly: every admin can use their own reusable presets, not just
   // sudo - the backend's own GET /api/user_template is requireAdmin, not

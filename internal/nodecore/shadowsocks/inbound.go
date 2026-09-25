@@ -183,6 +183,10 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 	//nolint:staticcheck
 	metadata.InboundDetour = h.listener.ListenOptions().Detour
 	if h.trafficMgr != nil {
+		// This inbound is on the legacy blocking handler interface: RouteConnection
+		// returns only once the connection is over (or refused), so the deferred
+		// close is this connection's onClose. It runs on every return below.
+		defer h.trafficMgr.OpenConn(user, traffic.LocalPort(conn, h.listener.ListenOptions().ListenPort))()
 		conn = traffic.WrapConn(conn, user, h.trafficMgr)
 	}
 	return h.router.RouteConnection(ctx, conn, metadata)

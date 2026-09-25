@@ -37,6 +37,8 @@ export const queryKeys = {
   monitoring: ["monitoring"] as const,
   monitoringHistory: (nodeId: number | null) =>
     ["monitoring-history", nodeId] as const,
+  hostsLoad: ["hosts-load"] as const,
+  logSources: ["log-sources"] as const,
   backups: ["backups"] as const,
   gatewaySettings: ["gateway-settings"] as const,
   gatewayPeers: ["gateway-peers"] as const,

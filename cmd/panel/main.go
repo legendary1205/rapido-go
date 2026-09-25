@@ -32,9 +32,10 @@ import (
 	"github.com/legendary1205/rapido-go/internal/hostmetrics"
 	"github.com/legendary1205/rapido-go/internal/httpapi"
 	"github.com/legendary1205/rapido-go/internal/integrationsettings"
+	"github.com/legendary1205/rapido-go/internal/logstream"
+	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/resellerapi"
 	"github.com/legendary1205/rapido-go/internal/resellerusagejob"
-	"github.com/legendary1205/rapido-go/internal/report"
 	"github.com/legendary1205/rapido-go/internal/reviewjob"
 	"github.com/legendary1205/rapido-go/internal/telegram"
 	"github.com/legendary1205/rapido-go/internal/telegrambot"
@@ -42,7 +43,10 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Same JSON lines on stdout as a plain JSON handler; each one is also kept
+	// in the process' log ring, which run() starts publishing to Redis once it
+	// knows the role (see internal/logstream).
+	logger := slog.New(logstream.NewHandler(os.Stdout, nil, logstream.ProcessRing()))
 
 	if err := run(logger); err != nil {
 		logger.Error("fatal", "error", err)
@@ -80,6 +84,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("connected to redis")
+
+	// Mirror this process' log ring into Redis so the dashboard can read it
+	// from whichever panel process serves the request.
+	logSource := "panel"
+	if cfg.Role == config.RoleBackend {
+		logSource = "backend"
+	}
+	logstream.SetProcessSource(logSource)
+	go logstream.NewPublisher(redisClient.Raw(), logSource, logstream.ProcessRing(), logger).Run(ctx)
 
 	queries := generated.New(pool)
 
@@ -142,7 +155,8 @@ func run(logger *slog.Logger) error {
 	handler := httpapi.NewHandler(store, issuer, cfg.SudoUsername, cfg.SudoPassword, secret, cfg.PublicIP, cfg.SubscriptionURLPrefix,
 		cfg.ClashTemplateFile, cfg.V2raySubscriptionTemplateFile, formatFlags, subBranding,
 		envDefaults, dispatcher, resellerAPIClient, cfg.LoginNotifyWhitelist, hostMetricsTracker,
-		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger).WithSubscriptionURLPrefixes(cfg.SubscriptionURLPrefixes).WithNodeBinDir(cfg.NodeBinDir)
+		cfg.DatabaseURL, cfg.BackupDir, cfg.BackupKeep, logger).WithSubscriptionURLPrefixes(cfg.SubscriptionURLPrefixes).WithNodeBinDir(cfg.NodeBinDir).
+		WithConfigLoad(cfg.ConfigLoadIndicator, cfg.ConfigLoadCapacity, cfg.ConfigSortByLoad)
 	router := httpapi.NewRouter(handler, logger, cfg.AllowedOrigins)
 	httpapi.MountDashboardStatic(router, cfg.DashboardDir)
 	if telegramConsole != nil {
@@ -225,6 +239,9 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		// pruning old rows from every replica at once would just be
 		// redundant DELETEs racing each other.
 		go hostmetrics.PruneLoop(ctx, queries, redisClient, logger, time.Hour)
+		// Drops presence entries nobody has refreshed for 6 h; one trimmer is
+		// enough, so it lives here rather than on every replica.
+		go httpapi.RunPresenceTrim(ctx, redisClient, logger, time.Minute)
 		go hostmetrics.PanelSelfSampleLoop(ctx, queries, hostMetricsTracker, redisClient, logger, 30*time.Second)
 		// Gateway (multi-panel load balancer) sub-phase 4: keeps every
 		// enabled peer's crowdedness/host cache warm so a real client's

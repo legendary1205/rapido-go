@@ -5,6 +5,9 @@
 // per that file's own comments rather than silently faked here.
 export type SystemStats = {
   total_user: number;
+  /** Users connected right now (live connection counts; for a reseller only
+   * their own users). Falls back to the 180 s traffic window server-side when no
+   * node reports presence. */
   online_users: number;
   users_active: number;
   users_on_hold: number;

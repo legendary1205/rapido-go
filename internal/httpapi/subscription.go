@@ -280,6 +280,14 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 	vars := subscription.BuildVariables(toSubUserInfo(user), h.publicIP)
 	settingsByProtocol := make(map[string]proxysettings.Settings, len(proxies))
 
+	// Per-config load (`🇩🇪 Germany 🟢 23%`): one cached snapshot for the whole
+	// request, a map lookup per host. With CONFIG_SORT_BY_LOAD the user's own
+	// configs are held back until every one is known, then emitted least loaded
+	// first; otherwise they stream straight through as before.
+	loads := &requestLoad{h: h, ctx: ctx}
+	sortByLoad := h.sortByLoad && loads.get().HasData()
+	var held []pendingHost
+
 	for _, p := range proxies {
 		settings, err := proxysettings.FromStored(proxysettings.ProxyType(p.Type), p.Settings)
 		if err != nil {
@@ -328,9 +336,22 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 			remarkVars := vars
 			remarkVars["PROTOCOL"] = p.Type
 			remarkVars["TRANSPORT"] = eff.Network
-			remark := remarkVars.Format(host.Remark)
+			remark, sortKey, sortable := loads.remark(remarkVars, host)
 			address := remarkVars.Format(host.Address)
+			if sortByLoad {
+				held = append(held, pendingHost{
+					protocol: p.Type, settings: settings, remark: remark, address: address, eff: eff,
+					sortKey: sortKey, sortable: sortable,
+				})
+				continue
+			}
 			fn(p.Type, settings, remark, address, eff)
+		}
+	}
+	if sortByLoad {
+		sortPendingByLoad(held)
+		for _, ph := range held {
+			fn(ph.protocol, ph.settings, ph.remark, ph.address, ph.eff)
 		}
 	}
 
@@ -351,7 +372,7 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 		remarkVars := vars
 		remarkVars["PROTOCOL"] = ph.host.Protocol
 		remarkVars["TRANSPORT"] = ph.host.Network
-		remark := "[" + ph.peerName + "] " + remarkVars.Format(ph.host.Remark)
+		remark := peerRemark(remarkVars, ph.peerName, ph.host.Remark)
 		address := remarkVars.Format(ph.host.Address)
 		eff := subscription.EffectiveInbound{
 			Tag: ph.host.Tag, Protocol: ph.host.Protocol, Network: ph.host.Network, HeaderType: ph.host.HeaderType,

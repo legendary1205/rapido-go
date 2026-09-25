@@ -12,3 +12,12 @@ GROUP BY status;
 SELECT count(*) FROM users
 WHERE online_at >= sqlc.arg('cutoff')::timestamptz
   AND (sqlc.narg('admin_id')::int IS NULL OR admin_id = sqlc.narg('admin_id')::int);
+
+-- name: CountAdminUsersByUsernames :one
+-- The scoped (reseller) half of the presence-based online count: Redis knows
+-- which usernames are online right now, this counts how many of them belong to
+-- one admin. Served by users_username_key, so the cost follows the number of
+-- online usernames, not the size of the users table.
+SELECT count(*) FROM users
+WHERE username = ANY(sqlc.arg('usernames')::text[])
+  AND admin_id = sqlc.arg('admin_id')::int;

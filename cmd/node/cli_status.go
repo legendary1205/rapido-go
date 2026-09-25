@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +45,7 @@ func (c *cli) status() error {
 		fmt.Fprintf(c.out, "  panel     : %s - %s\n", panelURL, describePanelCheck(c.checkPanel(panelURL, secret)))
 	}
 	fmt.Fprintf(c.out, "  last sync : %s\n", c.lastSyncLine())
+	fmt.Fprintf(c.out, "  clients   : %s\n", c.clientsLine())
 
 	c.printTunnelHealth()
 	c.printListeners()
@@ -77,13 +80,97 @@ func describePanelCheck(chk panelCheck) string {
 
 // lastSyncLine is the newest pull/apply/report line the agent logged.
 func (c *cli) lastSyncLine() string {
-	recs := parseAgentLog(c.mustSh("journalctl", "-u", unitName, "-n", "3000", "--no-pager", "-o", "cat"))
+	recs := c.agentSyncRecords()
 	for i := len(recs) - 1; i >= 0; i-- {
 		if isSyncRecord(recs[i]) {
 			return recs[i].String()
 		}
 	}
 	return "nothing logged yet (an unchanged config logs nothing; only changes and failures do)"
+}
+
+// journalSyncPattern picks the agent's own sync records (its JSON lines about
+// pulling the config and pushing reports) out of the journal.
+const journalSyncPattern = `"msg":"(pull config|push report)`
+
+// agentSyncRecords reads the agent's sync records from the journal of the current
+// run. A tail of the last N lines is not enough: a node whose core logs thousands
+// of lines an hour scrolls the agent's rare lines out of any fixed window. So the
+// filter runs inside journalctl (-g), over everything since the service last
+// started, and only the matching lines come back. There is deliberately no -n
+// next to --since: how journalctl combines the two (which end of the range it
+// keeps) differs between versions, while the sync lines alone are few.
+func (c *cli) agentSyncRecords() []agentLogRecord {
+	args := []string{"-u", unitName, "--no-pager", "-o", "cat"}
+	grep := append(slices.Clone(args), "-g", journalSyncPattern)
+	if since := c.serviceStartSince(); since != "" {
+		grep = append(grep, "--since", since)
+	} else {
+		grep = append(grep, "-n", "3000")
+	}
+	out, err := c.sh("journalctl", grep...)
+	if !journalGrepUnsupported(out, err) {
+		return parseAgentLog(out)
+	}
+	// journalctl older than v237 (or built without pattern matching) has no -g:
+	// read a long tail instead and filter it here.
+	out, _ = c.sh("journalctl", append(args, "-n", "50000")...)
+	return parseAgentLog(out)
+}
+
+// journalGrepUnsupported reports whether journalctl refused the -g option (as
+// opposed to running it and finding nothing, which is an answer).
+func journalGrepUnsupported(out string, err error) bool {
+	if err == nil {
+		return false
+	}
+	out = strings.ToLower(out)
+	for _, marker := range []string{"invalid option", "unrecognized option", "unknown option", "pattern matching", "not supported"} {
+		if strings.Contains(out, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+var activeEnterTime = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
+
+// serviceStartSince is when the unit last became active, as journalctl --since
+// wants it ("" when systemd does not say). systemctl prints the local wall-clock
+// time with a weekday in front and a zone name behind
+// ("Fri 2026-09-25 03:00:00 UTC"); journalctl reads the same local time back.
+func (c *cli) serviceStartSince() string {
+	out, err := c.sh("systemctl", "show", "-p", "ActiveEnterTimestamp", unitName)
+	if err != nil {
+		return ""
+	}
+	return activeEnterTime.FindString(out)
+}
+
+// liveStateMaxAge is how old the agent's live snapshot may be and still count as
+// current; the agent writes one every few seconds while it runs.
+const liveStateMaxAge = 30 * time.Second
+
+// clientsLine is the open-connection count from the agent's own live snapshot -
+// no round trip to the panel.
+func (c *cli) clientsLine() string {
+	const none = "n/a (the agent has not written a live snapshot yet)"
+	if c.paths.Live == "" {
+		return none
+	}
+	raw, err := os.ReadFile(c.paths.Live)
+	if err != nil {
+		return none
+	}
+	var snap liveSnapshot
+	if json.Unmarshal(raw, &snap) != nil || snap.At.IsZero() {
+		return none
+	}
+	age := c.now().Sub(snap.At)
+	if age > liveStateMaxAge {
+		return "n/a (the last snapshot is " + formatAge(age) + ")"
+	}
+	return fmt.Sprintf("%d users online, %d connections open", snap.UsersOnline, snap.ConnsTotal)
 }
 
 func (c *cli) printTunnelHealth() {

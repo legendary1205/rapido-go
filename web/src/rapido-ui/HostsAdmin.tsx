@@ -2,12 +2,16 @@ import { FC, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import classNames from "classnames";
 import { useHostsQuery, useSaveHostsMutation } from "hooks/useHostsQuery";
+import { useHostsLoadQuery } from "hooks/useHostsLoadQuery";
 import { useInboundsQuery } from "hooks/useInboundsQuery";
 import { Host, HostsMap } from "types/Host";
+import { HostLoadEntry } from "types/HostLoad";
 import { errorText } from "service/errors";
 import { Card } from "rapido-ui/Card";
 import { Badge } from "rapido-ui/Badge";
 import { Button } from "rapido-ui/Button";
+import { HostLoadPill } from "rapido-ui/HostLoadPill";
+import { ltrIsolate } from "rapido-ui/bidi";
 import {
   addHostToTag,
   flattenSortedHosts,
@@ -35,6 +39,8 @@ const field =
 // token that silently renders as "<missing>" today. Also omits
 // {SERVER_IPV6}/{JALALI_EXPIRE_DATE}, both explicitly deferred (never
 // ported from the old Python system) for the same reason.
+// {LOAD}, {LOAD_EMOJI}, {LOAD_PERCENT} and {LOAD_LEVEL} are the live per-config
+// load (GET /hosts/load); they render empty for a host with no load data.
 const VARIABLES: { token: string; descKey: string }[] = [
   { token: "{USERNAME}", descKey: "hostsDialog.username" },
   { token: "{SERVER_IP}", descKey: "hostsDialog.currentServer" },
@@ -49,6 +55,10 @@ const VARIABLES: { token: string; descKey: string }[] = [
   { token: "{STATUS_TEXT}", descKey: "hostsDialog.statusText" },
   { token: "{PROTOCOL}", descKey: "rapido.hosts.varProtocol" },
   { token: "{TRANSPORT}", descKey: "rapido.hosts.varTransport" },
+  { token: "{LOAD}", descKey: "rapido.hosts.varLoad" },
+  { token: "{LOAD_EMOJI}", descKey: "rapido.hosts.varLoadEmoji" },
+  { token: "{LOAD_PERCENT}", descKey: "rapido.hosts.varLoadPercent" },
+  { token: "{LOAD_LEVEL}", descKey: "rapido.hosts.varLoadLevel" },
 ];
 
 const HostVariablesReference: FC = () => {
@@ -94,13 +104,16 @@ const HostVariablesReference: FC = () => {
 const HostRow: FC<{
   host: Host;
   tag: string;
+  /** Live load for this host, when the backend reports one (a saved, enabled, non-info host). */
+  load?: HostLoadEntry;
+  capacity: number;
   onChange: (patch: Partial<Host>) => void;
   onRemove: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
-}> = ({ host, tag, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) => {
+}> = ({ host, tag, load, capacity, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -113,10 +126,11 @@ const HostRow: FC<{
         disabled ? "border-rapido-border opacity-60" : "border-sky-500/40 bg-sky-500/[0.03]"
       )}
     >
-      <div className="mb-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <Badge tone="sky" dir="ltr">
           {tag}
         </Badge>
+        {load && <HostLoadPill load={load} capacity={capacity} />}
       </div>
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr_5rem]">
         <label className="flex flex-col gap-1">
@@ -292,6 +306,12 @@ export const HostsAdmin: FC = () => {
   const { data: remoteHosts, isLoading, isError, refetch } = useHostsQuery();
   const { data: inboundsByProtocol } = useInboundsQuery();
   const saveHosts = useSaveHostsMutation();
+  // Decoration only: if it is slow, missing or failing the list still works.
+  const { data: hostsLoad } = useHostsLoadQuery();
+  const loadByHostId = useMemo(
+    () => new Map((hostsLoad?.hosts ?? []).map((h) => [h.host_id, h] as const)),
+    [hostsLoad]
+  );
 
   const [hosts, setHosts] = useState<HostsMap | null>(null);
   const [original, setOriginal] = useState<string>("");
@@ -444,6 +464,12 @@ export const HostsAdmin: FC = () => {
         </div>
       )}
 
+      {hostsLoad?.indicator && (
+        <p className="text-xs text-rapido-muted">
+          {t("rapido.hosts.loadHint", { token: ltrIsolate("{LOAD}") })}
+        </p>
+      )}
+
       <HostVariablesReference />
 
       <Card className="p-4">
@@ -481,6 +507,8 @@ export const HostsAdmin: FC = () => {
               key={`${f.tag}:${f.host.id ?? f.index}`}
               host={f.host}
               tag={f.tag}
+              load={f.host.id != null ? loadByHostId.get(f.host.id) : undefined}
+              capacity={hostsLoad?.capacity ?? 0}
               onChange={(p) => patch(f.tag, f.index, p)}
               onRemove={() => removeHost(f.tag, f.index)}
               onMoveUp={() => moveInFlatList(flatIndex, "up")}
