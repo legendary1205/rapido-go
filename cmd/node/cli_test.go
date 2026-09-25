@@ -899,16 +899,26 @@ func TestParseSSListeners(t *testing.T) {
 tcp   LISTEN 0      4096          [::]:443          [::]:*    users:(("rapido-go-node",pid=812,fd=9))
 tcp   LISTEN 0      4096       0.0.0.0:443       0.0.0.0:*    users:(("rapido-go-node",pid=812,fd=8))
 udp   UNCONN 0      0          0.0.0.0:8388      0.0.0.0:*    users:(("rapido-go-node",pid=812,fd=10))
-tcp   LISTEN 0      128        0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=1,fd=3))
+udp   UNCONN 0      0        0.0.0.0%usa:40311   0.0.0.0:*    users:(("rapido-go-node",pid=812,fd=11))
+udp   UNCONN 0      0        0.0.0.0%usa:40312   0.0.0.0:*    users:(("rapido-go-node",pid=812,fd=12))
+tcp   LISTEN 0      128        0.0.0.0:22       0.0.0.0:*    users:(("sshd",pid=1,fd=3))
 tcp   LISTEN 0      511          [::]:8443          [::]:*
 `
 	got := parseSSListeners(out, "rapido-go-node")
 	var text []string
+	pinned := 0
 	for _, l := range got {
+		if l.Device {
+			pinned++
+			continue
+		}
 		text = append(text, fmt.Sprintf("%d/%s", l.Port, l.Proto))
 	}
 	if want := "443/tcp,8388/udp,62051/tcp"; strings.Join(text, ",") != want {
 		t.Errorf("listeners = %v, want %s", text, want)
+	}
+	if pinned != 2 {
+		t.Errorf("interface-pinned sockets = %d, want 2 (counted, never listed one by one)", pinned)
 	}
 }
 
@@ -958,7 +968,9 @@ func TestStatusPrintsTheWholePicture(t *testing.T) {
 	h.override = func(line string) (string, error, bool) {
 		if strings.HasPrefix(line, "ss ") {
 			return `tcp LISTEN 0 4096 0.0.0.0:62051 0.0.0.0:* users:(("rapido-go-node",pid=1,fd=3))` + "\n" +
-				`tcp LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("rapido-go-node",pid=1,fd=4))` + "\n", nil, true
+				`tcp LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("rapido-go-node",pid=1,fd=4))` + "\n" +
+				`udp UNCONN 0 0 0.0.0.0%wg0:40311 0.0.0.0:* users:(("rapido-go-node",pid=1,fd=5))` + "\n" +
+				`udp UNCONN 0 0 0.0.0.0%wg0:40312 0.0.0.0:* users:(("rapido-go-node",pid=1,fd=6))` + "\n", nil, true
 		}
 		return "", nil, false
 	}
@@ -971,7 +983,7 @@ func TestStatusPrintsTheWholePicture(t *testing.T) {
 		"active (enabled)", "answers, node secret accepted", p.URL,
 		"pull config: hot-applied user list tag=in1 users=3",
 		"wg0", "UP", "probe 41 ms", "handshake 12s ago", "wg1", "interface missing",
-		"443/tcp, 62051/tcp (control)",
+		"443/tcp, 62051/tcp (control) (+2 outbound tunnel sockets)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status output lacks %q:\n%s", want, out)

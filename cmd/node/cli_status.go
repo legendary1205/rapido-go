@@ -160,6 +160,11 @@ type listener struct {
 	Proto string
 	Port  int
 	Addr  string
+	// Device is set for a socket pinned to one interface (ss prints its
+	// address as 0.0.0.0%wg0:port). Those are the ephemeral sockets a
+	// tunnel-bound outbound opens, one per active connection - hundreds on a
+	// busy node - not something clients connect to.
+	Device bool
 }
 
 // parseSSListeners picks the sockets owned by process proc out of
@@ -186,7 +191,7 @@ func parseSSListeners(out, proc string) []listener {
 			continue
 		}
 		seen[key] = true
-		ls = append(ls, listener{Proto: proto, Port: port, Addr: f[4]})
+		ls = append(ls, listener{Proto: proto, Port: port, Addr: f[4], Device: strings.Contains(f[4][:i], "%")})
 	}
 	sort.Slice(ls, func(i, j int) bool {
 		if ls[i].Port != ls[j].Port {
@@ -212,14 +217,27 @@ func (c *cli) printListeners() {
 	if _, p, err := net.SplitHostPort(firstNonEmpty(c.readEnv()["NODE_LISTEN_ADDR"], defaultListenAddr)); err == nil {
 		control = p
 	}
-	parts := make([]string, len(ls))
-	for i, l := range ls {
-		parts[i] = fmt.Sprintf("%d/%s", l.Port, l.Proto)
-		if strconv.Itoa(l.Port) == control && l.Proto == "tcp" {
-			parts[i] += " (control)"
+	var parts []string
+	tunnelSockets := 0
+	for _, l := range ls {
+		if l.Device {
+			tunnelSockets++
+			continue
 		}
+		part := fmt.Sprintf("%d/%s", l.Port, l.Proto)
+		if strconv.Itoa(l.Port) == control && l.Proto == "tcp" {
+			part += " (control)"
+		}
+		parts = append(parts, part)
 	}
-	fmt.Fprintf(c.out, "  listening : %s\n", strings.Join(parts, ", "))
+	line := strings.Join(parts, ", ")
+	if tunnelSockets > 0 {
+		if line != "" {
+			line += " "
+		}
+		line += fmt.Sprintf("(+%d outbound tunnel sockets)", tunnelSockets)
+	}
+	fmt.Fprintf(c.out, "  listening : %s\n", line)
 }
 
 var (
