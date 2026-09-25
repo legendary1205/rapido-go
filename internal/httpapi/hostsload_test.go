@@ -86,14 +86,14 @@ func TestRequestLoadRemarkRules(t *testing.T) {
 		tmpl string
 		want string
 	}{
-		{"plain remark gets the suffix", on, 1, "🇩🇪 Germany", "🇩🇪 Germany 🟢 23%"},
-		{"a full config is red", on, 6, "🇫🇷 France", "🇫🇷 France 🔴 95%"},
+		{"plain remark gets the suffix", on, 1, "🇩🇪 Germany", "🇩🇪 Germany 🟢 23٪"},
+		{"a full config is red", on, 6, "🇫🇷 France", "🇫🇷 France 🔴 95٪"},
 		{"info host is left alone", on, 2, "🛜 {DATA_LEFT} 🛜", "🛜 ∞ 🛜"},
 		{"other variables never get a suffix", on, 5, "Web {TRANSPORT}", "Web tcp"},
 		{"explicit variables are used as written", on, 3, "Explicit {LOAD_EMOJI} {LOAD_LEVEL}", "Explicit 🟢 free"},
-		{"two explicit variables, no auto suffix", on, 4, "Both {LOAD} {LOAD_PERCENT}", "Both 🟢 23% 23%"},
+		{"two explicit variables, no auto suffix", on, 4, "Both {LOAD} {LOAD_PERCENT}", "Both 🟢 23٪ 23٪"},
 		{"indicator off leaves a plain remark untouched", off, 1, "🇩🇪 Germany", "🇩🇪 Germany"},
-		{"indicator off still renders an explicit variable", off, 4, "Both {LOAD} {LOAD_PERCENT}", "Both 🟢 23% 23%"},
+		{"indicator off still renders an explicit variable", off, 4, "Both {LOAD} {LOAD_PERCENT}", "Both 🟢 23٪ 23٪"},
 		{"no presence: plain remark untouched", dark, 1, "🇩🇪 Germany", "🇩🇪 Germany"},
 		{"no presence: explicit variable renders empty and the space is trimmed", dark, 4, "Both {LOAD} {LOAD_PERCENT}", "Both"},
 		{"no presence: info host unchanged", dark, 2, "🛜 {DATA_LEFT} 🛜", "🛜 ∞ 🛜"},
@@ -116,11 +116,11 @@ func TestRequestLoadSharedVariablesDoNotLeakBetweenHosts(t *testing.T) {
 	r := &requestLoad{h: h, ctx: context.Background()}
 	vars := testVars()
 
-	if got, _, _ := r.remark(vars, generated.Host{ID: 1, Remark: "A"}); got != "A 🔴 95%" {
+	if got, _, _ := r.remark(vars, generated.Host{ID: 1, Remark: "A"}); got != "A 🔴 95٪" {
 		t.Errorf("host 1 = %q", got)
 	}
 	// Host 2 is the same request, same shared map: its own 0% must show, not host 1's 95%.
-	if got, _, _ := r.remark(vars, generated.Host{ID: 2, Remark: "B {LOAD}"}); got != "B 🟢 0%" {
+	if got, _, _ := r.remark(vars, generated.Host{ID: 2, Remark: "B {LOAD}"}); got != "B 🟢 0٪" {
 		t.Errorf("host 2 = %q", got)
 	}
 	// And a host with no data at all must not inherit host 2's.
@@ -362,7 +362,7 @@ func TestSubscriptionLinkCarriesTheLoadSuffix(t *testing.T) {
 	sub := fx.createUser("load_link_user")
 
 	got := fx.linkRemarks(sub)
-	want := []string{"🇩🇪 Germany 🟢 23%", "🛜 ∞ 🛜", "🇳🇱 Netherlands 🟡 64%"}
+	want := []string{"🇩🇪 Germany 🟢 23٪", "🛜 ∞ 🛜", "🇳🇱 Netherlands 🟡 64٪"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("remarks = %q, want %q", got, want)
 	}
@@ -386,7 +386,7 @@ func TestSubscriptionLoadSuffixReachesEveryFormat(t *testing.T) {
 		if resp.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", format, resp.Code, resp.Raw)
 		}
-		if !strings.Contains(string(resp.Raw), "🇩🇪 Germany 🔴 91%") {
+		if !strings.Contains(string(resp.Raw), "🇩🇪 Germany 🔴 91٪") {
 			t.Errorf("%s config is missing the load suffix: %s", format, resp.Raw)
 		}
 	}
@@ -423,7 +423,7 @@ func TestSubscriptionIndicatorOffKeepsPlainRemarks(t *testing.T) {
 	sub := fx.createUser("load_off_user")
 
 	got := fx.linkRemarks(sub)
-	want := []string{"🇩🇪 Germany", "🇳🇱 Netherlands 64%"}
+	want := []string{"🇩🇪 Germany", "🇳🇱 Netherlands 64٪"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("remarks = %q, want %q", got, want)
 	}
@@ -450,7 +450,7 @@ func TestSubscriptionSortByLoadOrdersLeastLoadedFirst(t *testing.T) {
 	got := fx.linkRemarks(sub)
 	// B = C = D (20%, the load of node 2, which D's idle port shares; ties keep
 	// priority order) < A (80%); the info host keeps its slot at index 1.
-	want := []string{"B free 🟢 20%", "🛜 ∞ 🛜", "C free too 🟢 20%", "D idle 🟢 20%", "A busy 🟠 80%"}
+	want := []string{"B free 🟢 20٪", "🛜 ∞ 🛜", "C free too 🟢 20٪", "D idle 🟢 20٪", "A busy 🟠 80٪"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("remarks = %q, want %q", got, want)
 	}
@@ -458,7 +458,7 @@ func TestSubscriptionSortByLoadOrdersLeastLoadedFirst(t *testing.T) {
 	// The same data with sorting off keeps the admin's priority order.
 	fx.h.WithConfigLoad(true, 1000, false)
 	got = fx.linkRemarks(sub)
-	want = []string{"A busy 🟠 80%", "🛜 ∞ 🛜", "B free 🟢 20%", "C free too 🟢 20%", "D idle 🟢 20%"}
+	want = []string{"A busy 🟠 80٪", "🛜 ∞ 🛜", "B free 🟢 20٪", "C free too 🟢 20٪", "D idle 🟢 20٪"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("unsorted remarks = %q, want %q", got, want)
 	}
@@ -471,7 +471,7 @@ func TestSubscriptionLoadUsesConfiguredCapacity(t *testing.T) {
 	fx.setPresence(true, map[string]map[string]interface{}{"10.0.0.1": {"20001": 100}})
 	sub := fx.createUser("load_capacity_user")
 
-	if got := fx.linkRemarks(sub); len(got) != 1 || got[0] != "🇩🇪 Germany 🟡 50%" {
+	if got := fx.linkRemarks(sub); len(got) != 1 || got[0] != "🇩🇪 Germany 🟡 50٪" {
 		t.Fatalf("remarks = %q, want 100/200 = 50%%", got)
 	}
 }

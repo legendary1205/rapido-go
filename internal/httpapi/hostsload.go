@@ -146,7 +146,7 @@ func (r *requestLoad) remark(vars subscription.Variables, host generated.Host) (
 	e := r.get().For(host.ID)
 	sortKey = unknownLoadSortKey
 	if e != nil && e.Known {
-		vars.SetLoad(e.Level.Emoji(), strconv.Itoa(e.Percent)+"%", string(e.Level))
+		vars.SetLoad(e.Level.Emoji(), strconv.Itoa(e.Percent)+remarkPercentSign, string(e.Level))
 		sortKey = e.Percent
 		// e is only ever set for a plain remark or one that already uses a
 		// {LOAD...} variable (info hosts are not in the snapshot), so "does
@@ -164,6 +164,13 @@ func (r *requestLoad) remark(vars subscription.Variables, host generated.Host) (
 	}
 	return vars.FormatRemark(template), sortKey, e != nil
 }
+
+// remarkPercentSign is the percent sign inside a config name. It is the Arabic
+// percent sign (U+066A), which reads as a percent sign next to Persian text, and
+// deliberately NOT ASCII '%': a share link carries its name percent-encoded, and
+// a client that decodes it twice (Happ does) turns a trailing "27%" into a bad
+// escape, throws the whole name away and shows the server address instead.
+const remarkPercentSign = "٪"
 
 // unknownLoadSortKey ranks a config without load data after every known one
 // (a known percent never exceeds 100).
