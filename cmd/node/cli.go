@@ -562,7 +562,7 @@ func (c *cli) install(o installOptions) error {
 
 	c.step("Node is installed and connected")
 	c.info("panel   : %s", panelURL)
-	c.info("listen  : %s (the panel connects here - allow this port from the panel server)", listen)
+	c.info("control : %s (the node connects out to the panel; nothing needs to reach this port)", listen)
 	c.info("manage  : rapido-go-node status | update | tunnels | uninstall")
 	c.postInstallNotes()
 	return nil
