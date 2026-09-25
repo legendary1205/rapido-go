@@ -19,7 +19,8 @@ set -uo pipefail
 SECONDS_PER_TUNNEL=8
 STREAMS=4
 CAP_MBPS=200
-URL="https://speed.cloudflare.com/__down?bytes=2000000000"
+# the endpoint refuses (HTTP 403) anything much above 50 MB; a stream simply repeats the download
+URL="https://speed.cloudflare.com/__down?bytes=50000000"
 ONLY=""
 
 while [ $# -gt 0 ]; do
@@ -50,9 +51,20 @@ for t in $TUNNELS; do
   ip link show "$t" >/dev/null 2>&1 || { printf '%-14s %10s\n' "$t" "no such interface"; continue; }
   endpoint="$(wg show "$t" endpoints 2>/dev/null | awk '{print $2}' | head -1 | sed -E 's/:[0-9]+$//')"
   tmp="$(mktemp -d)"
+  deadline=$(( $(date +%s) + SECONDS_PER_TUNNEL ))
   for i in $(seq 1 "$STREAMS"); do
-    ( curl -s --interface "$t" --max-time "$SECONDS_PER_TUNNEL" --limit-rate "$PER_STREAM" \
-        -o /dev/null -w '%{size_download}' "$URL" > "$tmp/$i" 2>/dev/null || true ) &
+    (
+      sum=0
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        left=$(( deadline - $(date +%s) ))
+        got="$(curl -s --interface "$t" --max-time "$left" --limit-rate "$PER_STREAM" \
+                -o /dev/null -w '%{size_download}' "$URL" 2>/dev/null || true)"
+        [ -n "$got" ] && sum=$(( sum + got ))
+        # nothing useful came back (an error page, a dead tunnel): do not spin
+        [ "${got:-0}" -lt 1000000 ] && break
+      done
+      echo "$sum" > "$tmp/$i"
+    ) &
   done
   wait
   total=0
