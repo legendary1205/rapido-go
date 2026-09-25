@@ -31,12 +31,17 @@ const (
 	KindClosedConn    = "closed_conn"      // use of a connection that was closed
 	KindCanceled      = "context_canceled" // work abandoned because the connection went away
 	KindClientTimeout = "client_timeout"   // i/o timeout on an established connection
+	KindFlowMismatch  = "flow_mismatch"    // a VLESS client whose flow setting does not match the inbound's
 
 	// Outbound dial failures carry the outbound's tag after a colon
 	// ("dial_timeout:germany~wg"): they say which exit is unhealthy.
 	KindDialTimeout     = "dial_timeout"
 	KindDialRefused     = "dial_refused"
 	KindDialUnreachable = "dial_unreachable"
+
+	// A destination name that does not resolve ("dns_failure:usa~wg"): what the
+	// client asked for does not exist, which says nothing about the exit.
+	KindDNSFailure = "dns_failure"
 )
 
 // Levels are the four the panel knows.
@@ -133,6 +138,10 @@ func classifyInbound(rest string) (string, bool) {
 		return KindUnknownUUID, true
 	case isBadHandshake(cause):
 		return KindBadHandshake, true
+	case strings.HasPrefix(cause, "flow mismatch"):
+		// "flow mismatch: expected xtls-rprx-vision, but got none": a client set up
+		// without the flow its subscription carries.
+		return KindFlowMismatch, true
 	case strings.Contains(cause, "mux connection closed"):
 		if _, ok := benignTail(cause); ok {
 			return KindMuxClosed, true
@@ -191,6 +200,11 @@ func classifyDial(text string) (string, bool) {
 	if tag == "" {
 		tag = m[1]
 	}
+	// A destination that does not exist. A resolver that does not answer at all
+	// (a timeout) is a fault worth reading and stays out of this.
+	if strings.HasPrefix(cause, "lookup ") && isNameNotFound(cause) {
+		return KindDNSFailure + ":" + tag, true
+	}
 	// Only the dial itself: a failure further into the handshake with a proxy
 	// (bad credentials, a protocol error) is a fault worth reading.
 	if !strings.Contains(cause, "dial ") {
@@ -205,4 +219,9 @@ func classifyDial(text string) (string, bool) {
 		return KindDialUnreachable + ":" + tag, true
 	}
 	return "", false
+}
+
+// isNameNotFound recognises a resolver's answer that the name does not exist.
+func isNameNotFound(cause string) bool {
+	return strings.Contains(cause, "NXDOMAIN") || strings.Contains(cause, "no such host") || strings.Contains(cause, "server misbehaving")
 }

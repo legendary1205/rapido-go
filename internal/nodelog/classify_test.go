@@ -52,6 +52,9 @@ func TestClassifyRealProductionLines(t *testing.T) {
 
 		// Outbound dial failures, per tag and per reason (Linux and Windows wording).
 		{`ERROR[0001] connection: open connection to 5.6.7.8:443 using outbound/direct[de~direct]: dial tcp 5.6.7.8:443: connect: connection refused`, KindDialRefused + ":de~direct"},
+		{`ERROR[0001] inbound/vless[main#20006]: process connection from 127.0.0.1:53992: flow mismatch: expected xtls-rprx-vision, but got none`, KindFlowMismatch},
+		{`ERROR[0001] connection: open connection to shopfb.net:80 using outbound/direct[usa~wg]: lookup shopfb.net: (exchange6: NXDOMAIN | exchange4: NXDOMAIN)`, KindDNSFailure + ":usa~wg"},
+		{`ERROR[0001] connection: open connection to nohost.example:443 using outbound/direct[direct-out]: lookup nohost.example: no such host`, KindDNSFailure + ":direct-out"},
 		{`ERROR[0001] connection: open connection to 127.0.0.1:5780 using outbound/direct[direct-out]: dial tcp 127.0.0.1:5780: connectex: No connection could be made because the target machine actively refused it.`, KindDialRefused + ":direct-out"},
 		{`ERROR[0001] connection: open connection to [2001:db8::1]:443 using outbound/socks[up]: dial tcp [2001:db8::1]:443: connect: network is unreachable`, KindDialUnreachable + ":up"},
 		{`ERROR[0001] connection: open connection to 5.6.7.8:443 using outbound/direct[x]: dial tcp 5.6.7.8:443: connect: no route to host`, KindDialUnreachable + ":x"},
@@ -75,6 +78,8 @@ func TestClassifyRealProductionLines(t *testing.T) {
 		{`ERROR[0001] connection: open connection to 5.6.7.8:443 using outbound/vless[up]: read handshake: authentication failed`, ""},
 		{`ERROR[0001] connection: open connection to 5.6.7.8:443 using outbound/direct[x]: dns: lookup failed`, ""},
 		{`ERROR[0001] router: rule match failed`, ""},
+		{`ERROR[0001] connection: open connection to shopfb.net:80 using outbound/direct[usa~wg]: lookup shopfb.net: i/o timeout`, ""}, // a resolver that does not answer is a fault, not a missing name
+		{`ERROR[0001] inbound/vless[main#20006]: process connection from 1.2.3.4:5: flow mismatch`, KindFlowMismatch},
 		{`FATAL[0001] start service: listen tcp 0.0.0.0:443: bind: address already in use`, ""},
 		{`INFO[0001] inbound/vless[main#20001]: process connection from 1.2.3.4:5678: EOF`, ""}, // not an error line
 		{`DEBUG[0001] connection: open connection to 5.6.7.8:443 using outbound/direct[x]: dial tcp 5.6.7.8:443: i/o timeout`, ""},
