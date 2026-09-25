@@ -108,6 +108,10 @@ func Classify(level, text string) (kind string, benign bool) {
 	if i := strings.Index(text, "open connection to "); i >= 0 {
 		return classifyDial(text[i:])
 	}
+	// The same failure on a UDP association: "listen packet connection using  using outbound/...".
+	if i := strings.Index(text, "listen packet connection using"); i >= 0 {
+		return classifyDial(text[i:])
+	}
 	if i := strings.Index(text, "process connection from "); i >= 0 {
 		return classifyInbound(text[i+len("process connection from "):])
 	}
@@ -189,7 +193,7 @@ func benignTail(cause string) (string, bool) {
 
 // "open connection to 5.6.7.8:443 using outbound/direct[germany~wg]: dial tcp ..."
 // - the tag is the bracketed part, or the type when the outbound has none.
-var dialLine = regexp.MustCompile(`^open connection to \S+ using outbound/([^\[\s:]+)(?:\[([^\]]+)\])?: (.*)$`)
+var dialLine = regexp.MustCompile(`^(?:open connection to \S+|listen packet connection using)\s+using outbound/([^\[\s:]+)(?:\[([^\]]+)\])?: (.*)$`)
 
 func classifyDial(text string) (string, bool) {
 	m := dialLine.FindStringSubmatch(text)

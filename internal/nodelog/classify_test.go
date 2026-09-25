@@ -55,6 +55,8 @@ func TestClassifyRealProductionLines(t *testing.T) {
 		{`ERROR[0001] inbound/vless[main#20006]: process connection from 127.0.0.1:53992: flow mismatch: expected xtls-rprx-vision, but got none`, KindFlowMismatch},
 		{`ERROR[0001] connection: open connection to shopfb.net:80 using outbound/direct[usa~wg]: lookup shopfb.net: (exchange6: NXDOMAIN | exchange4: NXDOMAIN)`, KindDNSFailure + ":usa~wg"},
 		{`ERROR[0001] connection: open connection to nohost.example:443 using outbound/direct[direct-out]: lookup nohost.example: no such host`, KindDNSFailure + ":direct-out"},
+		{`ERROR[0097] [1777181730 732ms] connection: listen packet connection using  using outbound/direct[usa~wg]: lookup www.textyahoo.com: (exchange6: NXDOMAIN | exchange4: NXDOMAIN)`, KindDNSFailure + ":usa~wg"},
+		{`ERROR[0097] connection: listen packet connection using  using outbound/direct[usa~wg]: dial udp 8.8.8.8:53: i/o timeout`, KindDialTimeout + ":usa~wg"},
 		{`ERROR[0001] connection: open connection to 127.0.0.1:5780 using outbound/direct[direct-out]: dial tcp 127.0.0.1:5780: connectex: No connection could be made because the target machine actively refused it.`, KindDialRefused + ":direct-out"},
 		{`ERROR[0001] connection: open connection to [2001:db8::1]:443 using outbound/socks[up]: dial tcp [2001:db8::1]:443: connect: network is unreachable`, KindDialUnreachable + ":up"},
 		{`ERROR[0001] connection: open connection to 5.6.7.8:443 using outbound/direct[x]: dial tcp 5.6.7.8:443: connect: no route to host`, KindDialUnreachable + ":x"},
