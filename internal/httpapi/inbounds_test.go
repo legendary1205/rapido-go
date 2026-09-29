@@ -45,6 +45,59 @@ func TestListInboundsDetailedReturnsRealFields(t *testing.T) {
 	}
 }
 
+func TestInboundsSyncAndDetailRoundTripASnellInbound(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "snell-main", "protocol": "snell", "snell_psk": "correct-horse-battery-staple", "snell_v6_mode": "unshaped"},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("sync snell inbound: %d %v", resp.Code, resp.Body)
+	}
+
+	detail := doRequest(t, router, "GET", "/api/inbounds/detail", token, nil)
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(detail.Raw, &rows); err != nil {
+		t.Fatalf("decode inbounds detail: %v", err)
+	}
+	var found map[string]interface{}
+	for _, r := range rows {
+		if r["tag"] == "snell-main" {
+			found = r
+		}
+	}
+	if found == nil {
+		t.Fatalf("snell-main not found in %v", rows)
+	}
+	if found["protocol"] != "snell" || found["snell_psk"] != "correct-horse-battery-staple" || found["snell_v6_mode"] != "unshaped" {
+		t.Errorf("unexpected shape: %v", found)
+	}
+	// Snell has no TLS of its own - these must stay unset even though a
+	// classic TCP-family inbound would normally carry them.
+	if _, has := found["tls_certificate"]; has {
+		t.Errorf("snell inbound unexpectedly carries tls_certificate: %v", found)
+	}
+}
+
+func TestSyncInboundRejectsSnellPSKTooShort(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "snell-main", "protocol": "snell", "snell_psk": "too-short"},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("snell psk under 12 bytes: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestSyncInboundRejectsSnellInvalidV6Mode(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{"tag": "snell-main", "protocol": "snell", "snell_psk": "correct-horse-battery-staple", "snell_v6_mode": "not-a-real-mode"},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("snell invalid snell_v6_mode: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
 func TestInboundsSyncAndDetailRoundTripATLSCertificate(t *testing.T) {
 	router, token := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{

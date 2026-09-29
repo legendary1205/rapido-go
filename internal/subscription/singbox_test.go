@@ -72,6 +72,39 @@ func TestSingBoxOutboundTUIC(t *testing.T) {
 	}
 }
 
+func TestSingBoxOutboundSnell(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 2000, SnellPSK: "correct-horse-battery-staple", SnellV6Mode: "unshaped"}
+	settings := proxysettings.Settings{Type: proxysettings.Snell, Snell: &proxysettings.SnellSettings{UserKey: "key-1"}}
+
+	out, err := SingBoxOutbound("Snell", "1.2.3.4", in, settings)
+	if err != nil {
+		t.Fatalf("SingBoxOutbound: %v", err)
+	}
+	if out["type"] != "snell" || out["psk"] != "correct-horse-battery-staple" || out["version"] != 6 ||
+		out["userkey"] != "key-1" || out["mode"] != "unshaped" {
+		t.Errorf("core fields wrong: %+v", out)
+	}
+	if _, present := out["multiplex"]; present {
+		t.Errorf("snell has no multiplex field in sing-box's own option struct: %+v", out)
+	}
+	if _, present := out["tls"]; present {
+		t.Errorf("snell has no TLS of its own: %+v", out)
+	}
+}
+
+func TestSingBoxOutboundSnellOmitsModeWhenDefault(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 2000, SnellPSK: "correct-horse-battery-staple"}
+	settings := proxysettings.Settings{Type: proxysettings.Snell, Snell: &proxysettings.SnellSettings{UserKey: "key-1"}}
+
+	out, err := SingBoxOutbound("Snell", "1.2.3.4", in, settings)
+	if err != nil {
+		t.Fatalf("SingBoxOutbound: %v", err)
+	}
+	if _, present := out["mode"]; present {
+		t.Errorf("mode present although snell_v6_mode was unset (default): %+v", out)
+	}
+}
+
 func TestSingBoxOutboundTUICDefaultsCongestionControlToCubic(t *testing.T) {
 	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com"}
 	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "pw"}}

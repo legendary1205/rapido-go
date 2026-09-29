@@ -43,6 +43,7 @@ const PROTOCOL_ORDER: ProtocolType[] = [
   "shadowsocks",
   "hysteria2",
   "tuic",
+  "snell",
 ];
 
 const STATUSES: Status[] = ["active", "on_hold", "limited", "expired", "disabled"];

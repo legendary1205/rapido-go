@@ -407,7 +407,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // decoder) - the node translates this into option.Options directly in Go.
 type inboundSpec struct {
 	Tag        string `json:"tag"`
-	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks | hysteria2 | tuic
+	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks | hysteria2 | tuic | snell
 	ListenPort uint16 `json:"listen_port"`
 	// ListenPorts is set only when one logical inbound serves several ports
 	// (ListenPort is then the first of them, for a node that predates this
@@ -418,13 +418,16 @@ type inboundSpec struct {
 	TLS         *tlsSpec   `json:"tls,omitempty"`
 
 	// Hysteria2ObfsPassword/UpMbps/DownMbps only apply to protocol="hysteria2";
-	// CongestionControl/ZeroRTTHandshake only to protocol="tuic" - mirrors
+	// CongestionControl/ZeroRTTHandshake only to protocol="tuic";
+	// SnellPSK/SnellV6Mode only to protocol="snell" - mirrors
 	// internal/httpapi/nodeconfig.go's nodeConfigInboundSpec byte-for-byte.
 	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
 	UpMbps                int32  `json:"up_mbps,omitempty"`
 	DownMbps              int32  `json:"down_mbps,omitempty"`
 	CongestionControl     string `json:"congestion_control,omitempty"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
+	SnellPSK              string `json:"snell_psk,omitempty"`
+	SnellV6Mode           string `json:"snell_v6_mode,omitempty"`
 }
 
 func (in inboundSpec) ports() []uint16 {
@@ -443,10 +446,13 @@ func derivedInboundTag(tag string, port uint16) string {
 
 type userSpec struct {
 	Name     string `json:"name"`
-	UUID     string `json:"uuid,omitempty"`     // vmess/vless
-	Password string `json:"password,omitempty"` // trojan/shadowsocks
+	UUID     string `json:"uuid,omitempty"`     // vmess/vless/tuic
+	Password string `json:"password,omitempty"` // trojan/shadowsocks/hysteria2/tuic
 	Flow     string `json:"flow,omitempty"`     // vless
 	Method   string `json:"method,omitempty"`   // shadowsocks
+	// UserKey is snell's own per-user secret - see internal/nodecore/snell's
+	// own doc comment for why it is not folded into Password.
+	UserKey string `json:"user_key,omitempty"` // snell
 }
 
 type tlsSpec struct {
@@ -650,7 +656,7 @@ func (s *server) handleUpdateUsers(w http.ResponseWriter, r *http.Request) {
 // its user list replaced on the running listener.
 func hotUpdatableProtocol(protocol string) bool {
 	switch protocol {
-	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic":
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "snell":
 		return true
 	}
 	return false
@@ -659,7 +665,7 @@ func hotUpdatableProtocol(protocol string) bool {
 func nodeUsers(specs []userSpec) []nodecore.User {
 	users := make([]nodecore.User, len(specs))
 	for i, u := range specs {
-		users[i] = nodecore.User{Name: u.Name, UUID: u.UUID, Password: u.Password, Flow: u.Flow}
+		users[i] = nodecore.User{Name: u.Name, UUID: u.UUID, Password: u.Password, Flow: u.Flow, UserKey: u.UserKey}
 	}
 	return users
 }
@@ -853,6 +859,22 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 					CongestionControl:          in.CongestionControl,
 					ZeroRTTHandshake:           in.ZeroRTTHandshake,
 					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+				}})
+			case "snell":
+				// No TLS of its own - see internal/nodecore/snell's own doc
+				// comment for why this fork (and so this builder) only ever
+				// targets version 6, the one version with both a real
+				// sing-box client and server in this dependency tree.
+				users := make([]sbox.SnellUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.SnellUser{Name: u.Name, UserKey: u.UserKey})
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "snell", Tag: tag, Options: &sbox.SnellInboundOptions{
+					Version: 6,
+					AbstractSnellInboundOptions: sbox.AbstractSnellInboundOptions{
+						ListenOptions: listenOptions, PSK: in.SnellPSK, Users: users,
+					},
+					V6Options: sbox.SnellV6Options{Mode: in.SnellV6Mode},
 				}})
 			}
 		}

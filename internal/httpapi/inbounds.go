@@ -137,6 +137,14 @@ type inboundDetailDTO struct {
 	DownMbps              int32  `json:"down_mbps,omitempty"`
 	CongestionControl     string `json:"congestion_control,omitempty"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
+
+	// SnellPSK/SnellV6Mode only apply to protocol="snell" - Snell has no TLS
+	// of its own, so unlike every field above (TCP-family or QUIC-family),
+	// neither is meaningful together with security/reality_*/tls_*. See
+	// internal/nodecore/snell's own doc comment for why SnellPSK is a
+	// separate, inbound-level secret from any one user's own credential.
+	SnellPSK    string `json:"snell_psk,omitempty"`
+	SnellV6Mode string `json:"snell_v6_mode,omitempty"`
 }
 
 func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
@@ -157,6 +165,8 @@ func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
 		DownMbps:              in.DownMbps.Int32,
 		CongestionControl:     in.CongestionControl.String,
 		ZeroRTTHandshake:      in.ZeroRttHandshake,
+		SnellPSK:              in.SnellPsk.String,
+		SnellV6Mode:           in.SnellV6Mode.String,
 	}
 }
 
@@ -237,12 +247,14 @@ type inboundSyncEntry struct {
 	TLSKey         string `json:"tls_key,omitempty"`
 	TLSServerName  string `json:"tls_server_name,omitempty"`
 
-	// See inboundDetailDTO's own doc comment on these same six fields.
+	// See inboundDetailDTO's own doc comment on these same eight fields.
 	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
 	UpMbps                int32  `json:"up_mbps,omitempty"`
 	DownMbps              int32  `json:"down_mbps,omitempty"`
 	CongestionControl     string `json:"congestion_control,omitempty"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
+	SnellPSK              string `json:"snell_psk,omitempty"`
+	SnellV6Mode           string `json:"snell_v6_mode,omitempty"`
 }
 
 // syncInboundEntries is the real work behind POST /api/inbounds/sync:
@@ -268,6 +280,17 @@ func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncE
 		}
 		if e.Protocol == "tuic" && e.CongestionControl != "" && !validCongestionControl[e.CongestionControl] {
 			return created, &inboundValidationError{"inbound " + e.Tag + ": invalid congestion_control " + e.CongestionControl}
+		}
+		if e.Protocol == "snell" {
+			// sing-snell's own v6 server rejects a PSK outside this range
+			// (see internal/nodecore/snell's own doc comment) - checked here
+			// so a bad one is a clean 422, not a node that fails to start.
+			if len(e.SnellPSK) < 12 || len(e.SnellPSK) > 255 {
+				return created, &inboundValidationError{"inbound " + e.Tag + ": snell_psk must be 12-255 bytes"}
+			}
+			if e.SnellV6Mode != "" && !validSnellV6Modes[e.SnellV6Mode] {
+				return created, &inboundValidationError{"inbound " + e.Tag + ": invalid snell_v6_mode " + e.SnellV6Mode}
+			}
 		}
 	}
 
@@ -303,6 +326,8 @@ func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncE
 			DownMbps:              pgInt4FromZero(e.DownMbps),
 			CongestionControl:     textFromPtr(normalizeZeroString(&e.CongestionControl)),
 			ZeroRttHandshake:      e.ZeroRTTHandshake,
+			SnellPsk:              textFromPtr(normalizeZeroString(&e.SnellPSK)),
+			SnellV6Mode:           textFromPtr(normalizeZeroString(&e.SnellV6Mode)),
 		})
 		if err != nil {
 			return created, fmt.Errorf("could not sync inbound %s: %w", e.Tag, err)
@@ -392,11 +417,15 @@ func realityPortToPg(port int32) pgtype.Int4 {
 
 func proxyTypeValid(protocol string) bool {
 	switch protocol {
-	case "vmess", "vless", "trojan", "shadowsocks", "hysteria2", "tuic":
+	case "vmess", "vless", "trojan", "shadowsocks", "hysteria2", "tuic", "snell":
 		return true
 	}
 	return false
 }
+
+// validSnellV6Modes mirrors internal/nodecore/snell's own accepted
+// snell_v6_mode values (sing-snell's snellv6.ParseMode).
+var validSnellV6Modes = map[string]bool{"default": true, "unshaped": true, "unsafe-raw": true}
 
 // pruneOrphanedProxies deletes every proxy whose protocol no longer has any
 // inbound at all - see PruneOrphanedProxies's own doc comment for why this

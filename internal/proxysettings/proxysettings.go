@@ -22,11 +22,12 @@ const (
 	Shadowsocks ProxyType = "shadowsocks"
 	Hysteria2   ProxyType = "hysteria2"
 	TUIC        ProxyType = "tuic"
+	Snell       ProxyType = "snell"
 )
 
 func (t ProxyType) Valid() bool {
 	switch t {
-	case VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC:
+	case VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, Snell:
 		return true
 	}
 	return false
@@ -60,6 +61,7 @@ type Settings struct {
 	Shadowsocks *ShadowsocksSettings
 	Hysteria2   *Hysteria2Settings
 	TUIC        *TUICSettings
+	Snell       *SnellSettings
 }
 
 type VMessSettings struct {
@@ -95,6 +97,14 @@ type Hysteria2Settings struct {
 type TUICSettings struct {
 	ID       string `json:"id"`
 	Password string `json:"password"`
+}
+
+// SnellSettings is just a UserKey - unlike Hysteria2Settings above, that key
+// is not the whole story: it only authenticates behind the inbound's own
+// shared PSK (an inbound-level setting, not stored per-user here) - see
+// internal/nodecore/snell's own doc comment.
+type SnellSettings struct {
+	UserKey string `json:"user_key"`
 }
 
 // randomPassword mirrors app/utils/system.py's random_password:
@@ -227,6 +237,18 @@ func parse(proxyType ProxyType, raw json.RawMessage, coerceVisionFlow bool) (Set
 		}
 		return Settings{Type: TUIC, TUIC: &s}, nil
 
+	case Snell:
+		var s SnellSettings
+		if hasSettings(raw) {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return Settings{}, fmt.Errorf("proxysettings: invalid snell settings: %w", err)
+			}
+		}
+		if s.UserKey == "" {
+			s.UserKey = randomPassword()
+		}
+		return Settings{Type: Snell, Snell: &s}, nil
+
 	default:
 		return Settings{}, fmt.Errorf("proxysettings: unknown proxy type %q", proxyType)
 	}
@@ -262,6 +284,8 @@ func (s Settings) MarshalJSON() ([]byte, error) {
 		return json.Marshal(s.Hysteria2)
 	case TUIC:
 		return json.Marshal(s.TUIC)
+	case Snell:
+		return json.Marshal(s.Snell)
 	default:
 		return nil, fmt.Errorf("proxysettings: unknown proxy type %q", s.Type)
 	}
@@ -285,5 +309,7 @@ func (s *Settings) Revoke() {
 	case TUIC:
 		s.TUIC.ID = uuid.NewString()
 		s.TUIC.Password = randomPassword()
+	case Snell:
+		s.Snell.UserKey = randomPassword()
 	}
 }

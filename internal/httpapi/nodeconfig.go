@@ -28,6 +28,10 @@ type nodeConfigUserSpec struct {
 	Password string `json:"password,omitempty"`
 	Flow     string `json:"flow,omitempty"`
 	Method   string `json:"method,omitempty"`
+	// UserKey is snell's own per-user secret - see cmd/node/main.go's
+	// userSpec (this struct's node-side mirror) for why it isn't folded
+	// into Password.
+	UserKey string `json:"user_key,omitempty"`
 }
 
 type nodeConfigRealitySpec struct {
@@ -67,6 +71,11 @@ type nodeConfigInboundSpec struct {
 	DownMbps              int32  `json:"down_mbps,omitempty"`
 	CongestionControl     string `json:"congestion_control,omitempty"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
+
+	// SnellPSK/SnellV6Mode only apply to protocol="snell" - see
+	// inbounds.go's inboundDetailDTO for what each means.
+	SnellPSK    string `json:"snell_psk,omitempty"`
+	SnellV6Mode string `json:"snell_v6_mode,omitempty"`
 }
 
 // nodeConfigInboundWire is nodeConfigInboundSpec with the user list already
@@ -96,6 +105,8 @@ type nodeConfigInboundWire struct {
 	DownMbps              int32  `json:"down_mbps,omitempty"`
 	CongestionControl     string `json:"congestion_control,omitempty"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
+	SnellPSK              string `json:"snell_psk,omitempty"`
+	SnellV6Mode           string `json:"snell_v6_mode,omitempty"`
 }
 
 // nodeConfigResponse is the full payload a node self-applies - see
@@ -195,6 +206,8 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 		case "tuic":
 			spec.UUID = settings.TUIC.ID
 			spec.Password = settings.TUIC.Password
+		case "snell":
+			spec.UserKey = settings.Snell.UserKey
 		default:
 			continue
 		}
@@ -237,6 +250,9 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 		case "tuic":
 			spec.CongestionControl = in.CongestionControl.String
 			spec.ZeroRTTHandshake = in.ZeroRttHandshake
+		case "snell":
+			spec.SnellPSK = in.SnellPsk.String
+			spec.SnellV6Mode = in.SnellV6Mode.String
 		}
 		if spec.Users == nil {
 			spec.Users = []nodeConfigUserSpec{}
@@ -287,6 +303,7 @@ func (s *nodeConfigSnapshot) render(p nodeProfile) (nodeConfigResponse, []byte, 
 			Users: users, TLS: in.TLS,
 			Hysteria2ObfsPassword: in.Hysteria2ObfsPassword, UpMbps: in.UpMbps, DownMbps: in.DownMbps,
 			CongestionControl: in.CongestionControl, ZeroRTTHandshake: in.ZeroRTTHandshake,
+			SnellPSK: in.SnellPSK, SnellV6Mode: in.SnellV6Mode,
 		})
 	}
 

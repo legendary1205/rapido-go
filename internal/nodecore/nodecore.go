@@ -9,6 +9,7 @@ import (
 
 	forkedhysteria2 "github.com/legendary1205/rapido-go/internal/nodecore/hysteria2"
 	forkedshadowsocks "github.com/legendary1205/rapido-go/internal/nodecore/shadowsocks"
+	forkedsnell "github.com/legendary1205/rapido-go/internal/nodecore/snell"
 	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
 	forkedtrojan "github.com/legendary1205/rapido-go/internal/nodecore/trojan"
 	forkedtuic "github.com/legendary1205/rapido-go/internal/nodecore/tuic"
@@ -71,9 +72,15 @@ func (n *Node) Close() error {
 // User is one proxy account in the protocol-neutral shape UpdateUsers takes.
 type User struct {
 	Name     string
-	UUID     string // vless, vmess
-	Password string // trojan, shadowsocks
+	UUID     string // vless, vmess, tuic
+	Password string // trojan, shadowsocks, hysteria2, tuic
 	Flow     string // vless
+	// UserKey is snell's own per-user secret - a distinct field from Password
+	// because, unlike every password-style field above, a snell inbound
+	// ALSO has an inbound-level PSK the user's own key sits behind (see
+	// internal/nodecore/snell's own doc comment); reusing Password would
+	// blur the two.
+	UserKey string // snell
 }
 
 // UpdateUsers replaces the user list on an already-running inbound identified
@@ -106,6 +113,10 @@ func (n *Node) UpdateUsers(tag, protocol string, users []User) error {
 	case "tuic":
 		return n.UpdateTUICUsers(tag, mapUsers(users, func(u User) option.TUICUser {
 			return option.TUICUser{Name: u.Name, UUID: u.UUID, Password: u.Password}
+		}))
+	case "snell":
+		return n.UpdateSnellUsers(tag, mapUsers(users, func(u User) option.SnellUser {
+			return option.SnellUser{Name: u.Name, UserKey: u.UserKey}
 		}))
 	default:
 		return fmt.Errorf("nodecore: unsupported protocol %q", protocol)
@@ -190,6 +201,16 @@ func (n *Node) UpdateHysteria2Users(tag string, users []option.Hysteria2User) er
 // nothing, if a user's UUID is missing or malformed.
 func (n *Node) UpdateTUICUsers(tag string, users []option.TUICUser) error {
 	in, err := runningInbound[*forkedtuic.Inbound](n, tag, "TUIC")
+	if err != nil {
+		return err
+	}
+	return in.UpdateUsers(users)
+}
+
+// UpdateSnellUsers is UpdateUsers for a Snell inbound. It fails, changing
+// nothing, if a user's UserKey is missing or two users share one.
+func (n *Node) UpdateSnellUsers(tag string, users []option.SnellUser) error {
+	in, err := runningInbound[*forkedsnell.Inbound](n, tag, "Snell")
 	if err != nil {
 		return err
 	}

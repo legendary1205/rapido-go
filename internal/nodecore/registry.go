@@ -36,6 +36,7 @@ import (
 
 	forkedhysteria2 "github.com/legendary1205/rapido-go/internal/nodecore/hysteria2"
 	forkedshadowsocks "github.com/legendary1205/rapido-go/internal/nodecore/shadowsocks"
+	forkedsnell "github.com/legendary1205/rapido-go/internal/nodecore/snell"
 	forkedtrojan "github.com/legendary1205/rapido-go/internal/nodecore/trojan"
 	forkedtuic "github.com/legendary1205/rapido-go/internal/nodecore/tuic"
 	forkedvless "github.com/legendary1205/rapido-go/internal/nodecore/vless"
@@ -45,10 +46,10 @@ import (
 // InboundRegistry registers only the protocols Rapido actually serves, all
 // from the local forks - not sing-box's full protocol/transport surface (tun,
 // socks, http proxy, WireGuard, etc.), none of which this node needs. The
-// upstream vmess/trojan/shadowsocks/hysteria2/tuic packages are still
+// upstream vmess/trojan/shadowsocks/hysteria2/tuic/snell packages are still
 // imported here (see OutboundRegistry), but only for their outbounds - the
-// hysteria2/tuic *inbound* type strings below resolve to this package's own
-// forks, not sing-box's.
+// hysteria2/tuic/snell *inbound* type strings below resolve to this
+// package's own forks, not sing-box's.
 func InboundRegistry() *inbound.Registry {
 	registry := inbound.NewRegistry()
 	forkedvmess.RegisterInbound(registry)
@@ -57,6 +58,7 @@ func InboundRegistry() *inbound.Registry {
 	forkedvless.RegisterInbound(registry)
 	forkedhysteria2.RegisterInbound(registry)
 	forkedtuic.RegisterInbound(registry)
+	forkedsnell.RegisterInbound(registry)
 	return registry
 }
 

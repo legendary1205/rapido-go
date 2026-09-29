@@ -12,9 +12,20 @@ import (
 // porting app/subscription/clash.py's ClashConfiguration/ClashMetaConfiguration
 // .make_node/.add. Returns nil, nil for a combination Clash can't represent -
 // matching the Python original's silent exclusion, not an error: kcp/
-// splithttp/xhttp always (no Clash transport maps to them), plain vless on
-// non-meta Clash (the base protocol has no VLESS support at all), and reality
-// security on non-meta Clash (no reality-opts field exists there).
+// splithttp/xhttp always (no Clash transport maps to them), plain vless,
+// hysteria2 and tuic on non-meta Clash (the base protocol has none of the
+// three at all), and reality security on non-meta Clash (no reality-opts
+// field exists there).
+//
+// Snell is never returned, meta or not - not a scope cut like the others
+// above, an actual incompatibility: Clash Meta's own "snell" proxy type
+// speaks the classic Snell wire versions (matching Surge, ClashX and the
+// real snell-server/snell-client binaries), and this codebase's Snell
+// inbound only serves sing-box's own v6 - the same version split documented
+// on internal/nodecore/snell's own doc comment, which is also why this
+// codebase's Core Config Snell OUTBOUND (v4) can't dial this inbound
+// either. A snell:// link/config for this inbound would simply fail to
+// connect through Clash Meta, so none is offered.
 func ClashProxy(remark, address string, in EffectiveInbound, settings proxysettings.Settings, isMeta bool) (map[string]any, error) {
 	switch in.Network {
 	case "kcp", "splithttp", "xhttp":

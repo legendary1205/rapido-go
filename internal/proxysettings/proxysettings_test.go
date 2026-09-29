@@ -85,7 +85,7 @@ func TestFromWireShadowsocksDefaults(t *testing.T) {
 // mechanism) - every protocol must accept this shape the same as no
 // settings supplied at all, not reject it as malformed input.
 func TestFromWireTreatsEmptyArrayAsNoSettings(t *testing.T) {
-	for _, proxyType := range []ProxyType{VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC} {
+	for _, proxyType := range []ProxyType{VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, Snell} {
 		s, err := FromWire(proxyType, json.RawMessage(`[]`))
 		if err != nil {
 			t.Errorf("FromWire(%s, []): %v, want the same defaulting as no settings at all", proxyType, err)
@@ -115,7 +115,31 @@ func TestFromWireTreatsEmptyArrayAsNoSettings(t *testing.T) {
 			if s.TUIC.ID == "" || s.TUIC.Password == "" {
 				t.Errorf("TUIC = %+v, want a generated id and password", s.TUIC)
 			}
+		case Snell:
+			if s.Snell.UserKey == "" {
+				t.Error("Snell.UserKey is empty, want an auto-generated user key")
+			}
 		}
+	}
+}
+
+func TestFromWireSnellGeneratesUserKey(t *testing.T) {
+	s, err := FromWire(Snell, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Snell.UserKey == "" {
+		t.Error("Snell.UserKey is empty, want an auto-generated user key")
+	}
+}
+
+func TestFromWireSnellPreservesGivenUserKey(t *testing.T) {
+	s, err := FromWire(Snell, json.RawMessage(`{"user_key":"mine"}`))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Snell.UserKey != "mine" {
+		t.Errorf("Snell.UserKey = %q, want the given key preserved", s.Snell.UserKey)
 	}
 }
 
@@ -217,6 +241,16 @@ func TestRevokeRotatesSecret(t *testing.T) {
 	tu.Revoke()
 	if tu.TUIC.ID == beforeID || tu.TUIC.Password == beforeTuPw {
 		t.Errorf("Revoke() did not rotate both TUIC id and password: before (%s, %s), after (%s, %s)", beforeID, beforeTuPw, tu.TUIC.ID, tu.TUIC.Password)
+	}
+
+	sn, err := FromWire(Snell, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	beforeKey := sn.Snell.UserKey
+	sn.Revoke()
+	if sn.Snell.UserKey == beforeKey {
+		t.Error("Revoke() did not change the Snell user key")
 	}
 }
 

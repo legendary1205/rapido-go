@@ -15,6 +15,7 @@ SELECT i.tag, i.protocol, i.network, i.header_type, i.security,
        i.reality_private_key, i.reality_short_ids, i.reality_server_name, i.reality_server_port,
        i.tls_certificate, i.tls_key, i.tls_server_name,
        i.hysteria2_obfs_password, i.up_mbps, i.down_mbps, i.congestion_control, i.zero_rtt_handshake,
+       i.snell_psk, i.snell_v6_mode,
        h.port, h.sni, h.host,
        ARRAY(
            SELECT DISTINCT hp.port FROM hosts hp

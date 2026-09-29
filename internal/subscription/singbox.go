@@ -59,6 +59,13 @@ func SingBoxOutbound(tag, address string, in EffectiveInbound, settings proxyset
 		if in.ZeroRTTHandshake {
 			out["zero_rtt_handshake"] = true
 		}
+	case proxysettings.Snell:
+		out["psk"] = in.SnellPSK
+		out["version"] = 6
+		out["userkey"] = settings.Snell.UserKey
+		if in.SnellV6Mode != "" && in.SnellV6Mode != "default" {
+			out["mode"] = in.SnellV6Mode
+		}
 	default:
 		return nil, fmt.Errorf("subscription: unknown proxy type %q", settings.Type)
 	}
@@ -69,11 +76,12 @@ func SingBoxOutbound(tag, address string, in EffectiveInbound, settings proxyset
 	if tls := singBoxTLS(in); tls != nil {
 		out["tls"] = tls
 	}
-	// hysteria2/tuic are QUIC-based, and sing-box's own option structs for
-	// both have no multiplex field at all to set - see this function's own
-	// doc comment on the two protocols' mandatory TLS for why they're
-	// otherwise built like every classic TCP-family type above.
-	if settings.Type == proxysettings.Hysteria2 || settings.Type == proxysettings.TUIC {
+	// hysteria2/tuic/snell each have their own reason to have no multiplex
+	// field in sing-box's own option structs (hysteria2/tuic: QUIC-based;
+	// snell: its own doc comment on internal/nodecore/snell) - see this
+	// function's own doc comment on the QUIC pair's mandatory TLS for why
+	// they're otherwise built like every classic TCP-family type above.
+	if settings.Type == proxysettings.Hysteria2 || settings.Type == proxysettings.TUIC || settings.Type == proxysettings.Snell {
 		return out, nil
 	}
 	// Python's SingBoxConfiguration.make_outbound sets this block on EVERY

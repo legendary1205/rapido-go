@@ -57,6 +57,13 @@ type EffectiveInbound struct {
 	DownMbps              int    `json:"down_mbps"`
 	CongestionControl     string `json:"congestion_control"`
 	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake"`
+
+	// SnellPSK/SnellV6Mode only apply when Protocol is "snell" - also
+	// inbound-level, no host-level override. See
+	// internal/nodecore/snell's own doc comment for why SnellPSK is a
+	// separate, inbound-level secret from any one user's own credential.
+	SnellPSK    string `json:"snell_psk"`
+	SnellV6Mode string `json:"snell_v6_mode"`
 }
 
 // BuildEffectiveInbound merges one Host row onto its parent Inbound row.
@@ -100,6 +107,8 @@ func BuildEffectiveInbound(inbound generated.Inbound, host generated.Host) Effec
 		DownMbps:              int(inbound.DownMbps.Int32),
 		CongestionControl:     inbound.CongestionControl.String,
 		ZeroRTTHandshake:      inbound.ZeroRttHandshake,
+		SnellPSK:              inbound.SnellPsk.String,
+		SnellV6Mode:           inbound.SnellV6Mode.String,
 	}
 	if host.UseSniAsHost {
 		e.HostHeader = e.SNI
