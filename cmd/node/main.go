@@ -407,7 +407,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // decoder) - the node translates this into option.Options directly in Go.
 type inboundSpec struct {
 	Tag        string `json:"tag"`
-	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks
+	Protocol   string `json:"protocol"` // vless | vmess | trojan | shadowsocks | hysteria2 | tuic
 	ListenPort uint16 `json:"listen_port"`
 	// ListenPorts is set only when one logical inbound serves several ports
 	// (ListenPort is then the first of them, for a node that predates this
@@ -416,6 +416,15 @@ type inboundSpec struct {
 	ListenPorts []uint16   `json:"listen_ports,omitempty"`
 	Users       []userSpec `json:"users"`
 	TLS         *tlsSpec   `json:"tls,omitempty"`
+
+	// Hysteria2ObfsPassword/UpMbps/DownMbps only apply to protocol="hysteria2";
+	// CongestionControl/ZeroRTTHandshake only to protocol="tuic" - mirrors
+	// internal/httpapi/nodeconfig.go's nodeConfigInboundSpec byte-for-byte.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
+	UpMbps                int32  `json:"up_mbps,omitempty"`
+	DownMbps              int32  `json:"down_mbps,omitempty"`
+	CongestionControl     string `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
 }
 
 func (in inboundSpec) ports() []uint16 {
@@ -641,7 +650,7 @@ func (s *server) handleUpdateUsers(w http.ResponseWriter, r *http.Request) {
 // its user list replaced on the running listener.
 func hotUpdatableProtocol(protocol string) bool {
 	switch protocol {
-	case "vless", "vmess", "trojan", "shadowsocks":
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic":
 		return true
 	}
 	return false
@@ -810,6 +819,40 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 					ListenOptions: listenOptions,
 					Method:        method,
 					Users:         users,
+				}})
+			case "hysteria2":
+				// QUIC-based - TLS is mandatory at the transport level, same
+				// reasoning as this protocol's own outbound side (see
+				// buildOutboundTLS's doc comment); sing-box itself refuses to
+				// even start one without TLS.
+				users := make([]sbox.Hysteria2User, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.Hysteria2User{Name: u.Name, Password: u.Password})
+				}
+				var obfs *sbox.Hysteria2Obfs
+				if in.Hysteria2ObfsPassword != "" {
+					obfs = &sbox.Hysteria2Obfs{Type: "salamander", Password: in.Hysteria2ObfsPassword}
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "hysteria2", Tag: tag, Options: &sbox.Hysteria2InboundOptions{
+					ListenOptions:              listenOptions,
+					UpMbps:                     int(in.UpMbps),
+					DownMbps:                   int(in.DownMbps),
+					Obfs:                       obfs,
+					Users:                      users,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+				}})
+			case "tuic":
+				// Also QUIC-based - same mandatory-TLS reasoning as hysteria2.
+				users := make([]sbox.TUICUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.TUICUser{Name: u.Name, UUID: u.UUID, Password: u.Password})
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "tuic", Tag: tag, Options: &sbox.TUICInboundOptions{
+					ListenOptions:              listenOptions,
+					Users:                      users,
+					CongestionControl:          in.CongestionControl,
+					ZeroRTTHandshake:           in.ZeroRTTHandshake,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
 				}})
 			}
 		}

@@ -147,6 +147,14 @@ type EffectiveHost struct {
 	NoiseSetting     string `json:"noise_setting"`
 	RandomUserAgent  bool   `json:"random_user_agent"`
 
+	// See subscription.EffectiveInbound's own doc comment on these five -
+	// only meaningful for a peer host whose Protocol is "hysteria2"/"tuic".
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password"`
+	UpMbps                int    `json:"up_mbps"`
+	DownMbps              int    `json:"down_mbps"`
+	CongestionControl     string `json:"congestion_control"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake"`
+
 	// Remark is the raw, unformatted template ({USERNAME} etc. still
 	// literal) - the RECEIVING panel formats it with its own user's own
 	// variables, never this peer's, since {DATA_USAGE}/{EXPIRE_DATE}/etc.

@@ -88,8 +88,8 @@ func TestDiffPulledConfigHotListNamesEachChangedInboundWithItsOwnProtocol(t *tes
 }
 
 func TestDiffPulledConfigUserChangeOnAnUnknownProtocolNeedsRestart(t *testing.T) {
-	old := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "hysteria2", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p1"}}}}}
-	next := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "hysteria2", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p2"}}}}}
+	old := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "not-a-real-protocol", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p1"}}}}}
+	next := pulledConfig{Inbounds: []inboundSpec{{Tag: "in1", Protocol: "not-a-real-protocol", ListenPort: 443, Users: []userSpec{{Name: "a", Password: "p2"}}}}}
 	if needsRestart, _ := diffPulledConfig(&old, next); !needsRestart {
 		t.Error("a protocol with no hot-update path changed its users - want a restart")
 	}

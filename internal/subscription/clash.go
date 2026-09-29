@@ -26,6 +26,11 @@ func ClashProxy(remark, address string, in EffectiveInbound, settings proxysetti
 	if !isMeta && settings.Type == proxysettings.VLESS {
 		return nil, nil
 	}
+	// hysteria2/tuic are Clash Meta additions - plain Clash has never
+	// supported either.
+	if !isMeta && (settings.Type == proxysettings.Hysteria2 || settings.Type == proxysettings.TUIC) {
+		return nil, nil
+	}
 
 	node := map[string]any{
 		"name": remark, "server": address, "port": in.Port, "udp": true,
@@ -54,6 +59,52 @@ func ClashProxy(remark, address string, in EffectiveInbound, settings proxysetti
 		node["type"] = "ss"
 		node["password"] = settings.Shadowsocks.Password
 		node["cipher"] = string(settings.Shadowsocks.Method)
+		return node, nil
+	case proxysettings.Hysteria2:
+		// Also otherwise self-contained, same as shadowsocks above: TLS is
+		// mandatory rather than a tls/network block built the way the
+		// classic protocols below need (see internal/nodecore/hysteria2's
+		// own doc comment), so this returns early too.
+		node["type"] = "hysteria2"
+		node["password"] = settings.Hysteria2.Password
+		node["sni"] = in.SNI
+		if in.AllowInsecure {
+			node["skip-cert-verify"] = true
+		}
+		if in.ALPN != "" {
+			node["alpn"] = strings.Split(in.ALPN, ",")
+		}
+		if in.UpMbps > 0 {
+			node["up"] = in.UpMbps
+		}
+		if in.DownMbps > 0 {
+			node["down"] = in.DownMbps
+		}
+		if in.Hysteria2ObfsPassword != "" {
+			node["obfs"] = "salamander"
+			node["obfs-password"] = in.Hysteria2ObfsPassword
+		}
+		return node, nil
+	case proxysettings.TUIC:
+		node["type"] = "tuic"
+		node["uuid"] = settings.TUIC.ID
+		node["password"] = settings.TUIC.Password
+		node["sni"] = in.SNI
+		if in.AllowInsecure {
+			node["skip-cert-verify"] = true
+		}
+		if in.ALPN != "" {
+			node["alpn"] = strings.Split(in.ALPN, ",")
+		}
+		congestionControl := in.CongestionControl
+		if congestionControl == "" {
+			congestionControl = "cubic" // the node's own default - see internal/nodecore/tuic
+		}
+		node["congestion-controller"] = congestionControl
+		node["udp-relay-mode"] = "native"
+		if in.ZeroRTTHandshake {
+			node["reduce-rtt"] = true
+		}
 		return node, nil
 	default:
 		return nil, nil

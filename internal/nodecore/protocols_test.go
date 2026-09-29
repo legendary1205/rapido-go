@@ -705,7 +705,7 @@ func TestUpdateUsersRejectsBadTargets(t *testing.T) {
 	if err := f.node.UpdateUsers(forkTag, "vmess", users); err == nil || !strings.Contains(err.Error(), "not a VMess inbound") {
 		t.Errorf("updating a trojan inbound as vmess: err = %v, want a type mismatch", err)
 	}
-	if err := f.node.UpdateUsers(forkTag, "hysteria2", users); err == nil || !strings.Contains(err.Error(), "unsupported protocol") {
+	if err := f.node.UpdateUsers(forkTag, "not-a-real-protocol", users); err == nil || !strings.Contains(err.Error(), "unsupported protocol") {
 		t.Errorf("unknown protocol: err = %v, want unsupported protocol", err)
 	}
 

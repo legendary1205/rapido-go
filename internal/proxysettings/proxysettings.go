@@ -20,11 +20,13 @@ const (
 	VLESS       ProxyType = "vless"
 	Trojan      ProxyType = "trojan"
 	Shadowsocks ProxyType = "shadowsocks"
+	Hysteria2   ProxyType = "hysteria2"
+	TUIC        ProxyType = "tuic"
 )
 
 func (t ProxyType) Valid() bool {
 	switch t {
-	case VMess, VLESS, Trojan, Shadowsocks:
+	case VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC:
 		return true
 	}
 	return false
@@ -56,6 +58,8 @@ type Settings struct {
 	VLESS       *VLESSSettings
 	Trojan      *TrojanSettings
 	Shadowsocks *ShadowsocksSettings
+	Hysteria2   *Hysteria2Settings
+	TUIC        *TUICSettings
 }
 
 type VMessSettings struct {
@@ -75,6 +79,22 @@ type TrojanSettings struct {
 type ShadowsocksSettings struct {
 	Password string            `json:"password"`
 	Method   ShadowsocksMethod `json:"method"`
+}
+
+// Hysteria2Settings has no flow/method sibling - hysteria2's own auth is a
+// single password, nothing else per-user to configure.
+type Hysteria2Settings struct {
+	Password string `json:"password"`
+}
+
+// TUICSettings carries both an identity (UUID, like vless) and a secret
+// (password, like trojan) - TUIC's own auth scheme needs both: the UUID
+// selects which user, the password is verified separately via a TLS
+// exported-keying-material check (see internal/nodecore/tuic's own doc
+// comment).
+type TUICSettings struct {
+	ID       string `json:"id"`
+	Password string `json:"password"`
 }
 
 // randomPassword mirrors app/utils/system.py's random_password:
@@ -180,6 +200,33 @@ func parse(proxyType ProxyType, raw json.RawMessage, coerceVisionFlow bool) (Set
 		}
 		return Settings{Type: Shadowsocks, Shadowsocks: &s}, nil
 
+	case Hysteria2:
+		var s Hysteria2Settings
+		if hasSettings(raw) {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return Settings{}, fmt.Errorf("proxysettings: invalid hysteria2 settings: %w", err)
+			}
+		}
+		if s.Password == "" {
+			s.Password = randomPassword()
+		}
+		return Settings{Type: Hysteria2, Hysteria2: &s}, nil
+
+	case TUIC:
+		var s TUICSettings
+		if hasSettings(raw) {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return Settings{}, fmt.Errorf("proxysettings: invalid tuic settings: %w", err)
+			}
+		}
+		if s.ID == "" {
+			s.ID = uuid.NewString()
+		}
+		if s.Password == "" {
+			s.Password = randomPassword()
+		}
+		return Settings{Type: TUIC, TUIC: &s}, nil
+
 	default:
 		return Settings{}, fmt.Errorf("proxysettings: unknown proxy type %q", proxyType)
 	}
@@ -211,6 +258,10 @@ func (s Settings) MarshalJSON() ([]byte, error) {
 		return json.Marshal(s.Trojan)
 	case Shadowsocks:
 		return json.Marshal(s.Shadowsocks)
+	case Hysteria2:
+		return json.Marshal(s.Hysteria2)
+	case TUIC:
+		return json.Marshal(s.TUIC)
 	default:
 		return nil, fmt.Errorf("proxysettings: unknown proxy type %q", s.Type)
 	}
@@ -229,5 +280,10 @@ func (s *Settings) Revoke() {
 		s.Trojan.Password = randomPassword()
 	case Shadowsocks:
 		s.Shadowsocks.Password = randomPassword()
+	case Hysteria2:
+		s.Hysteria2.Password = randomPassword()
+	case TUIC:
+		s.TUIC.ID = uuid.NewString()
+		s.TUIC.Password = randomPassword()
 	}
 }

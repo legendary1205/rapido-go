@@ -24,6 +24,17 @@ func pgInt4FromInt(n int) pgtype.Int4 {
 	return pgtype.Int4{Int32: int32(n), Valid: true}
 }
 
+// pgInt4FromZero treats 0 as "unset" rather than a real value - for fields
+// where zero is never meaningful (a port number, a declared bandwidth in
+// Mbps), so a request that simply omits the field round-trips as NULL
+// instead of as a stored zero. Mirrors inbounds.go's own realityPortToPg.
+func pgInt4FromZero(n int32) pgtype.Int4 {
+	if n == 0 {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: n, Valid: true}
+}
+
 func pgInt4FromPtr(v *int32) pgtype.Int4 {
 	if v == nil {
 		return pgtype.Int4{}

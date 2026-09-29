@@ -37,6 +37,28 @@ func SingBoxOutbound(tag, address string, in EffectiveInbound, settings proxyset
 	case proxysettings.Shadowsocks:
 		out["password"] = settings.Shadowsocks.Password
 		out["method"] = string(settings.Shadowsocks.Method)
+	case proxysettings.Hysteria2:
+		out["password"] = settings.Hysteria2.Password
+		if in.UpMbps > 0 {
+			out["up_mbps"] = in.UpMbps
+		}
+		if in.DownMbps > 0 {
+			out["down_mbps"] = in.DownMbps
+		}
+		if in.Hysteria2ObfsPassword != "" {
+			out["obfs"] = map[string]any{"type": "salamander", "password": in.Hysteria2ObfsPassword}
+		}
+	case proxysettings.TUIC:
+		out["uuid"] = settings.TUIC.ID
+		out["password"] = settings.TUIC.Password
+		congestionControl := in.CongestionControl
+		if congestionControl == "" {
+			congestionControl = "cubic" // the node's own default - see internal/nodecore/tuic
+		}
+		out["congestion_control"] = congestionControl
+		if in.ZeroRTTHandshake {
+			out["zero_rtt_handshake"] = true
+		}
 	default:
 		return nil, fmt.Errorf("subscription: unknown proxy type %q", settings.Type)
 	}
@@ -46,6 +68,13 @@ func SingBoxOutbound(tag, address string, in EffectiveInbound, settings proxyset
 	}
 	if tls := singBoxTLS(in); tls != nil {
 		out["tls"] = tls
+	}
+	// hysteria2/tuic are QUIC-based, and sing-box's own option structs for
+	// both have no multiplex field at all to set - see this function's own
+	// doc comment on the two protocols' mandatory TLS for why they're
+	// otherwise built like every classic TCP-family type above.
+	if settings.Type == proxysettings.Hysteria2 || settings.Type == proxysettings.TUIC {
+		return out, nil
 	}
 	// Python's SingBoxConfiguration.make_outbound sets this block on EVERY
 	// outbound unconditionally (not gated by mux_enable at all), from

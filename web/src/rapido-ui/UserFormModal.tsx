@@ -41,6 +41,8 @@ const PROTOCOL_ORDER: ProtocolType[] = [
   "vless",
   "trojan",
   "shadowsocks",
+  "hysteria2",
+  "tuic",
 ];
 
 const STATUSES: Status[] = ["active", "on_hold", "limited", "expired", "disabled"];

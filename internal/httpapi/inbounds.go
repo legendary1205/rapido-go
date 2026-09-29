@@ -125,6 +125,18 @@ type inboundDetailDTO struct {
 	TLSCertificate string `json:"tls_certificate,omitempty"`
 	TLSKey         string `json:"tls_key,omitempty"`
 	TLSServerName  string `json:"tls_server_name,omitempty"`
+
+	// Hysteria2ObfsPassword/UpMbps/DownMbps only apply to protocol="hysteria2";
+	// CongestionControl/ZeroRTTHandshake only to protocol="tuic". Both
+	// protocols are QUIC-based and TLS-mandatory - see
+	// internal/nodecore/hysteria2 and internal/nodecore/tuic's own doc
+	// comments - so unlike the TCP-family fields above, none of these six
+	// are meaningful together with reality_*/network/header_type.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
+	UpMbps                int32  `json:"up_mbps,omitempty"`
+	DownMbps              int32  `json:"down_mbps,omitempty"`
+	CongestionControl     string `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
 }
 
 func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
@@ -132,14 +144,19 @@ func toInboundDetailDTO(in generated.Inbound) inboundDetailDTO {
 	// "unset" wire value this DTO wants - no helper needed.
 	return inboundDetailDTO{
 		Tag: in.Tag, Protocol: in.Protocol, Network: in.Network, HeaderType: in.HeaderType.String,
-		Security:          in.Security,
-		RealityPrivateKey: in.RealityPrivateKey.String,
-		RealityShortIDs:   in.RealityShortIds,
-		RealityServerName: in.RealityServerName.String,
-		RealityServerPort: in.RealityServerPort.Int32,
-		TLSCertificate:    in.TlsCertificate.String,
-		TLSKey:            in.TlsKey.String,
-		TLSServerName:     in.TlsServerName.String,
+		Security:              in.Security,
+		RealityPrivateKey:     in.RealityPrivateKey.String,
+		RealityShortIDs:       in.RealityShortIds,
+		RealityServerName:     in.RealityServerName.String,
+		RealityServerPort:     in.RealityServerPort.Int32,
+		TLSCertificate:        in.TlsCertificate.String,
+		TLSKey:                in.TlsKey.String,
+		TLSServerName:         in.TlsServerName.String,
+		Hysteria2ObfsPassword: in.Hysteria2ObfsPassword.String,
+		UpMbps:                in.UpMbps.Int32,
+		DownMbps:              in.DownMbps.Int32,
+		CongestionControl:     in.CongestionControl.String,
+		ZeroRTTHandshake:      in.ZeroRttHandshake,
 	}
 }
 
@@ -219,6 +236,13 @@ type inboundSyncEntry struct {
 	TLSCertificate string `json:"tls_certificate,omitempty"`
 	TLSKey         string `json:"tls_key,omitempty"`
 	TLSServerName  string `json:"tls_server_name,omitempty"`
+
+	// See inboundDetailDTO's own doc comment on these same six fields.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
+	UpMbps                int32  `json:"up_mbps,omitempty"`
+	DownMbps              int32  `json:"down_mbps,omitempty"`
+	CongestionControl     string `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
 }
 
 // syncInboundEntries is the real work behind POST /api/inbounds/sync:
@@ -234,6 +258,16 @@ func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncE
 	for _, e := range entries {
 		if !proxyTypeValid(e.Protocol) {
 			return created, &inboundValidationError{"unknown protocol: " + e.Protocol}
+		}
+		// hysteria2/tuic are QUIC-based and sing-box refuses to even start
+		// one without TLS (C.ErrTLSRequired) - caught here as a clean 422
+		// instead of surfacing later as every one of that inbound's users
+		// failing to connect.
+		if (e.Protocol == "hysteria2" || e.Protocol == "tuic") && e.Security != "tls" {
+			return created, &inboundValidationError{"inbound " + e.Tag + ": security must be \"tls\" for protocol " + e.Protocol}
+		}
+		if e.Protocol == "tuic" && e.CongestionControl != "" && !validCongestionControl[e.CongestionControl] {
+			return created, &inboundValidationError{"inbound " + e.Tag + ": invalid congestion_control " + e.CongestionControl}
 		}
 	}
 
@@ -256,14 +290,19 @@ func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncE
 
 		row, err := h.store.Queries.UpsertInbound(ctx, generated.UpsertInboundParams{
 			Tag: e.Tag, Protocol: e.Protocol, Network: network, HeaderType: textFromPtr(normalizeZeroString(&e.HeaderType)),
-			Security:          security,
-			RealityPrivateKey: textFromPtr(normalizeZeroString(&e.RealityPrivateKey)),
-			RealityShortIds:   e.RealityShortIDs,
-			RealityServerName: textFromPtr(normalizeZeroString(&e.RealityServerName)),
-			RealityServerPort: realityPortToPg(e.RealityServerPort),
-			TlsCertificate:    textFromPtr(normalizeZeroString(&e.TLSCertificate)),
-			TlsKey:            textFromPtr(normalizeZeroString(&e.TLSKey)),
-			TlsServerName:     textFromPtr(normalizeZeroString(&e.TLSServerName)),
+			Security:              security,
+			RealityPrivateKey:     textFromPtr(normalizeZeroString(&e.RealityPrivateKey)),
+			RealityShortIds:       e.RealityShortIDs,
+			RealityServerName:     textFromPtr(normalizeZeroString(&e.RealityServerName)),
+			RealityServerPort:     realityPortToPg(e.RealityServerPort),
+			TlsCertificate:        textFromPtr(normalizeZeroString(&e.TLSCertificate)),
+			TlsKey:                textFromPtr(normalizeZeroString(&e.TLSKey)),
+			TlsServerName:         textFromPtr(normalizeZeroString(&e.TLSServerName)),
+			Hysteria2ObfsPassword: textFromPtr(normalizeZeroString(&e.Hysteria2ObfsPassword)),
+			UpMbps:                pgInt4FromZero(e.UpMbps),
+			DownMbps:              pgInt4FromZero(e.DownMbps),
+			CongestionControl:     textFromPtr(normalizeZeroString(&e.CongestionControl)),
+			ZeroRttHandshake:      e.ZeroRTTHandshake,
 		})
 		if err != nil {
 			return created, fmt.Errorf("could not sync inbound %s: %w", e.Tag, err)
@@ -353,7 +392,7 @@ func realityPortToPg(port int32) pgtype.Int4 {
 
 func proxyTypeValid(protocol string) bool {
 	switch protocol {
-	case "vmess", "vless", "trojan", "shadowsocks":
+	case "vmess", "vless", "trojan", "shadowsocks", "hysteria2", "tuic":
 		return true
 	}
 	return false

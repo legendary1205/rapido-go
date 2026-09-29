@@ -28,6 +28,66 @@ func TestSingBoxOutboundVLESSReality(t *testing.T) {
 	}
 }
 
+func TestSingBoxOutboundHysteria2(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com", UpMbps: 50, DownMbps: 200, Hysteria2ObfsPassword: "obfs-pw"}
+	settings := proxysettings.Settings{Type: proxysettings.Hysteria2, Hysteria2: &proxysettings.Hysteria2Settings{Password: "pw"}}
+
+	out, err := SingBoxOutbound("HY2", "1.2.3.4", in, settings)
+	if err != nil {
+		t.Fatalf("SingBoxOutbound: %v", err)
+	}
+	if out["type"] != "hysteria2" || out["password"] != "pw" || out["up_mbps"] != 50 || out["down_mbps"] != 200 {
+		t.Errorf("core fields wrong: %+v", out)
+	}
+	obfs, ok := out["obfs"].(map[string]any)
+	if !ok || obfs["type"] != "salamander" || obfs["password"] != "obfs-pw" {
+		t.Errorf("obfs block wrong: %+v", out)
+	}
+	tls, ok := out["tls"].(map[string]any)
+	if !ok || tls["enabled"] != true || tls["server_name"] != "example.com" {
+		t.Errorf("tls block wrong: %+v", out)
+	}
+	if _, present := out["multiplex"]; present {
+		t.Errorf("hysteria2 has no multiplex field in sing-box's own option struct: %+v", out)
+	}
+	if _, present := out["transport"]; present {
+		t.Errorf("hysteria2 has no transport of its own: %+v", out)
+	}
+}
+
+func TestSingBoxOutboundTUIC(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com", CongestionControl: "bbr", ZeroRTTHandshake: true}
+	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "pw"}}
+
+	out, err := SingBoxOutbound("TUIC", "1.2.3.4", in, settings)
+	if err != nil {
+		t.Fatalf("SingBoxOutbound: %v", err)
+	}
+	if out["type"] != "tuic" || out["uuid"] != "uuid-1" || out["password"] != "pw" ||
+		out["congestion_control"] != "bbr" || out["zero_rtt_handshake"] != true {
+		t.Errorf("core fields wrong: %+v", out)
+	}
+	if _, present := out["multiplex"]; present {
+		t.Errorf("tuic has no multiplex field in sing-box's own option struct: %+v", out)
+	}
+}
+
+func TestSingBoxOutboundTUICDefaultsCongestionControlToCubic(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls", SNI: "example.com"}
+	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "pw"}}
+
+	out, err := SingBoxOutbound("TUIC", "1.2.3.4", in, settings)
+	if err != nil {
+		t.Fatalf("SingBoxOutbound: %v", err)
+	}
+	if out["congestion_control"] != "cubic" {
+		t.Errorf("congestion_control = %v, want the node's own default cubic", out["congestion_control"])
+	}
+	if _, present := out["zero_rtt_handshake"]; present {
+		t.Errorf("zero_rtt_handshake present although ZeroRTTHandshake was false: %+v", out)
+	}
+}
+
 func TestSingBoxOutboundSkipsUnsupportedTransport(t *testing.T) {
 	in := EffectiveInbound{Network: "xhttp", Port: 443}
 	settings := proxysettings.Settings{Type: proxysettings.VLESS, VLESS: &proxysettings.VLESSSettings{ID: "u"}}

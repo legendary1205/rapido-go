@@ -7,8 +7,9 @@
 INSERT INTO inbounds (
     tag, protocol, network, header_type, security,
     reality_private_key, reality_short_ids, reality_server_name, reality_server_port,
-    tls_certificate, tls_key, tls_server_name
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    tls_certificate, tls_key, tls_server_name,
+    hysteria2_obfs_password, up_mbps, down_mbps, congestion_control, zero_rtt_handshake
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 ON CONFLICT (tag) DO UPDATE SET
     protocol = EXCLUDED.protocol,
     network = EXCLUDED.network,
@@ -20,7 +21,12 @@ ON CONFLICT (tag) DO UPDATE SET
     reality_server_port = EXCLUDED.reality_server_port,
     tls_certificate = EXCLUDED.tls_certificate,
     tls_key = EXCLUDED.tls_key,
-    tls_server_name = EXCLUDED.tls_server_name
+    tls_server_name = EXCLUDED.tls_server_name,
+    hysteria2_obfs_password = EXCLUDED.hysteria2_obfs_password,
+    up_mbps = EXCLUDED.up_mbps,
+    down_mbps = EXCLUDED.down_mbps,
+    congestion_control = EXCLUDED.congestion_control,
+    zero_rtt_handshake = EXCLUDED.zero_rtt_handshake
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: GetInboundByTag :one

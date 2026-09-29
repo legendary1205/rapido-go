@@ -230,6 +230,14 @@ func (h *Handler) buildRawXrayInbounds(ctx context.Context) ([]xrayimport.Export
 
 	inbounds := make([]xrayimport.ExportInbound, 0, len(inboundRows))
 	for _, in := range inboundRows {
+		// hysteria2/tuic have no Xray-core equivalent at all (see
+		// internal/xrayimport's own validProtocols) - exporting one as a raw
+		// Xray inbound would produce a "protocol" value Xray-core has never
+		// heard of, with zero clients besides (clientsByProtocol never gets
+		// an entry for either, from the loop above).
+		if in.Protocol != "vmess" && in.Protocol != "vless" && in.Protocol != "trojan" && in.Protocol != "shadowsocks" {
+			continue
+		}
 		inbounds = append(inbounds, xrayimport.ExportInbound{
 			Tag: in.Tag, Protocol: in.Protocol, Network: in.Network, HeaderType: in.HeaderType.String, Security: in.Security,
 			RealityPrivateKey: in.RealityPrivateKey.String, RealityShortIDs: in.RealityShortIds,

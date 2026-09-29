@@ -380,7 +380,9 @@ func (h *Handler) forEachUserHost(ctx context.Context, user generated.User, fn f
 			Path: ph.host.Path, Security: ph.host.Security, ALPN: ph.host.ALPN, Fingerprint: ph.host.Fingerprint,
 			AllowInsecure: ph.host.AllowInsecure, RealityPublicKey: ph.host.RealityPublicKey, RealityShortID: ph.host.RealityShortID,
 			MuxEnable: ph.host.MuxEnable, FragmentSetting: ph.host.FragmentSetting, NoiseSetting: ph.host.NoiseSetting,
-			RandomUserAgent: ph.host.RandomUserAgent,
+			RandomUserAgent:       ph.host.RandomUserAgent,
+			Hysteria2ObfsPassword: ph.host.Hysteria2ObfsPassword, UpMbps: ph.host.UpMbps, DownMbps: ph.host.DownMbps,
+			CongestionControl: ph.host.CongestionControl, ZeroRTTHandshake: ph.host.ZeroRTTHandshake,
 		}
 		fn(ph.host.Protocol, settings, remark, address, eff)
 	}

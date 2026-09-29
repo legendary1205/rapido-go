@@ -39,6 +39,57 @@ func TestClashProxyKeepsVLESSOnClashMeta(t *testing.T) {
 	}
 }
 
+func TestClashProxyDropsHysteria2AndTUICOnPlainClash(t *testing.T) {
+	in := EffectiveInbound{Network: "tcp", Port: 443, Security: "tls"}
+	for _, s := range []proxysettings.Settings{
+		{Type: proxysettings.Hysteria2, Hysteria2: &proxysettings.Hysteria2Settings{Password: "pw"}},
+		{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "u", Password: "pw"}},
+	} {
+		node, err := ClashProxy("t", "1.2.3.4", in, s, false)
+		if err != nil {
+			t.Fatalf("ClashProxy: %v", err)
+		}
+		if node != nil {
+			t.Errorf("expected nil for %s on plain (non-meta) Clash, got %+v", s.Type, node)
+		}
+	}
+}
+
+func TestClashProxyHysteria2OnMeta(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com", AllowInsecure: true, UpMbps: 50, DownMbps: 200, Hysteria2ObfsPassword: "obfs-pw"}
+	settings := proxysettings.Settings{Type: proxysettings.Hysteria2, Hysteria2: &proxysettings.Hysteria2Settings{Password: "pw"}}
+
+	node, err := ClashProxy("HY2", "1.2.3.4", in, settings, true)
+	if err != nil {
+		t.Fatalf("ClashProxy: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected a node on Clash Meta")
+	}
+	if node["type"] != "hysteria2" || node["password"] != "pw" || node["sni"] != "example.com" ||
+		node["skip-cert-verify"] != true || node["up"] != 50 || node["down"] != 200 ||
+		node["obfs"] != "salamander" || node["obfs-password"] != "obfs-pw" {
+		t.Errorf("hysteria2 node wrong: %+v", node)
+	}
+}
+
+func TestClashProxyTUICOnMeta(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com", CongestionControl: "bbr", ZeroRTTHandshake: true}
+	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "pw"}}
+
+	node, err := ClashProxy("TUIC", "1.2.3.4", in, settings, true)
+	if err != nil {
+		t.Fatalf("ClashProxy: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected a node on Clash Meta")
+	}
+	if node["type"] != "tuic" || node["uuid"] != "uuid-1" || node["password"] != "pw" ||
+		node["congestion-controller"] != "bbr" || node["reduce-rtt"] != true || node["udp-relay-mode"] != "native" {
+		t.Errorf("tuic node wrong: %+v", node)
+	}
+}
+
 func TestClashProxySkipsUnsupportedTransport(t *testing.T) {
 	in := EffectiveInbound{Network: "xhttp", Port: 443}
 	settings := proxysettings.Settings{Type: proxysettings.Trojan, Trojan: &proxysettings.TrojanSettings{Password: "p"}}

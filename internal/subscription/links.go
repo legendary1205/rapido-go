@@ -26,6 +26,10 @@ func BuildLink(remark, address string, in EffectiveInbound, settings proxysettin
 		return trojanLink(remark, address, in, settings.Trojan), nil
 	case proxysettings.Shadowsocks:
 		return ssLink(remark, address, in, settings.Shadowsocks), nil
+	case proxysettings.Hysteria2:
+		return hysteria2Link(remark, address, in, settings.Hysteria2), nil
+	case proxysettings.TUIC:
+		return tuicLink(remark, address, in, settings.TUIC), nil
 	default:
 		return "", fmt.Errorf("subscription: unknown proxy type %q", settings.Type)
 	}
@@ -159,6 +163,36 @@ func vmessLink(remark, address string, in EffectiveInbound, s *proxysettings.VMe
 func ssLink(remark, address string, in EffectiveInbound, s *proxysettings.ShadowsocksSettings) string {
 	userinfo := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", s.Method, s.Password)))
 	return fmt.Sprintf("ss://%s@%s:%d#%s", userinfo, address, in.Port, url.PathEscape(remark))
+}
+
+// hysteria2Link and tuicLink both skip tlsQueryParams/transportQueryParams:
+// TLS is mandatory rather than an admin choice for either protocol (see
+// internal/nodecore/hysteria2 and internal/nodecore/tuic's own doc
+// comments), so there is no "none" case to omit params for and no Reality
+// support to query-param either - and neither protocol has a transport
+// (network/path/host) of its own to describe.
+func hysteria2Link(remark, address string, in EffectiveInbound, s *proxysettings.Hysteria2Settings) string {
+	q := url.Values{"sni": {in.SNI}}
+	if in.AllowInsecure {
+		q.Set("insecure", "1")
+	}
+	if in.Hysteria2ObfsPassword != "" {
+		q.Set("obfs", "salamander")
+		q.Set("obfs-password", in.Hysteria2ObfsPassword)
+	}
+	return fmt.Sprintf("hysteria2://%s@%s:%d/?%s#%s", url.PathEscape(s.Password), address, in.Port, q.Encode(), url.PathEscape(remark))
+}
+
+func tuicLink(remark, address string, in EffectiveInbound, s *proxysettings.TUICSettings) string {
+	congestionControl := in.CongestionControl
+	if congestionControl == "" {
+		congestionControl = "cubic" // the node's own default - see internal/nodecore/tuic
+	}
+	q := url.Values{"sni": {in.SNI}, "alpn": {"h3"}, "congestion_control": {congestionControl}, "udp_relay_mode": {"native"}}
+	if in.AllowInsecure {
+		q.Set("allow_insecure", "1")
+	}
+	return fmt.Sprintf("tuic://%s:%s@%s:%d?%s#%s", s.ID, quoteKeepColon(s.Password), address, in.Port, q.Encode(), url.PathEscape(remark))
 }
 
 // sortedMap marshals with keys in sorted order, matching Python's

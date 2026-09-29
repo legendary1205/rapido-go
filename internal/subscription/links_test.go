@@ -128,6 +128,82 @@ func TestShadowsocksLink(t *testing.T) {
 	}
 }
 
+func TestHysteria2Link(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com", AllowInsecure: true, Hysteria2ObfsPassword: "obfs-pw"}
+	settings := proxysettings.Settings{Type: proxysettings.Hysteria2, Hysteria2: &proxysettings.Hysteria2Settings{Password: "user-pw"}}
+
+	link, err := BuildLink("HY2 Node", "5.6.7.8", in, settings)
+	if err != nil {
+		t.Fatalf("BuildLink: %v", err)
+	}
+	if !strings.HasPrefix(link, "hysteria2://user-pw@5.6.7.8:443/?") {
+		t.Fatalf("unexpected hysteria2 link prefix: %s", link)
+	}
+	if !strings.HasSuffix(link, "#HY2%20Node") {
+		t.Errorf("remark not percent-encoded as expected: %s", link)
+	}
+	q := parseLinkQuery(t, link)
+	want := map[string]string{"sni": "example.com", "insecure": "1", "obfs": "salamander", "obfs-password": "obfs-pw"}
+	for k, v := range want {
+		if got := q.Get(k); got != v {
+			t.Errorf("query param %q = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestHysteria2LinkOmitsObfsWhenUnset(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com"}
+	settings := proxysettings.Settings{Type: proxysettings.Hysteria2, Hysteria2: &proxysettings.Hysteria2Settings{Password: "user-pw"}}
+
+	link, err := BuildLink("HY2 Node", "5.6.7.8", in, settings)
+	if err != nil {
+		t.Fatalf("BuildLink: %v", err)
+	}
+	q := parseLinkQuery(t, link)
+	if q.Has("obfs") || q.Has("obfs-password") {
+		t.Errorf("obfs params present with no obfs password configured: %s", link)
+	}
+	if q.Has("insecure") {
+		t.Errorf("insecure=1 present although AllowInsecure was false: %s", link)
+	}
+}
+
+func TestTUICLink(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com", CongestionControl: "bbr"}
+	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "p@ss:w0rd"}}
+
+	link, err := BuildLink("TUIC Node", "5.6.7.8", in, settings)
+	if err != nil {
+		t.Fatalf("BuildLink: %v", err)
+	}
+	if !strings.HasPrefix(link, "tuic://uuid-1:") {
+		t.Fatalf("unexpected tuic link prefix: %s", link)
+	}
+	if !strings.HasSuffix(link, "#TUIC%20Node") {
+		t.Errorf("remark not percent-encoded as expected: %s", link)
+	}
+	q := parseLinkQuery(t, link)
+	want := map[string]string{"sni": "example.com", "alpn": "h3", "congestion_control": "bbr", "udp_relay_mode": "native"}
+	for k, v := range want {
+		if got := q.Get(k); got != v {
+			t.Errorf("query param %q = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestTUICLinkDefaultsCongestionControlToCubic(t *testing.T) {
+	in := EffectiveInbound{Port: 443, SNI: "example.com"}
+	settings := proxysettings.Settings{Type: proxysettings.TUIC, TUIC: &proxysettings.TUICSettings{ID: "uuid-1", Password: "pw"}}
+
+	link, err := BuildLink("TUIC Node", "5.6.7.8", in, settings)
+	if err != nil {
+		t.Fatalf("BuildLink: %v", err)
+	}
+	if got := parseLinkQuery(t, link).Get("congestion_control"); got != "cubic" {
+		t.Errorf("congestion_control = %q, want the node's own default %q", got, "cubic")
+	}
+}
+
 func parseLinkQuery(t *testing.T, link string) url.Values {
 	t.Helper()
 	idx := strings.Index(link, "?")

@@ -85,7 +85,7 @@ func TestFromWireShadowsocksDefaults(t *testing.T) {
 // mechanism) - every protocol must accept this shape the same as no
 // settings supplied at all, not reject it as malformed input.
 func TestFromWireTreatsEmptyArrayAsNoSettings(t *testing.T) {
-	for _, proxyType := range []ProxyType{VMess, VLESS, Trojan, Shadowsocks} {
+	for _, proxyType := range []ProxyType{VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC} {
 		s, err := FromWire(proxyType, json.RawMessage(`[]`))
 		if err != nil {
 			t.Errorf("FromWire(%s, []): %v, want the same defaulting as no settings at all", proxyType, err)
@@ -107,7 +107,58 @@ func TestFromWireTreatsEmptyArrayAsNoSettings(t *testing.T) {
 			if s.Shadowsocks.Password == "" || s.Shadowsocks.Method == "" {
 				t.Errorf("Shadowsocks = %+v, want a generated password and default method", s.Shadowsocks)
 			}
+		case Hysteria2:
+			if s.Hysteria2.Password == "" {
+				t.Error("Hysteria2.Password is empty, want an auto-generated password")
+			}
+		case TUIC:
+			if s.TUIC.ID == "" || s.TUIC.Password == "" {
+				t.Errorf("TUIC = %+v, want a generated id and password", s.TUIC)
+			}
 		}
+	}
+}
+
+func TestFromWireHysteria2GeneratesPassword(t *testing.T) {
+	s, err := FromWire(Hysteria2, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Hysteria2.Password == "" {
+		t.Error("Hysteria2.Password is empty, want an auto-generated password")
+	}
+}
+
+func TestFromWireHysteria2PreservesGivenPassword(t *testing.T) {
+	s, err := FromWire(Hysteria2, json.RawMessage(`{"password":"mine"}`))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.Hysteria2.Password != "mine" {
+		t.Errorf("Hysteria2.Password = %q, want the given password preserved", s.Hysteria2.Password)
+	}
+}
+
+func TestFromWireTUICGeneratesIDAndPassword(t *testing.T) {
+	s, err := FromWire(TUIC, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.TUIC.ID == "" {
+		t.Error("TUIC.ID is empty, want an auto-generated UUID")
+	}
+	if s.TUIC.Password == "" {
+		t.Error("TUIC.Password is empty, want an auto-generated password")
+	}
+}
+
+func TestFromWireTUICPreservesGivenIDAndPassword(t *testing.T) {
+	s, err := FromWire(TUIC, json.RawMessage(`{"id":"8f8a4c1e-1e2a-4b8a-9b1a-0000000000aa","password":"mine"}`))
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	if s.TUIC.ID != "8f8a4c1e-1e2a-4b8a-9b1a-0000000000aa" || s.TUIC.Password != "mine" {
+		t.Errorf("TUIC = %+v, want both given values preserved", s.TUIC)
 	}
 }
 
@@ -146,6 +197,26 @@ func TestRevokeRotatesSecret(t *testing.T) {
 	ts.Revoke()
 	if ts.Trojan.Password == beforePw {
 		t.Error("Revoke() did not change the Trojan password")
+	}
+
+	hs, err := FromWire(Hysteria2, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	beforeHy := hs.Hysteria2.Password
+	hs.Revoke()
+	if hs.Hysteria2.Password == beforeHy {
+		t.Error("Revoke() did not change the Hysteria2 password")
+	}
+
+	tu, err := FromWire(TUIC, nil)
+	if err != nil {
+		t.Fatalf("FromWire: %v", err)
+	}
+	beforeID, beforeTuPw := tu.TUIC.ID, tu.TUIC.Password
+	tu.Revoke()
+	if tu.TUIC.ID == beforeID || tu.TUIC.Password == beforeTuPw {
+		t.Errorf("Revoke() did not rotate both TUIC id and password: before (%s, %s), after (%s, %s)", beforeID, beforeTuPw, tu.TUIC.ID, tu.TUIC.Password)
 	}
 }
 

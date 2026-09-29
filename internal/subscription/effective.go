@@ -46,6 +46,17 @@ type EffectiveInbound struct {
 	FragmentSetting string `json:"fragment_setting"`
 	NoiseSetting    string `json:"noise_setting"`
 	RandomUserAgent bool   `json:"random_user_agent"`
+
+	// Hysteria2ObfsPassword/UpMbps/DownMbps only apply when Protocol is
+	// "hysteria2"; CongestionControl/ZeroRTTHandshake only when it's "tuic" -
+	// see internal/httpapi/inbounds.go's inboundDetailDTO for what each
+	// means. Inbound-level settings, so (unlike everything above) they have
+	// no host-level override to layer on top of.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password"`
+	UpMbps                int    `json:"up_mbps"`
+	DownMbps              int    `json:"down_mbps"`
+	CongestionControl     string `json:"congestion_control"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake"`
 }
 
 // BuildEffectiveInbound merges one Host row onto its parent Inbound row.
@@ -83,7 +94,12 @@ func BuildEffectiveInbound(inbound generated.Inbound, host generated.Host) Effec
 		Fingerprint:   fingerprint,
 		AllowInsecure: host.Allowinsecure.Valid && host.Allowinsecure.Bool,
 		MuxEnable:     host.MuxEnable, FragmentSetting: host.FragmentSetting.String, NoiseSetting: host.NoiseSetting.String,
-		RandomUserAgent: host.RandomUserAgent,
+		RandomUserAgent:       host.RandomUserAgent,
+		Hysteria2ObfsPassword: inbound.Hysteria2ObfsPassword.String,
+		UpMbps:                int(inbound.UpMbps.Int32),
+		DownMbps:              int(inbound.DownMbps.Int32),
+		CongestionControl:     inbound.CongestionControl.String,
+		ZeroRTTHandshake:      inbound.ZeroRttHandshake,
 	}
 	if host.UseSniAsHost {
 		e.HostHeader = e.SNI

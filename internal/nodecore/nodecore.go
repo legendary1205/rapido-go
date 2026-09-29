@@ -7,9 +7,11 @@ import (
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/option"
 
+	forkedhysteria2 "github.com/legendary1205/rapido-go/internal/nodecore/hysteria2"
 	forkedshadowsocks "github.com/legendary1205/rapido-go/internal/nodecore/shadowsocks"
 	"github.com/legendary1205/rapido-go/internal/nodecore/traffic"
 	forkedtrojan "github.com/legendary1205/rapido-go/internal/nodecore/trojan"
+	forkedtuic "github.com/legendary1205/rapido-go/internal/nodecore/tuic"
 	forkedvless "github.com/legendary1205/rapido-go/internal/nodecore/vless"
 	forkedvmess "github.com/legendary1205/rapido-go/internal/nodecore/vmess"
 )
@@ -76,8 +78,9 @@ type User struct {
 
 // UpdateUsers replaces the user list on an already-running inbound identified
 // by tag, with no listener restart and no impact on connections already
-// established. protocol is one of vless, vmess, trojan or shadowsocks and must
-// match the inbound's actual type. On error the running list is unchanged.
+// established. protocol is one of vless, vmess, trojan, shadowsocks,
+// hysteria2 or tuic and must match the inbound's actual type. On error the
+// running list is unchanged.
 func (n *Node) UpdateUsers(tag, protocol string, users []User) error {
 	switch protocol {
 	case "vless":
@@ -95,6 +98,14 @@ func (n *Node) UpdateUsers(tag, protocol string, users []User) error {
 	case "shadowsocks":
 		return n.UpdateShadowsocksUsers(tag, mapUsers(users, func(u User) option.ShadowsocksUser {
 			return option.ShadowsocksUser{Name: u.Name, Password: u.Password}
+		}))
+	case "hysteria2":
+		return n.UpdateHysteria2Users(tag, mapUsers(users, func(u User) option.Hysteria2User {
+			return option.Hysteria2User{Name: u.Name, Password: u.Password}
+		}))
+	case "tuic":
+		return n.UpdateTUICUsers(tag, mapUsers(users, func(u User) option.TUICUser {
+			return option.TUICUser{Name: u.Name, UUID: u.UUID, Password: u.Password}
 		}))
 	default:
 		return fmt.Errorf("nodecore: unsupported protocol %q", protocol)
@@ -159,6 +170,26 @@ func (n *Node) UpdateTrojanUsers(tag string, users []option.TrojanUser) error {
 // is fixed when the inbound is built; only the users change.
 func (n *Node) UpdateShadowsocksUsers(tag string, users []option.ShadowsocksUser) error {
 	in, err := runningInbound[*forkedshadowsocks.Inbound](n, tag, "Shadowsocks")
+	if err != nil {
+		return err
+	}
+	return in.UpdateUsers(users)
+}
+
+// UpdateHysteria2Users is UpdateUsers for a Hysteria2 inbound.
+func (n *Node) UpdateHysteria2Users(tag string, users []option.Hysteria2User) error {
+	in, err := runningInbound[*forkedhysteria2.Inbound](n, tag, "Hysteria2")
+	if err != nil {
+		return err
+	}
+	in.UpdateUsers(users)
+	return nil
+}
+
+// UpdateTUICUsers is UpdateUsers for a TUIC inbound. It fails, changing
+// nothing, if a user's UUID is missing or malformed.
+func (n *Node) UpdateTUICUsers(tag string, users []option.TUICUser) error {
+	in, err := runningInbound[*forkedtuic.Inbound](n, tag, "TUIC")
 	if err != nil {
 		return err
 	}

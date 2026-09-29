@@ -57,6 +57,16 @@ type nodeConfigInboundSpec struct {
 	ListenPorts []uint16             `json:"listen_ports,omitempty"`
 	Users       []nodeConfigUserSpec `json:"users"`
 	TLS         *nodeConfigTLSSpec   `json:"tls,omitempty"`
+
+	// Hysteria2/TUIC only apply to a protocol="hysteria2"/"tuic" inbound -
+	// see inbounds.go's inboundDetailDTO for what each field means. Present
+	// here (rather than folded into the two structs above) because these are
+	// per-inbound settings, not per-user or TLS ones.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
+	UpMbps                int32  `json:"up_mbps,omitempty"`
+	DownMbps              int32  `json:"down_mbps,omitempty"`
+	CongestionControl     string `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
 }
 
 // nodeConfigInboundWire is nodeConfigInboundSpec with the user list already
@@ -78,6 +88,14 @@ type nodeConfigInboundWire struct {
 	ListenPorts []uint16           `json:"listen_ports,omitempty"`
 	Users       json.RawMessage    `json:"users"`
 	TLS         *nodeConfigTLSSpec `json:"tls,omitempty"`
+
+	// Same fields, same order, as nodeConfigInboundSpec above - required for
+	// the two to stay byte-identical, see this type's own doc comment.
+	Hysteria2ObfsPassword string `json:"hysteria2_obfs_password,omitempty"`
+	UpMbps                int32  `json:"up_mbps,omitempty"`
+	DownMbps              int32  `json:"down_mbps,omitempty"`
+	CongestionControl     string `json:"congestion_control,omitempty"`
+	ZeroRTTHandshake      bool   `json:"zero_rtt_handshake,omitempty"`
 }
 
 // nodeConfigResponse is the full payload a node self-applies - see
@@ -172,6 +190,11 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 		case "shadowsocks":
 			spec.Password = settings.Shadowsocks.Password
 			spec.Method = string(settings.Shadowsocks.Method)
+		case "hysteria2":
+			spec.Password = settings.Hysteria2.Password
+		case "tuic":
+			spec.UUID = settings.TUIC.ID
+			spec.Password = settings.TUIC.Password
 		default:
 			continue
 		}
@@ -205,6 +228,15 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 				Certificate: in.TlsCertificate.String,
 				Key:         in.TlsKey.String,
 			}
+		}
+		switch in.Protocol {
+		case "hysteria2":
+			spec.Hysteria2ObfsPassword = in.Hysteria2ObfsPassword.String
+			spec.UpMbps = in.UpMbps.Int32
+			spec.DownMbps = in.DownMbps.Int32
+		case "tuic":
+			spec.CongestionControl = in.CongestionControl.String
+			spec.ZeroRTTHandshake = in.ZeroRttHandshake
 		}
 		if spec.Users == nil {
 			spec.Users = []nodeConfigUserSpec{}
@@ -253,6 +285,8 @@ func (s *nodeConfigSnapshot) render(p nodeProfile) (nodeConfigResponse, []byte, 
 		wire = append(wire, nodeConfigInboundWire{
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: in.ListenPort, ListenPorts: in.ListenPorts,
 			Users: users, TLS: in.TLS,
+			Hysteria2ObfsPassword: in.Hysteria2ObfsPassword, UpMbps: in.UpMbps, DownMbps: in.DownMbps,
+			CongestionControl: in.CongestionControl, ZeroRTTHandshake: in.ZeroRTTHandshake,
 		})
 	}
 
