@@ -7,6 +7,7 @@ import (
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/option"
 
+	forkedanytls "github.com/legendary1205/rapido-go/internal/nodecore/anytls"
 	forkedhysteria2 "github.com/legendary1205/rapido-go/internal/nodecore/hysteria2"
 	forkedshadowsocks "github.com/legendary1205/rapido-go/internal/nodecore/shadowsocks"
 	forkedsnell "github.com/legendary1205/rapido-go/internal/nodecore/snell"
@@ -118,6 +119,10 @@ func (n *Node) UpdateUsers(tag, protocol string, users []User) error {
 		return n.UpdateSnellUsers(tag, mapUsers(users, func(u User) option.SnellUser {
 			return option.SnellUser{Name: u.Name, UserKey: u.UserKey}
 		}))
+	case "anytls":
+		return n.UpdateAnyTLSUsers(tag, mapUsers(users, func(u User) option.AnyTLSUser {
+			return option.AnyTLSUser{Name: u.Name, Password: u.Password}
+		}))
 	default:
 		return fmt.Errorf("nodecore: unsupported protocol %q", protocol)
 	}
@@ -215,4 +220,14 @@ func (n *Node) UpdateSnellUsers(tag string, users []option.SnellUser) error {
 		return err
 	}
 	return in.UpdateUsers(users)
+}
+
+// UpdateAnyTLSUsers is UpdateUsers for an AnyTLS inbound.
+func (n *Node) UpdateAnyTLSUsers(tag string, users []option.AnyTLSUser) error {
+	in, err := runningInbound[*forkedanytls.Inbound](n, tag, "AnyTLS")
+	if err != nil {
+		return err
+	}
+	in.UpdateUsers(users)
+	return nil
 }

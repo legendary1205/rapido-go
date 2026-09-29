@@ -275,7 +275,11 @@ func (h *Handler) syncInboundEntries(ctx context.Context, entries []inboundSyncE
 		// one without TLS (C.ErrTLSRequired) - caught here as a clean 422
 		// instead of surfacing later as every one of that inbound's users
 		// failing to connect.
-		if (e.Protocol == "hysteria2" || e.Protocol == "tuic") && e.Security != "tls" {
+		// anytls joins this same check for the same reason as hysteria2/tuic
+		// above (C.ErrTLSRequired at the sing-box level) - see
+		// internal/nodecore/anytls's own doc comment on why TLS is mandatory
+		// here rather than admin-optional like sing-box's own inbound.
+		if (e.Protocol == "hysteria2" || e.Protocol == "tuic" || e.Protocol == "anytls") && e.Security != "tls" {
 			return created, &inboundValidationError{"inbound " + e.Tag + ": security must be \"tls\" for protocol " + e.Protocol}
 		}
 		if e.Protocol == "tuic" && e.CongestionControl != "" && !validCongestionControl[e.CongestionControl] {
@@ -417,7 +421,7 @@ func realityPortToPg(port int32) pgtype.Int4 {
 
 func proxyTypeValid(protocol string) bool {
 	switch protocol {
-	case "vmess", "vless", "trojan", "shadowsocks", "hysteria2", "tuic", "snell":
+	case "vmess", "vless", "trojan", "shadowsocks", "hysteria2", "tuic", "snell", "anytls":
 		return true
 	}
 	return false

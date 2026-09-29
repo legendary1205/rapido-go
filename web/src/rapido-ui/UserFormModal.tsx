@@ -44,6 +44,7 @@ const PROTOCOL_ORDER: ProtocolType[] = [
   "hysteria2",
   "tuic",
   "snell",
+  "anytls",
 ];
 
 const STATUSES: Status[] = ["active", "on_hold", "limited", "expired", "disabled"];

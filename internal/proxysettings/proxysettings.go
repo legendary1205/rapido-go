@@ -23,11 +23,12 @@ const (
 	Hysteria2   ProxyType = "hysteria2"
 	TUIC        ProxyType = "tuic"
 	Snell       ProxyType = "snell"
+	AnyTLS      ProxyType = "anytls"
 )
 
 func (t ProxyType) Valid() bool {
 	switch t {
-	case VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, Snell:
+	case VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC, Snell, AnyTLS:
 		return true
 	}
 	return false
@@ -62,6 +63,7 @@ type Settings struct {
 	Hysteria2   *Hysteria2Settings
 	TUIC        *TUICSettings
 	Snell       *SnellSettings
+	AnyTLS      *AnyTLSSettings
 }
 
 type VMessSettings struct {
@@ -105,6 +107,12 @@ type TUICSettings struct {
 // internal/nodecore/snell's own doc comment.
 type SnellSettings struct {
 	UserKey string `json:"user_key"`
+}
+
+// AnyTLSSettings has no flow/method sibling, same as Hysteria2Settings -
+// AnyTLS's own auth is a single password.
+type AnyTLSSettings struct {
+	Password string `json:"password"`
 }
 
 // randomPassword mirrors app/utils/system.py's random_password:
@@ -249,6 +257,18 @@ func parse(proxyType ProxyType, raw json.RawMessage, coerceVisionFlow bool) (Set
 		}
 		return Settings{Type: Snell, Snell: &s}, nil
 
+	case AnyTLS:
+		var s AnyTLSSettings
+		if hasSettings(raw) {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return Settings{}, fmt.Errorf("proxysettings: invalid anytls settings: %w", err)
+			}
+		}
+		if s.Password == "" {
+			s.Password = randomPassword()
+		}
+		return Settings{Type: AnyTLS, AnyTLS: &s}, nil
+
 	default:
 		return Settings{}, fmt.Errorf("proxysettings: unknown proxy type %q", proxyType)
 	}
@@ -286,6 +306,8 @@ func (s Settings) MarshalJSON() ([]byte, error) {
 		return json.Marshal(s.TUIC)
 	case Snell:
 		return json.Marshal(s.Snell)
+	case AnyTLS:
+		return json.Marshal(s.AnyTLS)
 	default:
 		return nil, fmt.Errorf("proxysettings: unknown proxy type %q", s.Type)
 	}
@@ -311,5 +333,7 @@ func (s *Settings) Revoke() {
 		s.TUIC.Password = randomPassword()
 	case Snell:
 		s.Snell.UserKey = randomPassword()
+	case AnyTLS:
+		s.AnyTLS.Password = randomPassword()
 	}
 }

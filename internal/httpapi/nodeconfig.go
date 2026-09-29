@@ -208,6 +208,8 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 			spec.Password = settings.TUIC.Password
 		case "snell":
 			spec.UserKey = settings.Snell.UserKey
+		case "anytls":
+			spec.Password = settings.AnyTLS.Password
 		default:
 			continue
 		}

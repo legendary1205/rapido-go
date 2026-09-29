@@ -656,7 +656,7 @@ func (s *server) handleUpdateUsers(w http.ResponseWriter, r *http.Request) {
 // its user list replaced on the running listener.
 func hotUpdatableProtocol(protocol string) bool {
 	switch protocol {
-	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "snell":
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "snell", "anytls":
 		return true
 	}
 	return false
@@ -875,6 +875,20 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 						ListenOptions: listenOptions, PSK: in.SnellPSK, Users: users,
 					},
 					V6Options: sbox.SnellV6Options{Mode: in.SnellV6Mode},
+				}})
+			case "anytls":
+				// TLS is mandatory here too, but for a different reason than
+				// hysteria2/tuic's QUIC transport: AnyTLS's whole design is to
+				// look like an ordinary TLS connection - see
+				// internal/nodecore/anytls's own doc comment.
+				users := make([]sbox.AnyTLSUser, 0, len(in.Users))
+				for _, u := range in.Users {
+					users = append(users, sbox.AnyTLSUser{Name: u.Name, Password: u.Password})
+				}
+				inbounds = append(inbounds, sbox.Inbound{Type: "anytls", Tag: tag, Options: &sbox.AnyTLSInboundOptions{
+					ListenOptions:              listenOptions,
+					Users:                      users,
+					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
 				}})
 			}
 		}

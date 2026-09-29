@@ -26,6 +26,13 @@ import (
 // codebase's Core Config Snell OUTBOUND (v4) can't dial this inbound
 // either. A snell:// link/config for this inbound would simply fail to
 // connect through Clash Meta, so none is offered.
+//
+// AnyTLS falls through to the same default exclusion, for a mundane reason
+// rather than a wire incompatibility: this codebase doesn't yet know which
+// Clash Meta releases carry AnyTLS support, so no clash proxy is offered
+// for it - sing-box format (BuildSingBoxOutbound) is this protocol's real,
+// fully-supported target, matching the same client ecosystem the protocol
+// itself was built for (see internal/nodecore/anytls's own doc comment).
 func ClashProxy(remark, address string, in EffectiveInbound, settings proxysettings.Settings, isMeta bool) (map[string]any, error) {
 	switch in.Network {
 	case "kcp", "splithttp", "xhttp":
