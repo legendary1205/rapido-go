@@ -80,7 +80,11 @@ func (h *Handler) handleGatewaySyncUser(c *gin.Context) {
 		return
 	}
 
-	settingsByType, err := resolveProxySettings(req.Proxies)
+	// A Gateway push really is "this replica's complete state, not a diff"
+	// (see gatewaySyncPayload's own doc comment), so the explicit-remove set
+	// resolveProxySettings also returns is moot here - deleteOmitted=true
+	// below already deletes every protocol this payload doesn't mention.
+	settingsByType, _, err := resolveProxySettings(req.Proxies)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"ok": false, "detail": err.Error()})
 		return
@@ -97,7 +101,7 @@ func (h *Handler) handleGatewaySyncUser(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "detail": "could not update replica: " + err.Error()})
 			return
 		}
-		if err := h.reconcileProxies(ctx, userRow.ID, settingsByType); err != nil {
+		if err := h.reconcileProxies(ctx, userRow.ID, settingsByType, nil, true); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "detail": err.Error()})
 			return
 		}

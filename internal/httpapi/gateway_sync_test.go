@@ -84,6 +84,54 @@ func TestGatewaySyncCreatesAndUpdatesAReplica(t *testing.T) {
 	}
 }
 
+// TestGatewaySyncStillFullyReplacesProxiesOnResync guards the one behavior
+// difference from PUT /api/user/:username's own newer merge-only semantics
+// (see reconcileProxies's own doc comment): a Gateway push really is "this
+// replica's complete state, not a diff", so a protocol missing from a later
+// sync must still be deleted here, unlike an admin's unrelated edit.
+func TestGatewaySyncStillFullyReplacesProxiesOnResync(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Resync VLESS", "protocol": "vless"}, {"tag": "Resync VMess", "protocol": "vmess"},
+	})
+
+	secretResp := doRequest(t, router, "GET", "/api/settings/gateway", token, nil)
+	secret, _ := secretResp.Body["secret"].(string)
+
+	doRequest(t, router, "POST", "/api/internal/gateway/users/sync", secret, map[string]interface{}{
+		"origin_panel_name": "Origin Panel",
+		"username":          "replica_carol",
+		"status":            "active",
+		"proxies": map[string]interface{}{
+			"vless": map[string]string{"id": "55555555-5555-5555-5555-555555555555"},
+			"vmess": map[string]string{"id": "66666666-6666-6666-6666-666666666666"},
+		},
+	})
+
+	// The origin panel's own view of this user no longer has vmess - a
+	// resync must remove it here too, not just leave it stranded.
+	resync := doRequest(t, router, "POST", "/api/internal/gateway/users/sync", secret, map[string]interface{}{
+		"origin_panel_name": "Origin Panel",
+		"username":          "replica_carol",
+		"status":            "active",
+		"proxies": map[string]interface{}{
+			"vless": map[string]string{"id": "55555555-5555-5555-5555-555555555555"},
+		},
+	})
+	if resync.Code != http.StatusOK {
+		t.Fatalf("resync without vmess: %d %v", resync.Code, resync.Body)
+	}
+
+	got := doRequest(t, router, "GET", "/api/user/replica_carol", token, nil)
+	proxies, _ := got.Body["proxies"].(map[string]interface{})
+	if proxies["vmess"] != nil {
+		t.Errorf("vmess = %v, want removed once a resync stopped mentioning it", proxies["vmess"])
+	}
+	if proxies["vless"] == nil {
+		t.Error("vless was removed too - resync should only drop what it stopped mentioning")
+	}
+}
+
 // TestGatewaySyncNeverOverwritesARealLocalUser is the safety property the
 // whole design hinges on: a genuine local user (created through the
 // normal admin API, never touched by a sync push) must never be silently

@@ -24,6 +24,12 @@ export type ProtocolType = "vmess" | "vless" | "trojan" | "shadowsocks" | "hyste
 // per-protocol union.
 export type ProxySettingsMap = Record<string, Record<string, unknown>>;
 
+// The write-side shape additionally allows an explicit `null` per protocol -
+// PUT /api/user/:username treats that as "remove this one", vs. a protocol
+// key missing entirely ("leave it exactly as it is"). See UserWritePayload's
+// own doc comment.
+export type ProxySettingsWriteMap = Record<string, Record<string, unknown> | null>;
+
 export type DataLimitResetStrategy =
   | "no_reset"
   | "day"
@@ -99,10 +105,12 @@ export type UsersListResponse = {
 
 // The subset userWriteRequest actually accepts, shared by create (which also
 // requires `username`) and edit (which allows every field to be omitted -
-// PUT /api/user/:username is a partial update, not a full replace).
+// PUT /api/user/:username is a partial update, not a full replace, `proxies`
+// included: a protocol key missing entirely is left untouched, only an
+// explicit `null` removes it - see ProxySettingsWriteMap's own doc comment).
 export type UserWritePayload = {
   status?: Status;
-  proxies?: ProxySettingsMap;
+  proxies?: ProxySettingsWriteMap;
   inbounds?: UserInbounds;
   expire?: number | null;
   data_limit?: number | null;

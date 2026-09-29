@@ -16,7 +16,7 @@ import { errorText } from "service/errors";
 import {
   DataLimitResetStrategy,
   ProtocolType,
-  ProxySettingsMap,
+  ProxySettingsWriteMap,
   Status,
   UserCreatePayload,
   UserInbounds,
@@ -242,10 +242,22 @@ export const UserFormModal: FC = () => {
     const gb = values.data_limit_gb ? Number(values.data_limit_gb) : 0;
     const data_limit = gbToDataLimit(gb);
 
-    const proxies: ProxySettingsMap = {};
+    const proxies: ProxySettingsWriteMap = {};
     selectedProtocols.forEach((protocol) => {
       proxies[protocol] = {};
     });
+    // The backend only touches a protocol this map mentions - unchecking one
+    // the user already had needs an explicit null to actually remove it,
+    // not just leaving its key out (see ProxySettingsWriteMap's own doc
+    // comment). A protocol never owned and never checked stays out of the
+    // payload entirely, same as before.
+    if (isEdit) {
+      ownedProtocols.forEach((protocol) => {
+        if (!selectedProtocols.has(protocol)) {
+          proxies[protocol] = null;
+        }
+      });
+    }
 
     const userInbounds: UserInbounds = {};
     selectedProtocols.forEach((protocol) => {

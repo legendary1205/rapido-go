@@ -146,6 +146,74 @@ func TestModifyUserNextPlanUpsertAndClear(t *testing.T) {
 	}
 }
 
+// TestModifyUserProxiesOmittedLeavesExistingUntouched is the real-world case
+// that motivated reconcileProxies's deleteOmitted=false path for this
+// endpoint: an older caller (a reseller bot unaware of a protocol added
+// after it was written) must not silently strip that protocol just because
+// an unrelated field changed.
+func TestModifyUserProxiesOmittedLeavesExistingUntouched(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Omit VLESS", "protocol": "vless"}, {"tag": "Omit VMess", "protocol": "vmess"},
+	})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "omit_proxies_user",
+		"proxies": map[string]interface{}{
+			"vless": map[string]string{"id": "11111111-1111-1111-1111-111111111111"},
+			"vmess": map[string]string{"id": "22222222-2222-2222-2222-222222222222"},
+		},
+	})
+
+	resp := doRequest(t, router, "PUT", "/api/user/omit_proxies_user", token, map[string]interface{}{"note": "unrelated edit"})
+	if resp.Code != 200 {
+		t.Fatalf("unrelated edit: %d %v", resp.Code, resp.Body)
+	}
+
+	got := doRequest(t, router, "GET", "/api/user/omit_proxies_user", token, nil)
+	proxies, _ := got.Body["proxies"].(map[string]interface{})
+	if proxies["vless"] == nil || proxies["vmess"] == nil {
+		t.Fatalf("proxies = %v, want both vless and vmess still present after an edit that never mentioned proxies", proxies)
+	}
+	vless, _ := proxies["vless"].(map[string]interface{})
+	if vless["id"] != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("vless id changed to %v, want it left exactly as it was", vless["id"])
+	}
+}
+
+// TestModifyUserProxiesExplicitNullRemovesOnlyThatOne is the other half:
+// removing a protocol is still possible, it just now takes an explicit
+// null instead of merely omitting the key.
+func TestModifyUserProxiesExplicitNullRemovesOnlyThatOne(t *testing.T) {
+	router, token := newTestRouter(t)
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]string{
+		{"tag": "Null VLESS", "protocol": "vless"}, {"tag": "Null VMess", "protocol": "vmess"},
+	})
+	doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "null_proxies_user",
+		"proxies": map[string]interface{}{
+			"vless": map[string]string{"id": "33333333-3333-3333-3333-333333333333"},
+			"vmess": map[string]string{"id": "44444444-4444-4444-4444-444444444444"},
+		},
+	})
+
+	resp := doRequest(t, router, "PUT", "/api/user/null_proxies_user", token, map[string]interface{}{
+		"proxies": map[string]interface{}{"vmess": nil},
+	})
+	if resp.Code != 200 {
+		t.Fatalf("explicit-null edit: %d %v", resp.Code, resp.Body)
+	}
+
+	got := doRequest(t, router, "GET", "/api/user/null_proxies_user", token, nil)
+	proxies, _ := got.Body["proxies"].(map[string]interface{})
+	if proxies["vmess"] != nil {
+		t.Errorf("vmess = %v, want removed after an explicit null", proxies["vmess"])
+	}
+	vless, _ := proxies["vless"].(map[string]interface{})
+	if vless["id"] != "33333333-3333-3333-3333-333333333333" {
+		t.Errorf("vless id = %v, want untouched by a null targeting only vmess", vless["id"])
+	}
+}
+
 func TestUserOwnershipScoping(t *testing.T) {
 	router, sudoToken := newTestRouter(t)
 	doRequest(t, router, "POST", "/api/inbounds/sync", sudoToken, []map[string]string{{"tag": "VMess TCP", "protocol": "vmess"}})

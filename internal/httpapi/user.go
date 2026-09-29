@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -204,7 +205,10 @@ func (h *Handler) handleCreateUser(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	settingsByType, err := resolveProxySettings(req.Proxies)
+	// A create has nothing to remove yet, so the second return (explicit
+	// nulls) is meaningless here - a null entry simply contributes no proxy,
+	// same as if it had been omitted.
+	settingsByType, _, err := resolveProxySettings(req.Proxies)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
@@ -319,19 +323,35 @@ func (h *Handler) createProxyForUser(ctx context.Context, userID int32, protocol
 	return nil
 }
 
-func resolveProxySettings(raw map[string]json.RawMessage) (map[string]proxysettings.Settings, error) {
-	out := map[string]proxysettings.Settings{}
+// resolveProxySettings splits a client's proxies map into protocols to
+// upsert (a real settings object) and protocols to explicitly remove (a
+// literal JSON null) - a key entirely absent from the map means neither,
+// see reconcileProxies's own doc comment for why that distinction matters.
+func resolveProxySettings(raw map[string]json.RawMessage) (wanted map[string]proxysettings.Settings, remove map[string]bool, err error) {
+	wanted = map[string]proxysettings.Settings{}
+	remove = map[string]bool{}
 	for protocol, payload := range raw {
 		if !proxysettings.ProxyType(protocol).Valid() {
-			return nil, fmt.Errorf("unknown proxy type: %s", protocol)
+			return nil, nil, fmt.Errorf("unknown proxy type: %s", protocol)
+		}
+		if isJSONNull(payload) {
+			remove[protocol] = true
+			continue
 		}
 		s, err := proxysettings.FromWire(proxysettings.ProxyType(protocol), payload)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		out[protocol] = s
+		wanted[protocol] = s
 	}
-	return out, nil
+	return wanted, remove, nil
+}
+
+// isJSONNull reports whether raw is exactly the JSON literal null, as
+// opposed to absent (raw == nil, the key wasn't in the object at all) or a
+// real value.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }
 
 // handleGetUser implements GET /api/user/:username.
@@ -464,7 +484,7 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 		}
 	}
 
-	settingsByType, err := resolveProxySettings(req.Proxies)
+	settingsByType, removeTypes, err := resolveProxySettings(req.Proxies)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
@@ -478,8 +498,12 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 		}
 	}
 
-	if len(settingsByType) > 0 {
-		if err := h.reconcileProxies(ctx, dbuser.ID, settingsByType); err != nil {
+	if len(settingsByType) > 0 || len(removeTypes) > 0 {
+		// deleteOmitted=false: a protocol this request's proxies map doesn't
+		// mention at all is left exactly as it is - see reconcileProxies's
+		// own doc comment for why (a legacy caller unaware of a newer
+		// protocol must not silently strip it on every unrelated edit).
+		if err := h.reconcileProxies(ctx, dbuser.ID, settingsByType, removeTypes, false); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 			return
 		}
@@ -591,13 +615,24 @@ func (h *Handler) handleModifyUser(c *gin.Context) {
 
 // reconcileProxies mirrors crud.update_user's proxy add/update/remove loop:
 // a type present in `wanted` gets created (new) or has its settings
-// replaced (existing); a type absent from `wanted` gets deleted by its own
-// id - never a blanket "delete all proxies for this user", so proxies
-// added earlier in the same call are never caught by the removal step.
+// replaced (existing); a type in `remove` gets deleted by its own id -
+// never a blanket "delete all proxies for this user", so proxies added
+// earlier in the same call are never caught by the removal step.
+//
+// deleteOmitted controls what happens to a type in NEITHER map: true (the
+// Gateway sync path, whose payload really is "this replica's complete
+// state, not a diff" - see gatewaySyncPayload's own doc comment) deletes
+// it, matching a full-object replace. false (PUT /api/user/:username)
+// leaves it alone - a caller that only knows about a subset of protocols
+// (an older reseller bot, in particular) must not silently strip every
+// protocol it's simply unaware of; removing one now takes an explicit
+// null, exactly like the rest of this endpoint's already-partial-update
+// fields (see UserWritePayload's own doc comment on the frontend side).
+//
 // No cache invalidation needed here: proxies.settings (secrets/UUIDs) is
 // deliberately never cached - subscription/response generation always reads
 // it fresh from Postgres, since it must reflect a revoke/update immediately.
-func (h *Handler) reconcileProxies(ctx context.Context, userID int32, wanted map[string]proxysettings.Settings) error {
+func (h *Handler) reconcileProxies(ctx context.Context, userID int32, wanted map[string]proxysettings.Settings, remove map[string]bool, deleteOmitted bool) error {
 	existing, err := h.store.Queries.ListProxiesByUserID(ctx, pgInt4FromInt(int(userID)))
 	if err != nil {
 		return errors.New("could not read proxies")
@@ -623,7 +658,10 @@ func (h *Handler) reconcileProxies(ctx context.Context, userID int32, wanted map
 		}
 	}
 	for _, p := range existing {
-		if _, keep := wanted[p.Type]; !keep {
+		if _, wasSet := wanted[p.Type]; wasSet {
+			continue
+		}
+		if remove[p.Type] || deleteOmitted {
 			if err := h.store.Queries.DeleteProxyByID(ctx, p.ID); err != nil {
 				return fmt.Errorf("could not remove %s proxy", p.Type)
 			}
