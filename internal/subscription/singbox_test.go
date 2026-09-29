@@ -146,12 +146,46 @@ func TestSingBoxConfigIsValidJSONWithSelector(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
 	outbounds, ok := doc["outbounds"].([]any)
-	if !ok || len(outbounds) != 3 { // 2 proxies + 1 selector
-		t.Fatalf("expected 3 outbounds (2 proxies + selector), got %+v", doc["outbounds"])
+	if !ok || len(outbounds) != 4 { // 2 proxies + selector + direct
+		t.Fatalf("expected 4 outbounds (2 proxies + selector + direct), got %+v", doc["outbounds"])
 	}
 	selector := outbounds[2].(map[string]any)
 	if selector["type"] != "selector" || selector["default"] != "node-a" {
 		t.Errorf("selector outbound wrong: %+v", selector)
+	}
+	if direct := outbounds[3].(map[string]any); direct["type"] != "direct" {
+		t.Errorf("expected a direct outbound at index 3, got %+v", direct)
+	}
+}
+
+// TestSingBoxConfigHasAWorkingStandaloneRoute is a regression test for a
+// real production bug: without an inbound and a default route, the document
+// this function renders dialed fine for a client's own per-outbound latency
+// probe (which needs neither) but never actually captured or routed any of
+// the device's real traffic - see this function's own doc comment.
+func TestSingBoxConfigHasAWorkingStandaloneRoute(t *testing.T) {
+	raw, err := SingBoxConfig([]map[string]any{{"type": "vless", "tag": "node-a"}})
+	if err != nil {
+		t.Fatalf("SingBoxConfig: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	inbounds, ok := doc["inbounds"].([]any)
+	if !ok || len(inbounds) != 1 {
+		t.Fatalf("expected exactly one inbound (the tun), got %+v", doc["inbounds"])
+	}
+	tun := inbounds[0].(map[string]any)
+	if tun["type"] != "tun" || tun["auto_route"] != true {
+		t.Errorf("tun inbound wrong: %+v", tun)
+	}
+	route, ok := doc["route"].(map[string]any)
+	if !ok || route["final"] != "proxy" {
+		t.Fatalf("route.final = %v, want \"proxy\" so real traffic actually goes through the selector", route["final"])
+	}
+	if doc["dns"] == nil {
+		t.Error("dns section missing - without it, domain resolution over the tun has nothing to use")
 	}
 }
 

@@ -144,23 +144,64 @@ func singBoxTLS(in EffectiveInbound) map[string]any {
 	}
 }
 
-// SingBoxConfig renders the full document: a minimal skeleton plus every
-// generated outbound, with a "selector" outbound listing all of them as a
-// convenience default. Deliberately simpler than the current Python
-// system's default.json base template (no TUN inbound, no DNS/routing
-// rule-set boilerplate) - that base is generic app configuration unrelated
-// to per-user subscription data and can be layered on separately without
-// touching this generation logic.
+// SingBoxConfig renders the full document: every generated outbound, a
+// "selector" outbound listing all of them as a convenience default, and
+// enough of a real config around them (a "direct" outbound, a tun inbound,
+// DNS, and a default route sending everything through the selector) that
+// the document is actually usable standalone by an app that loads it as a
+// complete profile rather than merging it into a config of its own - the
+// official sing-box app in particular does the former: given only the
+// outbounds this function used to emit on their own, it dials each one
+// successfully for its own latency probe (which needs no local inbound or
+// route at all) but never actually intercepts the device's traffic, so
+// every real connection still leaves over the un-proxied network path -
+// this is what a report of "shows as connected/pingable but my IP never
+// changes" means. The DNS/route/tun shape below is deliberately minimal
+// (bypass private IPs, everything else through the proxy) - no
+// geosite/geoip ad-block rule sets, which would need this project to host
+// and version its own rule-set files; an admin wanting that can still layer
+// it on by importing this same outbounds list into their own richer
+// profile.
 func SingBoxConfig(outbounds []map[string]any) ([]byte, error) {
 	tags := make([]string, 0, len(outbounds))
 	for _, o := range outbounds {
 		tags = append(tags, o["tag"].(string))
 	}
+	allOutbounds := append(append([]map[string]any{}, outbounds...),
+		map[string]any{"type": "selector", "tag": "proxy", "outbounds": tags, "default": firstOrEmpty(tags)},
+		map[string]any{"type": "direct", "tag": "direct"},
+	)
 	doc := map[string]any{
 		"log": map[string]any{"level": "warn"},
-		"outbounds": append(append([]map[string]any{}, outbounds...), map[string]any{
-			"type": "selector", "tag": "proxy", "outbounds": tags, "default": firstOrEmpty(tags),
-		}),
+		"dns": map[string]any{
+			"servers": []map[string]any{
+				{"tag": "dns-remote", "type": "https", "server": "8.8.8.8", "detour": "proxy"},
+				{"tag": "dns-direct", "type": "local", "detour": "direct"},
+			},
+			"rules": []map[string]any{
+				{"ip_is_private": true, "server": "dns-direct"},
+			},
+			"final": "dns-remote",
+		},
+		"inbounds": []map[string]any{
+			{
+				"type": "tun", "tag": "tun-in",
+				"address":      []string{"172.19.0.1/28", "fdfe:dcba:9876::1/126"},
+				"auto_route":   true,
+				"strict_route": true,
+				"stack":        "mixed",
+				"sniff":        true,
+			},
+		},
+		"route": map[string]any{
+			"auto_detect_interface": true,
+			"rules": []map[string]any{
+				{"protocol": "dns", "action": "hijack-dns"},
+				{"ip_is_private": true, "outbound": "direct"},
+			},
+			"final": "proxy",
+		},
+		"outbounds": allOutbounds,
 	}
 	return json.MarshalIndent(doc, "", "  ")
 }
