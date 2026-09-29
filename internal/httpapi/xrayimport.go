@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -158,14 +159,43 @@ func (h *Handler) applyParsedXrayConfig(ctx context.Context, parsed xrayimport.R
 	return false, nil
 }
 
+// appendNewRoutingRules adds the imported rules that are not already in
+// existing, after it. A rule has no tag to key on, but two rules with every
+// field equal route identically, so equality of the whole rule is its
+// identity: importing the same file again (a retried migration, a second
+// click) adds nothing instead of stacking another copy of each rule. Rules
+// that differ in any field - including ones an admin wrote by hand - are kept
+// in order.
+func appendNewRoutingRules(existing []routingRuleDTO, imported []xrayimport.RoutingRule) []routingRuleDTO {
+	key := func(r routingRuleDTO) string {
+		b, _ := json.Marshal(r) // omitempty makes a nil and an empty list the same key
+		return string(b)
+	}
+	seen := make(map[string]bool, len(existing)+len(imported))
+	for _, r := range existing {
+		seen[key(r)] = true
+	}
+	for _, r := range imported {
+		rule := routingRuleDTO{
+			Inbound: r.Inbound, Domain: r.Domain, DomainSuffix: r.DomainSuffix, DomainKeyword: r.DomainKeyword,
+			IPCIDR: r.IPCIDR, IPIsPrivate: r.IPIsPrivate, Port: r.Port, PortRange: r.PortRange,
+			Network: r.Network, Protocol: r.Protocol, OutboundTag: r.OutboundTag,
+		}
+		if k := key(rule); !seen[k] {
+			seen[k] = true
+			existing = append(existing, rule)
+		}
+	}
+	return existing
+}
+
 // mergeCoreConfigForImport folds a parsed Xray file's outbounds/routing
 // rules/dns servers into whatever Core Config already exists, rather than
 // replacing it outright - a second import (or an admin's own prior manual
 // Core Config work) must never be silently wiped by a later one. Outbounds
-// and DNS servers are keyed by tag (an import re-run with the same source
-// file is idempotent, not a grower); routing rules have no natural
-// identity to dedupe on, so imported ones are simply appended after
-// whatever's already there.
+// and DNS servers are keyed by tag and routing rules by their full content
+// (see appendNewRoutingRules), so an import re-run with the same source file
+// is idempotent, not a grower.
 func (h *Handler) mergeCoreConfigForImport(ctx context.Context, parsed xrayimport.Result) (coreConfigDTO, error) {
 	existingRow, err := h.store.CachedGetCoreConfig(ctx)
 	if err != nil {
@@ -192,13 +222,7 @@ func (h *Handler) mergeCoreConfigForImport(ctx context.Context, parsed xrayimpor
 		existingOutboundTags[ob.Tag] = true
 	}
 
-	for _, r := range parsed.RoutingRules {
-		merged.RoutingRules = append(merged.RoutingRules, routingRuleDTO{
-			Inbound: r.Inbound, Domain: r.Domain, DomainSuffix: r.DomainSuffix, DomainKeyword: r.DomainKeyword,
-			IPCIDR: r.IPCIDR, IPIsPrivate: r.IPIsPrivate, Port: r.Port, PortRange: r.PortRange,
-			Network: r.Network, Protocol: r.Protocol, OutboundTag: r.OutboundTag,
-		})
-	}
+	merged.RoutingRules = appendNewRoutingRules(merged.RoutingRules, parsed.RoutingRules)
 
 	existingDNSTags := make(map[string]bool, len(merged.DNSServers))
 	for _, s := range merged.DNSServers {

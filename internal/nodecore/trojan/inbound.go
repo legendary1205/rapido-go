@@ -50,6 +50,7 @@ type Inbound struct {
 	fallbackAddrTLSNextProto map[string]M.Socksaddr
 	transport                adapter.V2RayServerTransport
 	trafficMgr               *traffic.Manager
+	conns                    *traffic.ConnGroup
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrojanInboundOptions) (adapter.Inbound, error) {
@@ -58,6 +59,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		router:     router,
 		logger:     logger,
 		trafficMgr: traffic.FromContext(ctx),
+		conns:      traffic.ConnGroupFromContext(ctx),
 	}
 	if options.TLS != nil {
 		tlsConfig, err := tls.NewServerWithOptions(tls.ServerOptions{
@@ -211,6 +213,10 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 		metadata.User = key.Name
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
+	// Closing the core closes every connection it accepted: the router only
+	// drops the ones it is relaying, and a multiplexed session's carrier is not
+	// one of those. See traffic.ConnGroup.
+	onClose = h.conns.Track(conn, onClose)
 	if h.trafficMgr != nil {
 		// Presence: the user is known, so this connection is now open. The router
 		// calls onClose for every way it can end, including a refused route.
@@ -233,6 +239,7 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
 		metadata.User = key.Name
 	}
 	h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
+	onClose = h.conns.Track(conn, onClose)
 	if h.trafficMgr != nil {
 		conn = traffic.WrapPacketConn(conn, user, h.trafficMgr)
 	}

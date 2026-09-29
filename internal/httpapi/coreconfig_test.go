@@ -180,14 +180,134 @@ func TestUpdateCoreConfigAcceptsEveryRealProtocolOutbound(t *testing.T) {
 			{"tag": "vl1", "type": "vless", "server": "203.0.113.1", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ab"},
 			{"tag": "h2", "type": "hysteria2", "server": "example.com", "server_port": 443, "password": "pw"},
 			{"tag": "tu1", "type": "tuic", "server": "example.com", "server_port": 443, "uuid": "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ac", "password": "pw", "congestion_control": "bbr"},
+			{"tag": "at1", "type": "anytls", "server": "example.com", "server_port": 443, "password": "pw"},
+			{"tag": "hy1", "type": "hysteria", "server": "example.com", "server_port": 443, "password": "pw", "up_mbps": 50, "down_mbps": 200},
+			{"tag": "stls1", "type": "shadowtls", "server": "example.com", "server_port": 443, "version": 3, "password": "pw"},
+			{"tag": "sn1", "type": "snell", "server": "203.0.113.1", "server_port": 2000, "psk": "sn-psk"},
+			{"tag": "ssh1", "type": "ssh", "server": "203.0.113.1", "server_port": 22, "username": "u", "password": "pw"},
+			{"tag": "tor1", "type": "tor"},
 		},
 	})
 	if resp.Code != http.StatusOK {
 		t.Fatalf("put core config with every protocol: %d %v", resp.Code, resp.Body)
 	}
 	outbounds := resp.Body["outbounds"].([]interface{})
-	if len(outbounds) != 6 {
-		t.Fatalf("outbounds = %v, want 6", outbounds)
+	if len(outbounds) != 12 {
+		t.Fatalf("outbounds = %v, want 12", outbounds)
+	}
+}
+
+func TestUpdateCoreConfigRejectsUnbuiltNaiveType(t *testing.T) {
+	// Naive is deliberately excluded - see validOutboundTypes's own doc
+	// comment - so it must be rejected exactly like any other unknown type,
+	// not silently accepted and fail later on a node.
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "n1", "type": "naive", "server": "example.com", "server_port": 443, "username": "u", "password": "pw"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("naive outbound: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsHysteriaMissingBandwidth(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "hy1", "type": "hysteria", "server": "example.com", "server_port": 443, "password": "pw"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("hysteria missing up_mbps/down_mbps: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsShadowTLSBadVersion(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "stls1", "type": "shadowtls", "server": "example.com", "server_port": 443, "version": 4},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("shadowtls version 4: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigAcceptsShadowTLSVersion1WithoutPassword(t *testing.T) {
+	// ShadowTLS v1 predates the password scheme v2/v3 added.
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "stls1", "type": "shadowtls", "server": "example.com", "server_port": 443, "version": 1},
+		},
+	})
+	if resp.Code != http.StatusOK {
+		t.Errorf("shadowtls v1 without password: %d, want 200: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsShadowTLSVersion2WithoutPassword(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "stls1", "type": "shadowtls", "server": "example.com", "server_port": 443, "version": 2},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("shadowtls v2 without password: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsSnellMissingPSK(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "sn1", "type": "snell", "server": "203.0.113.1", "server_port": 2000},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("snell missing psk: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsSnellInvalidObfsMode(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "sn1", "type": "snell", "server": "203.0.113.1", "server_port": 2000, "psk": "pw", "obfs_mode": "not-a-real-mode"},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("snell invalid obfs_mode: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigRejectsSSHMissingCredentials(t *testing.T) {
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "ssh1", "type": "ssh", "server": "203.0.113.1", "server_port": 22},
+		},
+	})
+	if resp.Code != http.StatusUnprocessableEntity {
+		t.Errorf("ssh missing username/password: %d, want 422: %v", resp.Code, resp.Body)
+	}
+}
+
+func TestUpdateCoreConfigAcceptsTorOutboundWithNoServer(t *testing.T) {
+	// tor is the one type needsServer deliberately excludes - see its own
+	// doc comment in validateCoreConfig.
+	router, token := newTestRouter(t)
+	resp := doRequest(t, router, "PUT", "/api/settings/core-config", token, map[string]interface{}{
+		"outbounds": []map[string]interface{}{
+			{"tag": "tor1", "type": "tor"},
+		},
+	})
+	if resp.Code != http.StatusOK {
+		t.Errorf("tor with no server: %d, want 200: %v", resp.Code, resp.Body)
 	}
 }
 

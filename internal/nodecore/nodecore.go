@@ -19,6 +19,9 @@ import (
 type Node struct {
 	box     *box.Box
 	Traffic *traffic.Manager
+	// conns is every client connection this instance has accepted and not yet
+	// finished with; Close ends them all. See traffic.ConnGroup.
+	conns *traffic.ConnGroup
 }
 
 // New builds a sing-box instance from the given options - it does not
@@ -32,7 +35,8 @@ type Node struct {
 // stats out of sing-box, so counting happens here, at construction time,
 // rather than via any later registration step.
 func New(ctx context.Context, opts option.Options, mgr *traffic.Manager) (*Node, error) {
-	ctx = traffic.NewContext(ctx, mgr)
+	conns := traffic.NewConnGroup()
+	ctx = traffic.WithConnGroup(traffic.NewContext(ctx, mgr), conns)
 	ctx = box.Context(ctx, InboundRegistry(), OutboundRegistry(), EndpointRegistry(), DNSTransportRegistry(), ServiceRegistry(), CertificateProviderRegistry())
 	instance, err := box.New(box.Options{
 		Context: ctx,
@@ -41,7 +45,7 @@ func New(ctx context.Context, opts option.Options, mgr *traffic.Manager) (*Node,
 	if err != nil {
 		return nil, fmt.Errorf("nodecore: build instance: %w", err)
 	}
-	return &Node{box: instance, Traffic: mgr}, nil
+	return &Node{box: instance, Traffic: mgr, conns: conns}, nil
 }
 
 // Start initializes every component and opens every configured inbound's
@@ -50,9 +54,16 @@ func (n *Node) Start() error {
 	return n.box.Start()
 }
 
-// Close tears down every inbound, outbound and background service.
+// Close tears down every inbound, outbound and background service, then closes
+// every client connection the instance had accepted. Closing the box stops the
+// listeners and the router, which ends the connections the router is relaying;
+// what is left - chiefly a multiplexed session, whose carrier connection the
+// inbound reads itself - would keep answering its client with errors from a dead
+// router until the client gave up on its own.
 func (n *Node) Close() error {
-	return n.box.Close()
+	err := n.box.Close()
+	n.conns.CloseAll()
+	return err
 }
 
 // User is one proxy account in the protocol-neutral shape UpdateUsers takes.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,16 +21,26 @@ import (
 var implicitOutboundTags = map[string]bool{"direct": true, "block": true}
 
 // validOutboundTypes covers sing-box's real outbound registry (see
-// internal/nodecore/registry.go's OutboundRegistry) minus WireGuard -
-// WireGuard is a sing-box "Endpoint", a structurally different top-level
-// config section (option.Options.Endpoints, not Outbounds, with its own
-// registry this codebase doesn't wire in at all yet) rather than another
-// outbound type, so it needs its own future phase, not a field bolted
-// onto this one.
+// internal/nodecore/registry.go's OutboundRegistry) minus four kinds this
+// form's routing-rule model has no honest way to expose: WireGuard is a
+// sing-box "Endpoint", a structurally different top-level config section
+// (option.Options.Endpoints, not Outbounds, with its own registry this
+// codebase doesn't wire in at all yet) rather than another outbound type;
+// "dns" is not a destination a user's connection is ever routed to, only a
+// target the DNS resolution engine's own rules pick; "bridge" connects to
+// one of this same node's other inbounds, a loopback wiring concept nothing
+// in Core Config's admin-facing model represents; and "naive" is compiled
+// out of sing-box by default behind its own with_naive_outbound build tag,
+// because its transport (Chromium's Cronet) drags in large per-platform
+// binary blobs this project's build has no reason to carry for one rarely-
+// used protocol. Every one of those would need its own future phase, not a
+// field bolted onto this one.
 var validOutboundTypes = map[string]bool{
 	"direct": true, "block": true, "socks": true, "http": true,
 	"shadowsocks": true, "vmess": true, "trojan": true, "vless": true,
 	"hysteria2": true, "tuic": true, "selector": true, "urltest": true,
+	"anytls": true, "hysteria": true, "shadowtls": true,
+	"snell": true, "ssh": true, "tor": true,
 }
 var validDNSTypes = map[string]bool{"local": true, "udp": true, "tcp": true, "tls": true, "https": true}
 var validLogLevels = map[string]bool{"trace": true, "debug": true, "info": true, "warn": true, "error": true, "fatal": true, "panic": true}
@@ -42,14 +53,15 @@ var validShadowsocksMethods = map[string]bool{
 }
 var validVMessSecurity = map[string]bool{"auto": true, "none": true, "zero": true, "aes-128-gcm": true, "chacha20-poly1305": true}
 var validCongestionControl = map[string]bool{"cubic": true, "new_reno": true, "bbr": true}
+var validSnellObfsModes = map[string]bool{"none": true, "http": true, "tls": true}
 
 type outboundDTO struct {
 	Tag        string   `json:"tag" binding:"required"`
 	Type       string   `json:"type" binding:"required"`
 	Server     string   `json:"server,omitempty"`
 	ServerPort int      `json:"server_port,omitempty"`
-	Username   string   `json:"username,omitempty"`  // socks/http
-	Password   string   `json:"password,omitempty"`  // socks/http/shadowsocks/trojan/hysteria2/tuic
+	Username   string   `json:"username,omitempty"`  // socks/http/ssh (ssh's own field is "user", not "username")
+	Password   string   `json:"password,omitempty"`  // socks/http/shadowsocks/trojan/hysteria2/tuic/anytls/shadowtls/ssh; hysteria (v1)'s own auth_str
 	Outbounds  []string `json:"outbounds,omitempty"` // selector/urltest member tags
 
 	UUID              string `json:"uuid,omitempty"`               // vmess/vless/tuic
@@ -58,11 +70,44 @@ type outboundDTO struct {
 	Security          string `json:"security,omitempty"`           // vmess encryption
 	CongestionControl string `json:"congestion_control,omitempty"` // tuic
 
+	// Version distinguishes wire-incompatible ShadowTLS generations (1-3).
+	// Snell has its own such split (4's plain obfuscation vs. 6's PSK
+	// derivation scheme) but this form only ever builds a version-4 Snell
+	// outbound - 6 has no field here to configure yet - so Version is not
+	// reused for it.
+	Version int `json:"version,omitempty"` // shadowtls
+
+	// PSK is Snell's pre-shared key - unlike every Password field above,
+	// Snell's own wire format keeps this separate from its optional
+	// obfuscation settings below, so it gets its own field rather than
+	// reusing Password.
+	PSK      string `json:"psk,omitempty"`       // snell
+	ObfsMode string `json:"obfs_mode,omitempty"` // snell ("none", "http" or "tls")
+	ObfsHost string `json:"obfs_host,omitempty"` // snell (only meaningful when obfs_mode is "http" or "tls")
+	// Obfs is Hysteria v1's own single obfuscation string - a different,
+	// older mechanism from Snell's obfs_mode/obfs_host pair above, despite
+	// the similar name.
+	Obfs string `json:"obfs,omitempty"` // hysteria (v1)
+	// UpMbps/DownMbps are not optional bandwidth hints here: Hysteria v1's
+	// client derives its congestion-control ceiling from them (unlike every
+	// QUIC-based type above, which just uses BBR) and refuses to start
+	// without both set.
+	UpMbps   int `json:"up_mbps,omitempty"`   // hysteria (v1)
+	DownMbps int `json:"down_mbps,omitempty"` // hysteria (v1)
+
+	// ExecutablePath/DataDirectory are Tor's own fields: this outbound talks
+	// to a local `tor` process it spawns itself, not a remote server, so it
+	// has no Server/ServerPort at all. ExecutablePath empty means "find tor
+	// on PATH" - the node image does not ship one, so this type only works
+	// on a node an admin has installed Tor on by hand.
+	ExecutablePath string `json:"executable_path,omitempty"` // tor
+	DataDirectory  string `json:"data_directory,omitempty"`  // tor
+
 	// TLS* is the common subset every TLS-capable outbound type here
-	// shares (vmess/trojan/vless/hysteria2/tuic) - a deliberately small
-	// slice of sing-box's full OutboundTLSOptions (no ALPN/cert-pinning/
-	// client-cert fields), matching this form's "commonly-needed fields
-	// only" scope everywhere else.
+	// shares (vmess/trojan/vless/hysteria2/tuic/anytls/shadowtls/hysteria)
+	// - a deliberately small slice of sing-box's full
+	// OutboundTLSOptions (no ALPN/cert-pinning/client-cert fields), matching
+	// this form's "commonly-needed fields only" scope everywhere else.
 	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 	TLSInsecure   bool   `json:"tls_insecure,omitempty"`
@@ -171,7 +216,11 @@ func validateCoreConfig(dto coreConfigDTO) string {
 			return "invalid outbound type: " + ob.Type
 		}
 		needsServer := ob.Type == "socks" || ob.Type == "http" || ob.Type == "shadowsocks" ||
-			ob.Type == "vmess" || ob.Type == "trojan" || ob.Type == "vless" || ob.Type == "hysteria2" || ob.Type == "tuic"
+			ob.Type == "vmess" || ob.Type == "trojan" || ob.Type == "vless" || ob.Type == "hysteria2" || ob.Type == "tuic" ||
+			ob.Type == "anytls" || ob.Type == "hysteria" || ob.Type == "shadowtls" ||
+			ob.Type == "snell" || ob.Type == "ssh"
+		// tor is deliberately absent above: it dials no remote server at all
+		// (see ExecutablePath's own doc comment on outboundDTO).
 		if needsServer && (ob.Server == "" || ob.ServerPort == 0) {
 			return "outbound " + ob.Tag + ": server and server_port are required for type " + ob.Type
 		}
@@ -219,6 +268,36 @@ func validateCoreConfig(dto coreConfigDTO) string {
 			}
 			if ob.CongestionControl != "" && !validCongestionControl[ob.CongestionControl] {
 				return "outbound " + ob.Tag + ": invalid congestion_control " + ob.CongestionControl
+			}
+		case "anytls":
+			if ob.Password == "" {
+				return "outbound " + ob.Tag + ": password is required for type anytls"
+			}
+		case "hysteria": // see UpMbps/DownMbps's own doc comment on outboundDTO.
+			if ob.UpMbps <= 0 || ob.DownMbps <= 0 {
+				return "outbound " + ob.Tag + ": up_mbps and down_mbps (both > 0) are required for type hysteria"
+			}
+		case "shadowtls": // ShadowTLS v1 predates the password scheme v2/v3 added.
+			if ob.Version < 1 || ob.Version > 3 {
+				return "outbound " + ob.Tag + ": version must be 1, 2 or 3 for type shadowtls"
+			}
+			if ob.Version != 1 && ob.Password == "" {
+				return "outbound " + ob.Tag + ": password is required for shadowtls version " + strconv.Itoa(ob.Version)
+			}
+		case "snell":
+			if ob.PSK == "" {
+				return "outbound " + ob.Tag + ": psk is required for type snell"
+			}
+			if ob.ObfsMode != "" && !validSnellObfsModes[ob.ObfsMode] {
+				return "outbound " + ob.Tag + ": invalid snell obfs_mode " + ob.ObfsMode
+			}
+		case "ssh":
+			// Only password auth is exposed here (see outboundDTO's own doc
+			// comment on ExecutablePath/PSK for this form's "commonly-needed
+			// fields only" scope) - without it there is nothing for this
+			// outbound to authenticate with.
+			if ob.Username == "" || ob.Password == "" {
+				return "outbound " + ob.Tag + ": username and password are required for type ssh"
 			}
 		}
 	}

@@ -290,6 +290,17 @@ func TestEachOutboundProtocolIsAcceptedBySingBox(t *testing.T) {
 		{"tuic", outboundSpec{Tag: "ob", Type: "tuic", Server: "example.com", ServerPort: 443, UUID: "8f8a4c1e-1e2a-4b8a-9b1a-0000000000ad", Password: "tuic-pass", CongestionControl: "bbr"}},
 		{"selector", outboundSpec{Tag: "ob", Type: "selector", Outbounds: []string{"direct"}}},
 		{"urltest", outboundSpec{Tag: "ob", Type: "urltest", Outbounds: []string{"direct"}}},
+		{"anytls", outboundSpec{Tag: "ob", Type: "anytls", Server: "example.com", ServerPort: 443, Password: "anytls-pass"}},
+		{"hysteria", outboundSpec{Tag: "ob", Type: "hysteria", Server: "example.com", ServerPort: 443, Password: "hy-auth", Obfs: "hy-obfs", UpMbps: 50, DownMbps: 200}},
+		{"shadowtls", outboundSpec{Tag: "ob", Type: "shadowtls", Server: "example.com", ServerPort: 443, Version: 3, Password: "stls-pass"}},
+		{"shadowtls-v1", outboundSpec{Tag: "ob", Type: "shadowtls", Server: "example.com", ServerPort: 443, Version: 1}},
+		{"snell", outboundSpec{Tag: "ob", Type: "snell", Server: "203.0.113.1", ServerPort: 2000, PSK: "snell-psk"}},
+		{"snell-obfs", outboundSpec{Tag: "ob", Type: "snell", Server: "203.0.113.1", ServerPort: 2000, PSK: "snell-psk", ObfsMode: "http", ObfsHost: "example.com"}},
+		{"ssh", outboundSpec{Tag: "ob", Type: "ssh", Server: "203.0.113.1", ServerPort: 22, Username: "sshuser", Password: "sshpass"}},
+		// "tor" is deliberately absent from this table: unlike every other
+		// outbound here, its Start actually spawns a local `tor` process
+		// (see TestTorOutboundConstructsAndRegistersWithoutSpawningTor for
+		// what this test suite can safely prove about it instead).
 	}
 
 	for _, tc := range cases {
@@ -308,6 +319,27 @@ func TestEachOutboundProtocolIsAcceptedBySingBox(t *testing.T) {
 			node.Close()
 		})
 	}
+}
+
+// TestTorOutboundConstructsAndRegistersWithoutSpawningTor is the tor
+// counterpart to TestEachOutboundProtocolIsAcceptedBySingBox, proving the
+// registration in internal/nodecore/registry.go and the translation in
+// leafOutboundOptions both work, without calling Node.Start - unlike every
+// other outbound type, a tor outbound's Start actually spawns a local `tor`
+// process (see sing-box's protocol/tor.Outbound.Start), which no dev machine
+// or CI runner here has installed. nodecore.New (box.New) only constructs
+// the outbound; per its own doc comment, sing-box's pre-start pass - the
+// step that would try to launch tor - runs inside Start, not New.
+func TestTorOutboundConstructsAndRegistersWithoutSpawningTor(t *testing.T) {
+	opts, err := buildOptions(startRequest{Core: &coreSpec{Outbounds: []outboundSpec{{Tag: "ob", Type: "tor"}}}})
+	if err != nil {
+		t.Fatalf("buildOptions: %v", err)
+	}
+	node, err := nodecore.New(context.Background(), opts, traffic.NewManager())
+	if err != nil {
+		t.Fatalf("nodecore.New: %v", err)
+	}
+	node.Close() // safe before Start; see tor.Outbound.Close's own nil guards
 }
 
 func TestEachDNSServerTypeIsAcceptedBySingBox(t *testing.T) {

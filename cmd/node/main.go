@@ -463,7 +463,7 @@ type realitySpec struct {
 // definitions have to be kept in sync by hand rather than shared.
 type outboundSpec struct {
 	Tag        string   `json:"tag"`
-	Type       string   `json:"type"` // direct | block | socks | http | shadowsocks | vmess | trojan | vless | hysteria2 | tuic | selector | urltest
+	Type       string   `json:"type"` // direct | block | socks | http | shadowsocks | vmess | trojan | vless | hysteria2 | tuic | selector | urltest | anytls | hysteria | shadowtls | snell | ssh | tor
 	Server     string   `json:"server,omitempty"`
 	ServerPort int      `json:"server_port,omitempty"`
 	Username   string   `json:"username,omitempty"`
@@ -475,6 +475,19 @@ type outboundSpec struct {
 	Method            string `json:"method,omitempty"`
 	Security          string `json:"security,omitempty"`
 	CongestionControl string `json:"congestion_control,omitempty"`
+
+	// See internal/httpapi/coreconfig.go's outboundDTO for what each of these
+	// belongs to - the two definitions are kept in sync by hand (see this
+	// struct's own doc comment above).
+	Version        int    `json:"version,omitempty"`         // shadowtls
+	PSK            string `json:"psk,omitempty"`             // snell
+	ObfsMode       string `json:"obfs_mode,omitempty"`       // snell
+	ObfsHost       string `json:"obfs_host,omitempty"`       // snell
+	Obfs           string `json:"obfs,omitempty"`            // hysteria (v1)
+	UpMbps         int    `json:"up_mbps,omitempty"`         // hysteria (v1)
+	DownMbps       int    `json:"down_mbps,omitempty"`       // hysteria (v1)
+	ExecutablePath string `json:"executable_path,omitempty"` // tor
+	DataDirectory  string `json:"data_directory,omitempty"`  // tor
 
 	TLSEnabled    bool   `json:"tls_enabled,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
@@ -912,6 +925,59 @@ func leafOutboundOptions(ob outboundSpec, bind string) (any, error) {
 			DialerOptions: dialerOptions, ServerOptions: server,
 			UUID: ob.UUID, Password: ob.Password, CongestionControl: ob.CongestionControl,
 			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	case "anytls":
+		// TLS-based like vmess/trojan/vless's own family in spirit, but every
+		// real AnyTLS deployment runs it over TLS - the whole protocol's
+		// point is to look like ordinary TLS traffic - so this mirrors
+		// hysteria2/tuic's mandatory TLS instead.
+		return &sbox.AnyTLSOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, Password: ob.Password,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	case "hysteria":
+		// Hysteria v1 - QUIC-based, same mandatory-TLS reasoning as hysteria2.
+		// AuthString is this protocol's own name for the same "shared secret"
+		// role Password plays for every other type here. UpMbps/DownMbps are
+		// required (see their own doc comment on outboundSpec) - the server-
+		// side validation in coreconfig.go's validateCoreConfig guarantees a
+		// core reaching this function already has both set.
+		return &sbox.HysteriaOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, Obfs: ob.Obfs, AuthString: ob.Password,
+			UpMbps: ob.UpMbps, DownMbps: ob.DownMbps,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	case "shadowtls":
+		// The protocol's entire mechanism is wrapping traffic inside a real
+		// TLS handshake to a real TLS server, so - same as the three cases
+		// above - TLS is not an admin-optional toggle here.
+		return &sbox.ShadowTLSOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, Version: ob.Version, Password: ob.Password,
+			OutboundTLSOptionsContainer: sbox.OutboundTLSOptionsContainer{TLS: buildOutboundTLS(ob, true)},
+		}, nil
+	case "snell":
+		// Snell has no TLS of its own to force - see PSK's own doc comment on
+		// outboundDTO. Only the plain-obfs outbound generation (sing-box's
+		// version 4) is exposed; version 6's own PSK derivation scheme has no
+		// field here yet.
+		return &sbox.SnellOutboundOptions{
+			Version: 4,
+			AbstractSnellOutboundOptions: sbox.AbstractSnellOutboundOptions{
+				DialerOptions: dialerOptions, ServerOptions: server, PSK: ob.PSK,
+			},
+			ObfsOptions: sbox.SnellObfsClientOptions{ObfsMode: ob.ObfsMode, ObfsHost: ob.ObfsHost},
+		}, nil
+	case "ssh":
+		// Password auth only - see outboundDTO's own doc comment on
+		// ExecutablePath for why private-key auth isn't exposed here.
+		return &sbox.SSHOutboundOptions{
+			DialerOptions: dialerOptions, ServerOptions: server, User: ob.Username, Password: ob.Password,
+		}, nil
+	case "tor":
+		// No ServerOptions at all: this outbound talks to a local `tor`
+		// process it spawns itself - see ExecutablePath's own doc comment.
+		return &sbox.TorOutboundOptions{
+			DialerOptions: dialerOptions, ExecutablePath: ob.ExecutablePath, DataDirectory: ob.DataDirectory,
 		}, nil
 	}
 	return nil, fmt.Errorf("unknown outbound type: %s", ob.Type)

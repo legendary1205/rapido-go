@@ -16,13 +16,19 @@ import (
 	"github.com/sagernet/sing-box/dns"
 	dnstransport "github.com/sagernet/sing-box/dns/transport"
 	"github.com/sagernet/sing-box/dns/transport/local"
+	"github.com/sagernet/sing-box/protocol/anytls"
 	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/group"
 	boxhttp "github.com/sagernet/sing-box/protocol/http"
+	"github.com/sagernet/sing-box/protocol/hysteria"
 	"github.com/sagernet/sing-box/protocol/hysteria2"
 	"github.com/sagernet/sing-box/protocol/shadowsocks"
+	"github.com/sagernet/sing-box/protocol/shadowtls"
+	"github.com/sagernet/sing-box/protocol/snell"
 	"github.com/sagernet/sing-box/protocol/socks"
+	"github.com/sagernet/sing-box/protocol/ssh"
+	"github.com/sagernet/sing-box/protocol/tor"
 	"github.com/sagernet/sing-box/protocol/trojan"
 	"github.com/sagernet/sing-box/protocol/tuic"
 	"github.com/sagernet/sing-box/protocol/vless"
@@ -48,19 +54,15 @@ func InboundRegistry() *inbound.Registry {
 	return registry
 }
 
-// OutboundRegistry registers exactly the outbound types Phase 7.4's Core
-// Config can produce (see cmd/node/main.go's buildCoreOptions): direct and
+// OutboundRegistry registers every outbound type Core Config can produce
+// (see cmd/node/main.go's buildCoreOptions/leafOutboundOptions): direct and
 // block are always present (a node's two implicit fallback targets even
-// with zero custom Core Config outbounds); socks/http/shadowsocks/vmess/
-// trojan/vless/hysteria2/tuic/selector/urltest are registered so an
-// admin-defined custom outbound of one of those types actually has
-// something to construct it. Not sing-box's full outbound surface -
-// WireGuard is deliberately excluded (a sing-box "Endpoint", a
-// structurally different config section this rewrite doesn't wire in at
-// all yet, not just another outbound type - see coreconfig.go's own doc
-// comment), and no other protocol (Hysteria v1, TUIC's exotic siblings,
-// ShadowsocksR, Naive, Tor, SSH, ShadowTLS, AnyTLS) is something Core
-// Config's structured form exposes.
+// with zero custom Core Config outbounds); everything else is registered so
+// an admin-defined custom outbound of that type actually has something to
+// construct it. This is sing-box's complete outbound surface with three
+// deliberate exceptions - see validOutboundTypes's own doc comment in
+// internal/httpapi/coreconfig.go for why WireGuard, dns, bridge and Naive
+// aren't among them.
 func OutboundRegistry() *outbound.Registry {
 	registry := outbound.NewRegistry()
 	direct.RegisterOutbound(registry)
@@ -73,6 +75,12 @@ func OutboundRegistry() *outbound.Registry {
 	vless.RegisterOutbound(registry)
 	hysteria2.RegisterOutbound(registry)
 	tuic.RegisterOutbound(registry)
+	anytls.RegisterOutbound(registry)
+	hysteria.RegisterOutbound(registry)
+	shadowtls.RegisterOutbound(registry)
+	snell.RegisterOutbound(registry)
+	ssh.RegisterOutbound(registry)
+	tor.RegisterOutbound(registry)
 	group.RegisterSelector(registry)
 	group.RegisterURLTest(registry)
 	return registry

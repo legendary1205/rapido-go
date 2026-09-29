@@ -63,6 +63,7 @@ type Inbound struct {
 	udpTimeout int64
 	service    atomic.Pointer[shadowaead.MultiService[*userkey.Key]]
 	trafficMgr *traffic.Manager
+	conns      *traffic.ConnGroup
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.ShadowsocksInboundOptions) (adapter.Inbound, error) {
@@ -84,6 +85,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:     logger,
 		method:     options.Method,
 		trafficMgr: traffic.FromContext(ctx),
+		conns:      traffic.ConnGroupFromContext(ctx),
 	}
 	var err error
 	inbound.router, err = mux.NewRouterWithOptions(inbound.router, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -182,6 +184,8 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 	metadata.InboundType = h.Type()
 	//nolint:staticcheck
 	metadata.InboundDetour = h.listener.ListenOptions().Detour
+	// Closing the core closes every connection it accepted; see traffic.ConnGroup.
+	defer h.conns.Hold(conn)()
 	if h.trafficMgr != nil {
 		// This inbound is on the legacy blocking handler interface: RouteConnection
 		// returns only once the connection is over (or refused), so the deferred
@@ -208,6 +212,7 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
 	metadata.InboundType = h.Type()
 	//nolint:staticcheck
 	metadata.InboundDetour = h.listener.ListenOptions().Detour
+	defer h.conns.Hold(conn)()
 	if h.trafficMgr != nil {
 		conn = traffic.WrapPacketConn(conn, user, h.trafficMgr)
 	}
