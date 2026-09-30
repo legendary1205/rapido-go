@@ -190,12 +190,19 @@ func SingBoxConfig(outbounds []map[string]any) ([]byte, error) {
 				"auto_route":   true,
 				"strict_route": true,
 				"stack":        "mixed",
-				"sniff":        true,
 			},
 		},
+		// Sniffing used to be a plain bool on the inbound itself
+		// (InboundOptions.SniffEnabled) - sing-box 1.11 deprecated that field
+		// in favor of a route rule/action, and 1.13 removed it outright, so
+		// setting it on the tun inbound above makes a current client reject
+		// the whole document at load time ("legacy inbound fields ... removed
+		// in sing-box 1.13.0"). This rule is that migration's replacement,
+		// same shape a real reference config uses.
 		"route": map[string]any{
 			"auto_detect_interface": true,
 			"rules": []map[string]any{
+				{"inbound": "tun-in", "action": "sniff", "timeout": "1s"},
 				{"protocol": "dns", "action": "hijack-dns"},
 				{"ip_is_private": true, "outbound": "direct"},
 			},

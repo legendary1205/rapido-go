@@ -180,9 +180,28 @@ func TestSingBoxConfigHasAWorkingStandaloneRoute(t *testing.T) {
 	if tun["type"] != "tun" || tun["auto_route"] != true {
 		t.Errorf("tun inbound wrong: %+v", tun)
 	}
+	// A regression test of its own: InboundOptions.SniffEnabled is a legacy
+	// per-inbound bool sing-box 1.13 removed outright - setting it here made
+	// a current client reject the whole document at load time instead of
+	// merely not sniffing. Sniffing is expressed as a route rule/action
+	// instead (checked below).
+	if _, present := tun["sniff"]; present {
+		t.Errorf("tun inbound still sets the legacy \"sniff\" field: %+v", tun)
+	}
 	route, ok := doc["route"].(map[string]any)
 	if !ok || route["final"] != "proxy" {
 		t.Fatalf("route.final = %v, want \"proxy\" so real traffic actually goes through the selector", route["final"])
+	}
+	rules, _ := route["rules"].([]any)
+	sniffRuleFound := false
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		if rule["action"] == "sniff" && rule["inbound"] == "tun-in" {
+			sniffRuleFound = true
+		}
+	}
+	if !sniffRuleFound {
+		t.Error("no sniff route rule for tun-in - sniffing needs this now that the legacy inbound field is gone")
 	}
 	if doc["dns"] == nil {
 		t.Error("dns section missing - without it, domain resolution over the tun has nothing to use")
