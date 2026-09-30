@@ -192,6 +192,12 @@ func TestSingBoxConfigHasAWorkingStandaloneRoute(t *testing.T) {
 	if !ok || route["final"] != "proxy" {
 		t.Fatalf("route.final = %v, want \"proxy\" so real traffic actually goes through the selector", route["final"])
 	}
+	// Every outbound's address is a domain, not an IP - without an explicit
+	// resolver, sing-box 1.12+ warns ("missing route.default_domain_resolver
+	// or domain_resolver in dial fields") on every one of them.
+	if route["default_domain_resolver"] != "dns-direct" {
+		t.Errorf("route.default_domain_resolver = %v, want \"dns-direct\"", route["default_domain_resolver"])
+	}
 	rules, _ := route["rules"].([]any)
 	sniffRuleFound := false
 	for _, r := range rules {

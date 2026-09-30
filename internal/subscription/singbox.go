@@ -201,6 +201,17 @@ func SingBoxConfig(outbounds []map[string]any) ([]byte, error) {
 		// same shape a real reference config uses.
 		"route": map[string]any{
 			"auto_detect_interface": true,
+			// Every host's address here is a domain (the marketing hostnames
+			// hosts.address holds, not raw IPs), so every outbound above is a
+			// dial with a domain to resolve first. sing-box 1.12 deprecated
+			// resolving that implicitly through whatever bootstrap DNS the
+			// core happened to have and now wants a resolver named
+			// explicitly - a route-level default covers every such dial at
+			// once instead of repeating a domain_resolver field on each of
+			// the 15 outbounds above. Pointed at dns-direct (not
+			// dns-remote): resolving the proxy's own address through the
+			// proxy would be circular.
+			"default_domain_resolver": "dns-direct",
 			"rules": []map[string]any{
 				{"inbound": "tun-in", "action": "sniff", "timeout": "1s"},
 				{"protocol": "dns", "action": "hijack-dns"},
