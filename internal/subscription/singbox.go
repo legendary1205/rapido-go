@@ -173,23 +173,29 @@ func SingBoxConfig(outbounds []map[string]any) ([]byte, error) {
 	)
 	doc := map[string]any{
 		"log": map[string]any{"level": "warn"},
+		// No "rules" here: matching a DNS rule by the resolved IP (an
+		// "ip_is_private"-style filter) needs the newer two-step
+		// evaluate/match_response shape sing-box 1.14 introduced to replace
+		// its own deprecated legacy address-filter DNS rules - real
+		// complexity this minimal profile has no need for, since the route
+		// rule below already sends anything privately-addressed straight
+		// out "direct" once its destination IP is actually known. "final"
+		// alone (send every query through the tunnel) is enough here.
 		"dns": map[string]any{
 			"servers": []map[string]any{
 				{"tag": "dns-remote", "type": "https", "server": "8.8.8.8", "detour": "proxy"},
 				{"tag": "dns-direct", "type": "local", "detour": "direct"},
-			},
-			"rules": []map[string]any{
-				{"ip_is_private": true, "server": "dns-direct"},
 			},
 			"final": "dns-remote",
 		},
 		"inbounds": []map[string]any{
 			{
 				"type": "tun", "tag": "tun-in",
+				// No "stack": sing-box 1.15 deprecated picking one explicitly
+				// in favor of auto-selecting the best available.
 				"address":      []string{"172.19.0.1/28", "fdfe:dcba:9876::1/126"},
 				"auto_route":   true,
 				"strict_route": true,
-				"stack":        "mixed",
 			},
 		},
 		// Sniffing used to be a plain bool on the inbound itself

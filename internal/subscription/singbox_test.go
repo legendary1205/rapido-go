@@ -209,8 +209,21 @@ func TestSingBoxConfigHasAWorkingStandaloneRoute(t *testing.T) {
 	if !sniffRuleFound {
 		t.Error("no sniff route rule for tun-in - sniffing needs this now that the legacy inbound field is gone")
 	}
-	if doc["dns"] == nil {
-		t.Error("dns section missing - without it, domain resolution over the tun has nothing to use")
+	dns, ok := doc["dns"].(map[string]any)
+	if !ok {
+		t.Fatal("dns section missing - without it, domain resolution over the tun has nothing to use")
+	}
+	// Another regression test in the same vein as the inbound "sniff" one
+	// above: an "ip_is_private"-style filter directly on a DNS rule is a
+	// legacy address-filter field sing-box 1.14 deprecated (it now needs the
+	// newer evaluate/match_response shape instead) - this profile has no
+	// need for that complexity, so it must carry no DNS rules at all rather
+	// than a legacy one.
+	if _, present := dns["rules"]; present {
+		t.Errorf("dns.rules should be absent (no legacy address-filter rules), got %+v", dns["rules"])
+	}
+	if tun["stack"] != nil {
+		t.Errorf("tun inbound still sets \"stack\" = %v - sing-box 1.15 deprecated picking one explicitly", tun["stack"])
 	}
 }
 
