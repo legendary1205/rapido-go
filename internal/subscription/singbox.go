@@ -184,7 +184,18 @@ func SingBoxConfig(outbounds []map[string]any) ([]byte, error) {
 		"dns": map[string]any{
 			"servers": []map[string]any{
 				{"tag": "dns-remote", "type": "https", "server": "8.8.8.8", "detour": "proxy"},
-				{"tag": "dns-direct", "type": "local", "detour": "direct"},
+				// No "detour" here, deliberately: this is what
+				// route.default_domain_resolver below uses to resolve every
+				// outbound's own hostname, including the very first
+				// connection to a proxy server - before any tunnel exists to
+				// detour "direct" traffic through in the first place. A
+				// plain local lookup (the OS resolver, outside sing-box's
+				// own outbound/route machinery entirely) has nothing to
+				// deadlock on; forcing it through the "direct" outbound
+				// instead put it back inside the tun's own auto_route
+				// capture, and every connection stopped completing at all
+				// (not merely mis-routed) once nothing could resolve.
+				{"tag": "dns-direct", "type": "local"},
 			},
 			"final": "dns-remote",
 		},
