@@ -1068,7 +1068,9 @@ render_env() {
 # subscription domain. The installer wrote ${APP_DIR}/Caddyfile from these;
 # after changing them edit the Caddyfile too (see Caddyfile.example), then
 # recreate Caddy so it re-reads the file (certificates are kept):
-#   cd ${APP_DIR} && docker compose -p ${COMPOSE_PROJECT} up -d --force-recreate caddy
+#   cd ${APP_DIR} && docker compose -p ${COMPOSE_PROJECT} -f docker-compose.prod.yml up -d --force-recreate caddy
+# (add -f docker-compose.custom.yml when that file exists - an extra port for
+# Caddy belongs there, since update replaces docker-compose.prod.yml)
 RAPIDO_DOMAIN="${RAPIDO_DOMAIN}"
 RAPIDO_EXTRA_DOMAINS="${RAPIDO_EXTRA_DOMAINS}"
 RAPIDO_SUB_DOMAIN="${RAPIDO_SUB_DOMAIN}"
@@ -1255,9 +1257,25 @@ install_command() {
 # ── compose ──────────────────────────────────────────────────────────────────
 compose_file() { echo "docker-compose.prod.yml"; }
 
+# Local compose changes live in docker-compose.custom.yml (an extra published
+# port for Caddy, a bind mount): `update` replaces the shipped compose file but
+# never this one, and every compose call merges it on top when it exists.
+CUSTOM_COMPOSE_FILE="docker-compose.custom.yml"
+
+# The -f arguments for every compose call, one per line.
+compose_file_args() {
+    printf -- '-f\n%s\n' "$(compose_file)"
+    if [ -f "$APP_DIR/$CUSTOM_COMPOSE_FILE" ]; then
+        printf -- '-f\n%s\n' "$CUSTOM_COMPOSE_FILE"
+    fi
+    return 0
+}
+
 compose() {
     require_installed
-    (cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" --env-file .env "$@")
+    local -a files
+    mapfile -t files < <(compose_file_args)
+    (cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" "${files[@]}" --env-file .env "$@")
 }
 
 # Public https:// wait, in seconds. Shortened when the DNS check already said
@@ -1304,8 +1322,10 @@ wait_healthy() {
 # Services that should be running but are not, space-separated (empty = all up).
 missing_services() {
     local want got svc missing=""
-    want="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" config --services 2>/dev/null)" || want=""
-    got="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" -f "$(compose_file)" --env-file .env ps --services --filter status=running 2>/dev/null)" || got=""
+    local -a files
+    mapfile -t files < <(compose_file_args)
+    want="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" "${files[@]}" --env-file .env config --services 2>/dev/null)" || want=""
+    got="$(cd "$APP_DIR" && docker compose -p "$COMPOSE_PROJECT" "${files[@]}" --env-file .env ps --services --filter status=running 2>/dev/null)" || got=""
     [ -n "$want" ] || { printf 'UNKNOWN'; return 0; }
     for svc in $want; do
         [ "$svc" = "migrate" ] && continue # exits 0 on purpose once done

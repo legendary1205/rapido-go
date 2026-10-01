@@ -25,6 +25,18 @@ type ImportedData struct {
 	// customer has to be handed a new URL.
 	SubscriptionSecret string
 
+	// KeepUserIDs writes every user with its source panel id (User.SourceID)
+	// instead of a fresh one. Needed whenever the source's subscription
+	// links name users by id - PasarGuard's "v3,<user_id>,<ts>" tokens do.
+	KeepUserIDs bool
+
+	// UsersOnly replaces just admins and users (with their proxies and next
+	// plans) and leaves this panel's inbounds, hosts and user templates as
+	// they are - for a source whose inbound definitions don't translate into
+	// this panel's model, so the operator's own inbounds stay in charge.
+	// Hosts/Inbounds/UserTemplates must then be empty.
+	UsersOnly bool
+
 	// Warnings surfaces anything the source panel had that couldn't be
 	// carried over faithfully (an unrecognized proxy type, a malformed
 	// JSON settings blob, a foreign key pointing at a row that turned out
@@ -44,6 +56,7 @@ type Admin struct {
 	HashedPassword  string
 	CreatedAt       time.Time
 	IsSudo          bool
+	IsOwner         bool
 	PasswordResetAt *time.Time
 	TelegramID      *int64
 	DiscordWebhook  *string
@@ -63,8 +76,8 @@ type Proxy struct {
 
 type User struct {
 	// SourceID is this user's id in the source panel - used in-memory
-	// during loading to resolve NextPlan.SourceUserID references; never
-	// written to the new database.
+	// during loading to resolve NextPlan.SourceUserID references, and
+	// written as the new users.id only when ImportedData.KeepUserIDs is set.
 	SourceID int64
 	// SourceAdminID is the source panel's admin id this user belonged to,
 	// resolved to the new admins.id via the Admin.SourceID map built

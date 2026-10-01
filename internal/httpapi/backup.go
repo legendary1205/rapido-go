@@ -376,7 +376,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	}
 	defer os.Remove(tmpPath)
 
-	format, mysqlDump, jsonRaw, err := detectUploadFormat(tmpPath)
+	detected, err := detectUploadFormat(tmpPath)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
@@ -385,7 +385,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 	defer cancel()
 
-	switch format {
+	switch detected.format {
 	case uploadFormatNativePostgres:
 		f, err := os.Open(tmpPath)
 		if err != nil {
@@ -401,7 +401,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 
 	case uploadFormatMarzbanMySQL:
-		data := legacyimport.FromMarzbanMySQLDump(mysqlDump)
+		data := legacyimport.FromMarzbanMySQLDump(detected.mysqlDump)
 		result, err := h.loadLegacyImport(ctx, data)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
@@ -410,7 +410,20 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 
 	case uploadFormatHiddifyJSON:
-		data, err := legacyimport.FromHiddifyJSON(jsonRaw)
+		data, err := legacyimport.FromHiddifyJSON(detected.jsonRaw)
+		if err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+			return
+		}
+		result, err := h.loadLegacyImport(ctx, data)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+
+	case uploadFormatPasarGuardPostgres:
+		data, err := legacyimport.FromPasarGuard(detected.pgDump)
 		if err != nil {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 			return
@@ -423,7 +436,7 @@ func (h *Handler) handleRestoreUpload(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel), a Marzban mysqldump, or a Hiddify Panel export are supported today"})
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "This doesn't look like a supported backup format - a Postgres pg_dump (from this panel, or from a PasarGuard panel on PostgreSQL/TimescaleDB), a Marzban mysqldump, or a Hiddify Panel export are supported today"})
 	}
 }
 

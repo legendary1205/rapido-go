@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -66,7 +68,17 @@ const (
 	uploadFormatNativePostgres
 	uploadFormatMarzbanMySQL
 	uploadFormatHiddifyJSON
+	uploadFormatPasarGuardPostgres
 )
+
+// detectedUpload is detectUploadFormat's verdict plus whatever it already
+// had to parse to reach it, so the importer never reads the file twice.
+type detectedUpload struct {
+	format    uploadFormat
+	mysqlDump *legacyimport.MySQLDump // uploadFormatMarzbanMySQL
+	pgDump    *legacyimport.PgDump    // uploadFormatPasarGuardPostgres
+	jsonRaw   []byte                  // uploadFormatHiddifyJSON
+}
 
 // hiddifyExportProbe checks just the three top-level keys that identify a
 // real `hiddifypanel backup` export (see internal/legacyimport/hiddify.go)
@@ -84,12 +96,16 @@ type hiddifyExportProbe struct {
 // full parse for the mysqldump and JSON cases, since which specific legacy
 // panel a dump came from can only be told by which tables/keys it actually
 // contains, not by a fixed byte offset (see the Phase 8.2 plan's note on
-// table-signature-based detection). jsonRaw is only populated for a JSON
-// format (uploadFormatHiddifyJSON today) - nil otherwise.
-func detectUploadFormat(path string) (format uploadFormat, mysqlDump *legacyimport.MySQLDump, jsonRaw []byte, err error) {
+// table-signature-based detection).
+//
+// A Postgres dump is either this panel's own backup or a PasarGuard panel's
+// (PasarGuard runs on Postgres/TimescaleDB too): the tables its schema
+// section creates decide, and only a PasarGuard signature is parsed as one.
+// Anything else keeps the native-restore path it always had.
+func detectUploadFormat(path string) (detectedUpload, error) {
 	r, err := openMaybeGzipped(path)
 	if err != nil {
-		return uploadFormatUnknown, nil, nil, fmt.Errorf("could not open the uploaded file: %w", err)
+		return detectedUpload{}, fmt.Errorf("could not open the uploaded file: %w", err)
 	}
 	defer r.Close()
 
@@ -98,32 +114,79 @@ func detectUploadFormat(path string) (format uploadFormat, mysqlDump *legacyimpo
 
 	switch {
 	case containsBytes(head, pgDumpHeader):
-		return uploadFormatNativePostgres, nil, nil, nil
+		created, err := pgDumpCreatedTables(br)
+		if err != nil {
+			return detectedUpload{}, fmt.Errorf("could not read the uploaded Postgres dump: %w", err)
+		}
+		if !legacyimport.IsPasarGuardSchema(created) {
+			return detectedUpload{format: uploadFormatNativePostgres}, nil
+		}
+		// The schema scan consumed the stream - parse from a fresh one.
+		dump, err := parsePasarGuardDump(path)
+		if err != nil {
+			return detectedUpload{}, fmt.Errorf("this looks like a PasarGuard Postgres dump but couldn't be parsed: %w", err)
+		}
+		return detectedUpload{format: uploadFormatPasarGuardPostgres, pgDump: dump}, nil
 	case containsBytes(head, "-- MySQL dump"):
 		dump, err := legacyimport.ParseMySQLDump(br)
 		if err != nil {
-			return uploadFormatUnknown, nil, nil, fmt.Errorf("this looks like a MySQL dump but couldn't be parsed: %w", err)
+			return detectedUpload{}, fmt.Errorf("this looks like a MySQL dump but couldn't be parsed: %w", err)
 		}
 		if _, ok := dump.Tables["admins"]; ok {
 			if _, ok := dump.Tables["proxies"]; ok {
-				return uploadFormatMarzbanMySQL, dump, nil, nil
+				return detectedUpload{format: uploadFormatMarzbanMySQL, mysqlDump: dump}, nil
 			}
 		}
-		return uploadFormatUnknown, nil, nil, nil
+		return detectedUpload{}, nil
 	case len(head) > 0 && (head[0] == '{' || head[0] == ' ' || head[0] == '\n' || head[0] == '\t'):
 		raw, err := io.ReadAll(br)
 		if err != nil {
-			return uploadFormatUnknown, nil, nil, fmt.Errorf("could not read the uploaded file: %w", err)
+			return detectedUpload{}, fmt.Errorf("could not read the uploaded file: %w", err)
 		}
 		var probe hiddifyExportProbe
 		if err := json.Unmarshal(raw, &probe); err == nil &&
 			probe.AdminUsers != nil && probe.Users != nil && probe.Proxies != nil {
-			return uploadFormatHiddifyJSON, nil, raw, nil
+			return detectedUpload{format: uploadFormatHiddifyJSON, jsonRaw: raw}, nil
 		}
-		return uploadFormatUnknown, nil, nil, nil
+		return detectedUpload{}, nil
 	default:
-		return uploadFormatUnknown, nil, nil, nil
+		return detectedUpload{}, nil
 	}
+}
+
+// pgDumpCreatedTables reads a plain pg_dump's schema section - everything
+// before its first COPY data block, where pg_dump puts every CREATE TABLE -
+// and returns the public tables it creates. Stopping at the first COPY keeps
+// this cheap for a large native backup, whose data is never needed here.
+func pgDumpCreatedTables(br *bufio.Reader) (map[string]bool, error) {
+	created := map[string]bool{}
+	for {
+		line, err := br.ReadString('\n')
+		if strings.HasPrefix(line, "COPY ") {
+			return created, nil
+		}
+		if strings.HasPrefix(line, "CREATE TABLE public.") {
+			name := strings.TrimPrefix(line, "CREATE TABLE public.")
+			if i := strings.IndexAny(name, " ("); i > 0 {
+				created[strings.Trim(name[:i], `"`)] = true
+			}
+		}
+		if err == io.EOF {
+			return created, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func parsePasarGuardDump(path string) (*legacyimport.PgDump, error) {
+	r, err := openMaybeGzipped(path)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return legacyimport.ParsePgDump(r, legacyimport.PasarGuardTables)
 }
 
 func containsBytes(haystack []byte, needle string) bool {
@@ -175,7 +238,12 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 		return legacyImportResultDTO{}, fmt.Errorf("aborted before touching the database - could not take a safety backup first: %w", err)
 	}
 
-	if err := h.store.Queries.TruncateForLegacyImport(ctx); err != nil {
+	truncate := h.store.Queries.TruncateForLegacyImport
+	if data.UsersOnly {
+		// This panel's inbounds/hosts/templates stay; only user data is replaced.
+		truncate = h.store.Queries.TruncateUsersForLegacyImport
+	}
+	if err := truncate(ctx); err != nil {
 		return legacyImportResultDTO{}, fmt.Errorf("import failed after a safety backup (%s) was already taken - restore that backup to recover: %w", safety.Filename, err)
 	}
 
@@ -187,7 +255,12 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 	// export, or a dump taken without the jwt table) - this panel then
 	// keeps its own, and every subscriber needs a fresh link.
 	if data.SubscriptionSecret != "" {
-		if err := h.store.Queries.ReplaceJWTSecret(ctx, data.SubscriptionSecret); err != nil {
+		// The panel hex-decodes this column at startup (cmd/panel's
+		// ensureJWTSecret) and refuses to start if it can't - a key in any
+		// other shape must never land here.
+		if raw, err := hex.DecodeString(data.SubscriptionSecret); err != nil || len(raw) == 0 || hex.EncodeToString(raw) != data.SubscriptionSecret {
+			warnings = append(warnings, "the source panel's subscription signing key is not lowercase hex, so it was not adopted - existing subscription links will not work")
+		} else if err := h.store.Queries.ReplaceJWTSecret(ctx, data.SubscriptionSecret); err != nil {
 			warnings = append(warnings, "could not adopt the source panel's subscription signing key - existing subscription links will not work: "+err.Error())
 		} else {
 			warnings = append(warnings, "adopted the source panel's subscription signing key, so existing subscription links keep working - RESTART the panel for it to take effect (rapido-go restart)")
@@ -201,6 +274,7 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 			HashedPassword:  a.HashedPassword,
 			CreatedAt:       timestamptzFromTime(a.CreatedAt),
 			IsSudo:          a.IsSudo,
+			IsOwner:         a.IsOwner,
 			PasswordResetAt: timestamptzFromPtr(a.PasswordResetAt),
 			TelegramID:      int8FromPtr(a.TelegramID),
 			DiscordWebhook:  textFromPtr(a.DiscordWebhook),
@@ -243,7 +317,7 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 				adminID = pgtype.Int4{Int32: newID, Valid: true}
 			}
 		}
-		created, err := h.store.Queries.ImportUser(ctx, generated.ImportUserParams{
+		params := generated.ImportUserParams{
 			Username:               u.Username,
 			Status:                 u.Status,
 			UsedTraffic:            u.UsedTraffic,
@@ -262,7 +336,14 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 			OnHoldExpireDuration:   int8FromPtr(u.OnHoldExpireDuration),
 			AutoDeleteInDays:       pgInt4FromPtr(u.AutoDeleteInDays),
 			LastStatusChange:       timestamptzFromPtr(u.LastStatusChange),
-		})
+		}
+		var created generated.User
+		var err error
+		if data.KeepUserIDs {
+			created, err = h.store.Queries.ImportUserWithID(ctx, importUserWithIDParams(int32(u.SourceID), params))
+		} else {
+			created, err = h.store.Queries.ImportUser(ctx, params)
+		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("user %q: %v", u.Username, err))
 			continue
@@ -291,6 +372,12 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 					warnings = append(warnings, fmt.Sprintf("user %q: proxy exclusions: %v", u.Username, err))
 				}
 			}
+		}
+	}
+
+	if data.KeepUserIDs {
+		if err := h.store.Queries.SyncUsersIDSequence(ctx); err != nil {
+			warnings = append(warnings, "could not move the user id sequence past the imported ids - creating a user may fail until it is fixed: "+err.Error())
 		}
 	}
 
@@ -379,4 +466,29 @@ func (h *Handler) loadLegacyImport(ctx context.Context, data legacyimport.Import
 		InboundsImported: inboundsImported,
 		Warnings:         warnings,
 	}, nil
+}
+
+// importUserWithIDParams is p with the user's id pinned (ImportUserWithID).
+func importUserWithIDParams(id int32, p generated.ImportUserParams) generated.ImportUserWithIDParams {
+	return generated.ImportUserWithIDParams{
+		ID:                     id,
+		Username:               p.Username,
+		Status:                 p.Status,
+		UsedTraffic:            p.UsedTraffic,
+		DataLimit:              p.DataLimit,
+		Expire:                 p.Expire,
+		CreatedAt:              p.CreatedAt,
+		AdminID:                p.AdminID,
+		DataLimitResetStrategy: p.DataLimitResetStrategy,
+		SubRevokedAt:           p.SubRevokedAt,
+		Note:                   p.Note,
+		SubUpdatedAt:           p.SubUpdatedAt,
+		SubLastUserAgent:       p.SubLastUserAgent,
+		OnlineAt:               p.OnlineAt,
+		EditAt:                 p.EditAt,
+		OnHoldTimeout:          p.OnHoldTimeout,
+		OnHoldExpireDuration:   p.OnHoldExpireDuration,
+		AutoDeleteInDays:       p.AutoDeleteInDays,
+		LastStatusChange:       p.LastStatusChange,
+	}
 }

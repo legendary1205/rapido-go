@@ -669,7 +669,7 @@
   "rapido.backups.restoreSuccess": "База данных восстановлена. Резервная копия предыдущих данных сохранена: {{filename}}",
   "rapido.backups.importSuccess": "Импортировано: {{admins}} администраторов, {{users}} пользователей, {{hosts}} хостов, {{inbounds}} inbound. Резервная копия предыдущих данных сохранена: {{filename}}",
   "rapido.backups.uploadTitle": "Восстановить из загруженного файла",
-  "rapido.backups.uploadDesc": "Резервная копия Postgres из этой панели (.sql.gz), экспорт MySQL из Marzban (.sql, сжатый или нет), или экспорт Hiddify Panel (.json, из команды «hiddifypanel backup» или страницы Backup).",
+  "rapido.backups.uploadDesc": "Резервная копия Postgres из этой панели (.sql.gz), дамп базы PasarGuard (pg_dump .sql из PostgreSQL/TimescaleDB, сжатый или нет: переносятся пользователи, администраторы и их текущие ссылки подписки, инбаунды и хосты этой панели остаются как есть), экспорт MySQL из Marzban (.sql, сжатый или нет), или экспорт Hiddify Panel (.json, из команды «hiddifypanel backup» или страницы Backup).",
   "rapido.backups.showUpload": "Показать",
   "rapido.backups.hideUpload": "Скрыть",
   "rapido.gateway.nav": "Шлюз",

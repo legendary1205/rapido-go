@@ -3,8 +3,8 @@
 -- signup would never have (created_at, password_reset_at, users_usage) -
 -- a legacy-panel import needs to preserve these exactly, not reset them to
 -- "just now" the way a brand-new admin creation naturally would.
-INSERT INTO admins (username, hashed_password, created_at, is_sudo, password_reset_at, telegram_id, discord_webhook, users_usage)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO admins (username, hashed_password, created_at, is_sudo, password_reset_at, telegram_id, discord_webhook, users_usage, is_owner)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: ImportUser :one
@@ -20,6 +20,27 @@ INSERT INTO users (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 RETURNING *;
 
+-- name: ImportUserWithID :one
+-- ImportUser, but keeping the source panel's own users.id. PasarGuard's
+-- current subscription links ("v3,<user_id>,<ts>", see internal/
+-- subscription.ParseToken) name the user by that id, so a migrated user
+-- whose id changed would lose a link they already installed. Only valid
+-- right after a truncate; SyncUsersIDSequence must follow the inserts.
+INSERT INTO users (
+    id, username, status, used_traffic, data_limit, expire, created_at, admin_id,
+    data_limit_reset_strategy, sub_revoked_at, note, sub_updated_at,
+    sub_last_user_agent, online_at, edit_at, on_hold_timeout,
+    on_hold_expire_duration, auto_delete_in_days, last_status_change
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+RETURNING *;
+
+-- name: SyncUsersIDSequence :exec
+-- After ImportUserWithID: move users' SERIAL past the highest imported id,
+-- or the next user created through the API would collide with one of them.
+SELECT setval(pg_get_serial_sequence('users', 'id'),
+              COALESCE((SELECT MAX(id) FROM users), 1),
+              (SELECT MAX(id) FROM users) IS NOT NULL);
+
 -- name: TruncateForLegacyImport :exec
 -- The "full replacement" step of a legacy-panel import: wipes every table
 -- an import actually populates, RESTART IDENTITY so new rows get a clean
@@ -32,4 +53,14 @@ RETURNING *;
 -- populates (see the Phase 8.2 plan's explicit scope notes).
 TRUNCATE admins, users, proxies, hosts, inbounds, exclude_inbounds_association,
     template_inbounds_association, user_templates, next_plans
+    RESTART IDENTITY CASCADE;
+
+-- name: TruncateUsersForLegacyImport :exec
+-- TruncateForLegacyImport's narrower sibling, for an import that brings
+-- only user data (a PasarGuard panel's inbounds live in Xray core configs
+-- this panel's sing-box nodes cannot always serve as-is, so they are not
+-- carried over): replaces admins and users - CASCADE takes every table that
+-- hangs off them, proxies and next plans included - and leaves this panel's
+-- own inbounds, hosts and user templates exactly as the operator set them up.
+TRUNCATE admins, users, proxies, exclude_inbounds_association, next_plans
     RESTART IDENTITY CASCADE;

@@ -369,6 +369,12 @@ unit "RAPIDO_BUILD_LOCALLY builds instead of pulling the panel image" 'BUILD' \
     'pull_images() { PULL_FAILED=""; }; build_local_image() { echo BUILD; }
      APP_DIR="$(mktemp -d)"; RAPIDO_BUILD_LOCALLY=1 obtain_images 2>&1 | grep -x BUILD'
 
+# ---- local compose overrides ----
+unit "compose uses only the shipped file when there is no custom one" '-f docker-compose.prod.yml' \
+    'APP_DIR="$(mktemp -d)"; compose_file_args | paste -sd" " -'
+unit "compose merges docker-compose.custom.yml when it exists" '-f docker-compose.prod.yml -f docker-compose.custom.yml' \
+    'APP_DIR="$(mktemp -d)"; : > "$APP_DIR/docker-compose.custom.yml"; compose_file_args | paste -sd" " -'
+
 # ---- update decision ----
 unit "update is needed when the compose file changed" 'needed' \
     'COMPOSE_CHANGED=1; images_fingerprint() { echo same; }; update_needed same && echo needed'

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 	"github.com/legendary1205/rapido-go/internal/proxysettings"
@@ -184,22 +186,36 @@ func hasAnyPrefix(lowerUserAgent string, prefixes ...string) bool {
 	return false
 }
 
-// loadSubscriptionUser validates the token (internal/subscription's
-// bespoke signed-timestamp scheme, not a JWT) and re-fetches the user,
-// enforcing the same invalidation rule as get_validated_sub: a token whose
-// embedded timestamp predates the user's created_at or sub_revoked_at is
-// rejected, even though the token itself never expires on its own.
+// loadSubscriptionUser validates the token (any format subscription.
+// ParseToken accepts - this panel's own, or one a migrated customer kept
+// from PasarGuard/Marzban) and re-fetches the user, enforcing the same
+// invalidation rule as get_validated_sub: a token whose embedded timestamp
+// predates the user's created_at or sub_revoked_at is rejected, even though
+// the token itself never expires on its own.
+//
+// An id-based token (PasarGuard's "v3,<id>,<ts>") is looked up by users.id,
+// which is why a PasarGuard import keeps every user's original id.
 func (h *Handler) loadSubscriptionUser(c *gin.Context) (generated.User, bool) {
-	username, createdAt, ok := subscription.ValidateToken(c.Param("token"), h.jwtSecret)
+	claims, ok := subscription.ParseToken(c.Param("token"), h.jwtSecret)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Not Found"})
 		return generated.User{}, false
 	}
-	user, err := h.store.Queries.GetUserByUsername(c.Request.Context(), username)
+	var user generated.User
+	var err error
+	switch {
+	case claims.ByID && claims.UserID >= 1 && claims.UserID <= math.MaxInt32:
+		user, err = h.store.Queries.GetUserByID(c.Request.Context(), int32(claims.UserID))
+	case !claims.ByID && claims.Username != "":
+		user, err = h.store.Queries.GetUserByUsername(c.Request.Context(), claims.Username)
+	default:
+		err = pgx.ErrNoRows
+	}
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Not Found"})
 		return generated.User{}, false
 	}
+	createdAt := claims.CreatedAt
 	if user.CreatedAt.Valid && user.CreatedAt.Time.After(createdAt) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Not Found"})
 		return generated.User{}, false
