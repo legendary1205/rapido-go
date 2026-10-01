@@ -92,6 +92,18 @@ The installer only asks for (or uses) a token when the repository or images are 
 
 It ends with a summary: dashboard URL(s), admin login, subscription base URL, backup location and the commands below.
 
+### Add a node
+
+Unlike the install command above, there is no fixed link for this - each node needs its own certificate and report secret, so the command is generated per node and shown to you exactly once. Open **Nodes** in the dashboard, click **Add Node**, and it shows a one-time install command in the form
+
+```bash
+curl -fsSL https://<panel>/install/node.sh | sudo bash -s -- '<setup_blob>'
+```
+
+Copy it right away - the `<setup_blob>` is not stored anywhere the dashboard can show you again - and run it as shown, as root, on the node server. The blob carries the certificate, key, CA, report secret and panel URL, so there is nothing else to configure, and the node only ever dials out to the panel. The script and the node binary are both served by your own panel, so the node server needs no GitHub access.
+
+Afterwards the node manages itself with `rapido-go-node status`, `rapido-go-node update` (downloads the version your panel ships, verifies it, and rolls back if it does not start), `rapido-go-node tunnels` (brings up and enables WireGuard exits) and `rapido-go-node uninstall`.
+
 ### Domains
 
 - **Primary domain** (`--domain`) - the dashboard and the admin API.
@@ -137,18 +149,6 @@ Every `update` takes a backup first. Copy backups off the server - they live on 
 ### Uninstall
 
 `rapido-go uninstall` removes the containers, their volumes (**including the database**) and `/opt/rapido-go`. Backups in `/var/lib/rapido-go` are kept - run `rapido-go backup` first if you may want the data.
-
-### Add a node
-
-Open **Nodes** in the dashboard: it shows a single install command for the node, in the form
-
-```bash
-curl -fsSL https://<panel>/install/node.sh | sudo bash -s -- '<setup_blob>'
-```
-
-Run it as shown on the node server. The setup blob carries the certificate, key, CA, report secret and panel URL, so there is nothing else to configure, and the node only ever dials out to the panel. The script and the node binary are both served by your own panel, so the server needs no GitHub access.
-
-Afterwards the node manages itself with `rapido-go-node status`, `rapido-go-node update` (downloads the version your panel ships, verifies it, and rolls back if it does not start), `rapido-go-node tunnels` (brings up and enables WireGuard exits) and `rapido-go-node uninstall`.
 
 ### Migrating from the Python panel
 
@@ -303,6 +303,18 @@ bash <(curl -fsSL -H "Authorization: Bearer $RAPIDO_REPO_TOKEN" -H "Accept: appl
 
 در پایان یک خلاصه چاپ می‌شود: آدرس داشبورد، ورود ادمین، آدرس پایه‌ی اشتراک، محل بکاپ‌ها و دستورهای زیر.
 
+### افزودن نود
+
+برخلاف دستور نصب بالا، اینجا لینک ثابتی وجود ندارد — هر نود گواهی و رمز گزارش مخصوص خودش را لازم دارد، پس این دستور برای هر نود جداگانه ساخته می‌شود و فقط یک بار نشانتان داده می‌شود. در داشبورد به صفحه‌ی **Nodes** بروید، روی **Add Node** بزنید؛ یک دستور نصب یک‌باره به این شکل نشان می‌دهد:
+
+```bash
+curl -fsSL https://<panel>/install/node.sh | sudo bash -s -- '<setup_blob>'
+```
+
+همان لحظه کپی‌اش کنید — این `<setup_blob>` جایی ذخیره نمی‌شود که داشبورد دوباره نشانتان بدهد — و همان‌طور که نشان داده شده، با کاربر root، روی سرور نود اجرا کنید. این blob گواهی، کلید، CA، رمز گزارش و آدرس پنل را با خودش دارد، پس چیز دیگری برای تنظیم نمی‌ماند و نود فقط به سمت پنل اتصال خروجی می‌زند. اسکریپت و باینری نود را هم پنل خودتان سرو می‌کند، پس سرور نود نیازی به دسترسی گیت‌هاب ندارد.
+
+بعد از آن، نود خودش را مدیریت می‌کند: `rapido-go-node status`، `rapido-go-node update` (نسخه‌ای را که پنلتان دارد دانلود، تأیید و اگر بالا نیامد برمی‌گرداند)، `rapido-go-node tunnels` (تونل‌های وایرگارد را بالا و فعال می‌کند) و `rapido-go-node uninstall`.
+
 ### دامنه‌ها
 
 - **دامنه‌ی اصلی** (`--domain`) — داشبورد و API مدیریت.
@@ -348,16 +360,6 @@ rapido-go restore /root/rapido.sql.gz     # دیتابیس را جایگزین �
 ### حذف
 
 `rapido-go uninstall` کانتینرها، ولوم‌هایشان (**از جمله دیتابیس**) و `/opt/rapido-go` را پاک می‌کند. بکاپ‌های `/var/lib/rapido-go` می‌مانند؛ اگر ممکن است داده را بخواهید، اول `rapido-go backup` بزنید.
-
-### افزودن نود
-
-در داشبورد به صفحه‌ی **Nodes** بروید؛ یک دستور نصب واحد برای نود نشان می‌دهد، به این شکل:
-
-```bash
-curl -fsSL https://<panel>/install/node.sh | sudo bash -s -- '<setup_blob>'
-```
-
-همان را همان‌طور که نشان داده شده روی سرور نود اجرا کنید. setup blob گواهی، کلید، CA، رمز گزارش و آدرس پنل را با خودش دارد، پس چیز دیگری برای تنظیم نمی‌ماند و نود فقط به سمت پنل اتصال خروجی می‌زند.
 
 ### مهاجرت از پنل پایتونی
 
