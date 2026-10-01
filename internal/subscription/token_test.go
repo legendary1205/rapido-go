@@ -152,8 +152,8 @@ func TestParseTokenRejectsForgedPasarGuardTokens(t *testing.T) {
 		// The right payload signed with a different key.
 		"v3 signed by another key": "djMsMTA1OSwxNzkwMTAzOTU0.-WGHSHfwoDv6BWaIquM30q7FU104wmtn66IlXhcFcXs",
 		// A valid signature moved onto a different payload ("v3,1,1790103954").
-		"v3 payload swapped": "djMsMSwxNzkwMTAzOTU0.N2eaiYAuhlIDoQnTj73GgF5rvh-q5IcZsXqdcs2WglE",
-		"v3 signature truncated": "djMsMTA1OSwxNzkwMTAzOTU0.N2eaiYAuhlIDoQnTj73GgF5rvh-q5IcZsXqdcs2Wgl",
+		"v3 payload swapped":       "djMsMSwxNzkwMTAzOTU0.N2eaiYAuhlIDoQnTj73GgF5rvh-q5IcZsXqdcs2WglE",
+		"v3 signature truncated":   "djMsMTA1OSwxNzkwMTAzOTU0.N2eaiYAuhlIDoQnTj73GgF5rvh-q5IcZsXqdcs2Wgl",
 		"v2 hex signature altered": "djIsNDIsMTcwMDAwMDAwMA2847a9bc9e",
 		// A correctly signed JWT for the admin API, not a subscription.
 		"admin JWT": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0dXNlciIsImFjY2VzcyI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ.zS-zHfBfNMdT_k0lDUM8Xsc8WlQGo62MRy4yiWOClGM",

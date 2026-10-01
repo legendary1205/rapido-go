@@ -413,9 +413,10 @@ type inboundSpec struct {
 	// (ListenPort is then the first of them, for a node that predates this
 	// field). Each port becomes its own sing-box listener tagged
 	// "<tag>#<port>", so a routing rule can tell them apart.
-	ListenPorts []uint16   `json:"listen_ports,omitempty"`
-	Users       []userSpec `json:"users"`
-	TLS         *tlsSpec   `json:"tls,omitempty"`
+	ListenPorts []uint16       `json:"listen_ports,omitempty"`
+	Users       []userSpec     `json:"users"`
+	TLS         *tlsSpec       `json:"tls,omitempty"`
+	Transport   *transportSpec `json:"transport,omitempty"`
 
 	// Hysteria2ObfsPassword/UpMbps/DownMbps only apply to protocol="hysteria2";
 	// CongestionControl/ZeroRTTHandshake only to protocol="tuic";
@@ -460,6 +461,17 @@ type tlsSpec struct {
 	Certificate string       `json:"certificate"` // PEM
 	Key         string       `json:"key"`         // PEM
 	Reality     *realitySpec `json:"reality,omitempty"`
+}
+
+// transportSpec is the V2Ray transport (WebSocket or HTTPUpgrade) a
+// vless/vmess/trojan inbound's clients wrap the protocol in; absent means
+// the protocol runs straight over TCP. Mirrors internal/httpapi's
+// nodeConfigTransportSpec. A node older than this field ignores it and
+// keeps serving plain TCP - which is why a ws inbound needs updated nodes.
+type transportSpec struct {
+	Type string `json:"type"` // "ws" | "httpupgrade"
+	Path string `json:"path,omitempty"`
+	Host string `json:"host,omitempty"`
 }
 
 type realitySpec struct {
@@ -760,6 +772,25 @@ func buildInboundTLS(in inboundSpec) *sbox.InboundTLSOptions {
 	return tlsOpts
 }
 
+// buildInboundTransport turns an inbound's transportSpec into sing-box's own
+// transport options: the server then answers the protocol only inside a
+// WebSocket/HTTPUpgrade request on that path (after TLS, when the inbound has
+// it) - what an Xray client of a "type=ws&path=/x" link speaks. An unknown
+// type is refused rather than silently served as plain TCP, which would
+// accept the TCP connection and then fail every single client.
+func buildInboundTransport(in inboundSpec) (*sbox.V2RayTransportOptions, error) {
+	if in.Transport == nil {
+		return nil, nil
+	}
+	switch in.Transport.Type {
+	case "ws":
+		return &sbox.V2RayTransportOptions{Type: "ws", WebsocketOptions: sbox.V2RayWebsocketOptions{Path: in.Transport.Path}}, nil
+	case "httpupgrade":
+		return &sbox.V2RayTransportOptions{Type: "httpupgrade", HTTPUpgradeOptions: sbox.V2RayHTTPUpgradeOptions{Path: in.Transport.Path, Host: in.Transport.Host}}, nil
+	}
+	return nil, fmt.Errorf("inbound %q: unsupported transport %q", in.Tag, in.Transport.Type)
+}
+
 func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 	plan := nodePlan{derivedTags: make(map[string][]string), shadowsocksMethods: make(map[string]string)}
 	portsByTag := make(map[string][]uint16, len(req.Inbounds))
@@ -776,6 +807,10 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 			// Built per listener: sing-box takes ownership of the options it is
 			// given, so two inbounds must not share one TLS block.
 			tlsOpts := buildInboundTLS(in)
+			transport, err := buildInboundTransport(in)
+			if err != nil {
+				return sbox.Options{}, nodePlan{}, err
+			}
 
 			listen := badoption.Addr(netip.IPv4Unspecified())
 			listenOptions := sbox.ListenOptions{Listen: &listen, ListenPort: port}
@@ -790,6 +825,7 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 					ListenOptions:              listenOptions,
 					Users:                      users,
 					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+					Transport:                  transport,
 				}})
 			case "vmess":
 				users := make([]sbox.VMessUser, 0, len(in.Users))
@@ -800,6 +836,7 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 					ListenOptions:              listenOptions,
 					Users:                      users,
 					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+					Transport:                  transport,
 				}})
 			case "trojan":
 				users := make([]sbox.TrojanUser, 0, len(in.Users))
@@ -810,6 +847,7 @@ func buildOptionsPlan(req startRequest) (sbox.Options, nodePlan, error) {
 					ListenOptions:              listenOptions,
 					Users:                      users,
 					InboundTLSOptionsContainer: sbox.InboundTLSOptionsContainer{TLS: tlsOpts},
+					Transport:                  transport,
 				}})
 			case "shadowsocks":
 				users := make([]sbox.ShadowsocksUser, 0, len(in.Users))

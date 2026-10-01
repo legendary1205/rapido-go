@@ -11,12 +11,14 @@
 -- non-disabled hosts, ascending, for a node that expands one logical inbound
 -- into a listener per port. Hosts can carry several rows per inbound tag,
 -- and several of them may share a port - which is why `ports` is DISTINCT.
+-- The primary host's `path` is the one a WebSocket/HTTPUpgrade inbound
+-- answers on - the same path its clients' links carry.
 SELECT i.tag, i.protocol, i.network, i.header_type, i.security,
        i.reality_private_key, i.reality_short_ids, i.reality_server_name, i.reality_server_port,
        i.tls_certificate, i.tls_key, i.tls_server_name,
        i.hysteria2_obfs_password, i.up_mbps, i.down_mbps, i.congestion_control, i.zero_rtt_handshake,
        i.snell_psk, i.snell_v6_mode,
-       h.port, h.sni, h.host,
+       h.port, h.sni, h.host, h.path,
        ARRAY(
            SELECT DISTINCT hp.port FROM hosts hp
            WHERE hp.inbound_tag = i.tag AND hp.is_disabled IS NOT TRUE AND hp.port IS NOT NULL
@@ -24,7 +26,7 @@ SELECT i.tag, i.protocol, i.network, i.header_type, i.security,
        )::int[] AS ports
 FROM inbounds i
 JOIN LATERAL (
-    SELECT port, sni, host FROM hosts
+    SELECT port, sni, host, path FROM hosts
     WHERE hosts.inbound_tag = i.tag AND is_disabled IS NOT TRUE AND port IS NOT NULL
     ORDER BY id LIMIT 1
 ) h ON true

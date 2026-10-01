@@ -50,6 +50,36 @@ type nodeConfigTLSSpec struct {
 	Reality     *nodeConfigRealitySpec `json:"reality,omitempty"`
 }
 
+// nodeConfigTransportSpec is the V2Ray transport a vless/vmess/trojan
+// inbound's clients wrap the protocol in - absent for plain TCP. Its path
+// is the inbound's primary host's path, the same one every client link of
+// that inbound carries, so the node answers exactly where clients knock.
+type nodeConfigTransportSpec struct {
+	Type string `json:"type"` // "ws" | "httpupgrade"
+	Path string `json:"path,omitempty"`
+	Host string `json:"host,omitempty"`
+}
+
+// nodeInboundTransport is the transport a node serves for an inbound of
+// this network, or nil when it serves the protocol straight over TCP.
+// Only the transports sing-box has a server for are mapped; anything else
+// keeps the old plain-TCP behaviour.
+func nodeInboundTransport(protocol, network, path, host string) *nodeConfigTransportSpec {
+	switch protocol {
+	case "vless", "vmess", "trojan":
+	default:
+		return nil
+	}
+	switch network {
+	case "ws", "httpupgrade":
+		if path == "" {
+			path = "/"
+		}
+		return &nodeConfigTransportSpec{Type: network, Path: path, Host: host}
+	}
+	return nil
+}
+
 type nodeConfigInboundSpec struct {
 	Tag        string `json:"tag"`
 	Protocol   string `json:"protocol"`
@@ -58,9 +88,10 @@ type nodeConfigInboundSpec struct {
 	// ascending, and is only set when there is MORE than one - a single-port
 	// inbound serializes exactly as it did before this field existed, and a
 	// node that predates it keeps reading ListenPort.
-	ListenPorts []uint16             `json:"listen_ports,omitempty"`
-	Users       []nodeConfigUserSpec `json:"users"`
-	TLS         *nodeConfigTLSSpec   `json:"tls,omitempty"`
+	ListenPorts []uint16                 `json:"listen_ports,omitempty"`
+	Users       []nodeConfigUserSpec     `json:"users"`
+	TLS         *nodeConfigTLSSpec       `json:"tls,omitempty"`
+	Transport   *nodeConfigTransportSpec `json:"transport,omitempty"`
 
 	// Hysteria2/TUIC only apply to a protocol="hysteria2"/"tuic" inbound -
 	// see inbounds.go's inboundDetailDTO for what each field means. Present
@@ -91,12 +122,13 @@ type nodeConfigInboundSpec struct {
 // TestNodeConfigBodyIsByteIdenticalToMarshallingThePayload is what keeps
 // the two forms honest.
 type nodeConfigInboundWire struct {
-	Tag         string             `json:"tag"`
-	Protocol    string             `json:"protocol"`
-	ListenPort  uint16             `json:"listen_port"`
-	ListenPorts []uint16           `json:"listen_ports,omitempty"`
-	Users       json.RawMessage    `json:"users"`
-	TLS         *nodeConfigTLSSpec `json:"tls,omitempty"`
+	Tag         string                   `json:"tag"`
+	Protocol    string                   `json:"protocol"`
+	ListenPort  uint16                   `json:"listen_port"`
+	ListenPorts []uint16                 `json:"listen_ports,omitempty"`
+	Users       json.RawMessage          `json:"users"`
+	TLS         *nodeConfigTLSSpec       `json:"tls,omitempty"`
+	Transport   *nodeConfigTransportSpec `json:"transport,omitempty"`
 
 	// Same fields, same order, as nodeConfigInboundSpec above - required for
 	// the two to stay byte-identical, see this type's own doc comment.
@@ -222,6 +254,7 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: uint16(in.Port.Int32),
 			ListenPorts: multiListenPorts(in.Ports),
 			Users:       usersByProtocol[in.Protocol],
+			Transport:   nodeInboundTransport(in.Protocol, in.Network, in.Path.String, in.Host.String),
 		}
 		switch in.Security {
 		case "reality":
@@ -302,7 +335,7 @@ func (s *nodeConfigSnapshot) render(p nodeProfile) (nodeConfigResponse, []byte, 
 		}
 		wire = append(wire, nodeConfigInboundWire{
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: in.ListenPort, ListenPorts: in.ListenPorts,
-			Users: users, TLS: in.TLS,
+			Users: users, TLS: in.TLS, Transport: in.Transport,
 			Hysteria2ObfsPassword: in.Hysteria2ObfsPassword, UpMbps: in.UpMbps, DownMbps: in.DownMbps,
 			CongestionControl: in.CongestionControl, ZeroRTTHandshake: in.ZeroRTTHandshake,
 			SnellPSK: in.SnellPSK, SnellV6Mode: in.SnellV6Mode,

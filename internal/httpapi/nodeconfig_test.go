@@ -384,3 +384,81 @@ func TestNodeConfigBodyStaysByteIdenticalWithAMultiPortInbound(t *testing.T) {
 		t.Errorf("body is missing the multi-port inbound's listen_ports: %.300s", got)
 	}
 }
+
+// TestGetNodeConfigCarriesTheWebSocketTransport: a "vless + ws + tls" inbound
+// (the shape a migrated PasarGuard/Xray panel has) reaches the node with its
+// transport and the path its clients' links carry - the primary host's path -
+// while a plain-TCP inbound still has no transport at all, and the spliced
+// body stays byte-identical to the marshalled payload.
+func TestGetNodeConfigCarriesTheWebSocketTransport(t *testing.T) {
+	router, token, handler := newTestRouterAndHandler(t)
+	_, secret := createTestNode(t, router, token, "config-test-node-ws")
+
+	doRequest(t, router, "POST", "/api/inbounds/sync", token, []map[string]interface{}{
+		{
+			"tag": "VLESS un", "protocol": "vless", "network": "ws", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "ggv2.example.test",
+		},
+		{"tag": "plain", "protocol": "vless"},
+	})
+	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
+		"VLESS un": []map[string]interface{}{{"remark": "ws", "address": "ggv2.example.test", "port": 443, "path": "/trk01b"}},
+		"plain":    []map[string]interface{}{{"remark": "tcp", "address": "1.2.3.4", "port": 2083}},
+	})
+	if resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
+		"username": "nc_ws_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
+	}); resp.Code != http.StatusOK {
+		t.Fatalf("create user: %d %v", resp.Code, resp.Body)
+	}
+
+	resp := doRequest(t, router, "GET", "/api/internal/node-config", secret, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get node config: %d %v", resp.Code, resp.Body)
+	}
+	byTag := map[string]map[string]interface{}{}
+	for _, i := range resp.Body["inbounds"].([]interface{}) {
+		in := i.(map[string]interface{})
+		byTag[in["tag"].(string)] = in
+	}
+	ws, ok := byTag["VLESS un"]["transport"].(map[string]interface{})
+	if !ok || ws["type"] != "ws" || ws["path"] != "/trk01b" {
+		t.Fatalf("ws inbound transport = %v, want type ws on /trk01b", byTag["VLESS un"])
+	}
+	if byTag["VLESS un"]["listen_port"] != float64(443) {
+		t.Errorf("ws inbound listen_port = %v, want 443", byTag["VLESS un"]["listen_port"])
+	}
+	if _, has := byTag["plain"]["transport"]; has {
+		t.Errorf("a plain tcp inbound got a transport: %v", byTag["plain"])
+	}
+
+	ctx := context.Background()
+	payload, _, err := handler.buildNodeConfigPayload(ctx, nodeProfile{})
+	if err != nil {
+		t.Fatalf("buildNodeConfigPayload: %v", err)
+	}
+	want, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	got, err := handler.buildNodeConfigBody(ctx, nodeProfile{})
+	if err != nil {
+		t.Fatalf("buildNodeConfigBody: %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("spliced body differs from the marshalled payload\n got: %.400s\nwant: %.400s", got, want)
+	}
+}
+
+func TestNodeInboundTransport(t *testing.T) {
+	if tr := nodeInboundTransport("vless", "ws", "", ""); tr == nil || tr.Type != "ws" || tr.Path != "/" {
+		t.Errorf("ws with no host path = %+v, want path /", tr)
+	}
+	if tr := nodeInboundTransport("trojan", "httpupgrade", "/u", "h.example"); tr == nil || tr.Type != "httpupgrade" || tr.Path != "/u" || tr.Host != "h.example" {
+		t.Errorf("httpupgrade = %+v", tr)
+	}
+	for _, c := range []struct{ protocol, network string }{{"vless", "tcp"}, {"vless", "grpc"}, {"shadowsocks", "ws"}, {"hysteria2", "ws"}} {
+		if tr := nodeInboundTransport(c.protocol, c.network, "/p", ""); tr != nil {
+			t.Errorf("%s/%s got transport %+v, want none", c.protocol, c.network, tr)
+		}
+	}
+}
