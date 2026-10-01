@@ -400,10 +400,15 @@ func TestGetNodeConfigCarriesTheWebSocketTransport(t *testing.T) {
 			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "ggv2.example.test",
 		},
 		{"tag": "plain", "protocol": "vless"},
+		{
+			"tag": "vision", "protocol": "vless", "security": "tls",
+			"tls_certificate": testCertPEM, "tls_key": testKeyPEM, "tls_server_name": "v.example.test",
+		},
 	})
 	doRequest(t, router, "PUT", "/api/hosts", token, map[string]interface{}{
 		"VLESS un": []map[string]interface{}{{"remark": "ws", "address": "ggv2.example.test", "port": 443, "path": "/trk01b"}},
 		"plain":    []map[string]interface{}{{"remark": "tcp", "address": "1.2.3.4", "port": 2083}},
+		"vision":   []map[string]interface{}{{"remark": "vision", "address": "1.2.3.4", "port": 2096}},
 	})
 	if resp := doRequest(t, router, "POST", "/api/user", token, map[string]interface{}{
 		"username": "nc_ws_user", "proxies": map[string]interface{}{"vless": map[string]interface{}{}},
@@ -429,6 +434,26 @@ func TestGetNodeConfigCarriesTheWebSocketTransport(t *testing.T) {
 	}
 	if _, has := byTag["plain"]["transport"]; has {
 		t.Errorf("a plain tcp inbound got a transport: %v", byTag["plain"])
+	}
+
+	// The API stores Vision for every VLESS user it creates; only the raw
+	// TCP+TLS inbound may hand that flow to the node - the ws and no-TLS
+	// inbounds' links never carry it, so demanding it would reject everyone.
+	flowOf := func(tag string) interface{} {
+		users := byTag[tag]["users"].([]interface{})
+		if len(users) != 1 {
+			t.Fatalf("%s users = %v, want the one user", tag, users)
+		}
+		return users[0].(map[string]interface{})["flow"]
+	}
+	if got := flowOf("vision"); got != "xtls-rprx-vision" {
+		t.Errorf("tcp+tls inbound flow = %v, want xtls-rprx-vision", got)
+	}
+	if got := flowOf("VLESS un"); got != nil {
+		t.Errorf("ws inbound flow = %v, want none", got)
+	}
+	if got := flowOf("plain"); got != nil {
+		t.Errorf("no-TLS inbound flow = %v, want none", got)
 	}
 
 	ctx := context.Background()

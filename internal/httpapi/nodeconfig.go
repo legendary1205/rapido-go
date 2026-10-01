@@ -60,6 +60,21 @@ type nodeConfigTransportSpec struct {
 	Host string `json:"host,omitempty"`
 }
 
+// flowApplies is subscription.vlessLink's own rule for when a link carries a
+// flow at all: XTLS Vision exists only on raw TCP (or kcp) under TLS/REALITY
+// without HTTP header obfuscation. On any other inbound a user's stored flow
+// is meaningless - their link never carries it - so the node must not demand
+// it either, or every such user fails with "flow mismatch". It matters
+// because the write path stores Vision for every VLESS user it touches.
+func flowApplies(network, security, headerType string) bool {
+	return (security == "tls" || security == "reality") &&
+		(network == "tcp" || network == "raw" || network == "kcp") && headerType != "http"
+}
+
+// noFlowUsersKey names a protocol's user list with every flow cleared, in
+// nodeConfigSnapshot.usersJSON, for inbounds where flowApplies is false.
+func noFlowUsersKey(protocol string) string { return protocol + "/no-flow" }
+
 // nodeInboundTransport is the transport a node serves for an inbound of
 // this network, or nil when it serves the protocol straight over TCP.
 // Only the transports sing-box has a server for are mapped; anything else
@@ -107,6 +122,11 @@ type nodeConfigInboundSpec struct {
 	// inbounds.go's inboundDetailDTO for what each means.
 	SnellPSK    string `json:"snell_psk,omitempty"`
 	SnellV6Mode string `json:"snell_v6_mode,omitempty"`
+
+	// usersKey is which nodeConfigSnapshot.usersJSON entry holds this
+	// inbound's already-encoded Users - the protocol, or its no-flow variant
+	// (see flowApplies). Not part of the wire format.
+	usersKey string
 }
 
 // nodeConfigInboundWire is nodeConfigInboundSpec with the user list already
@@ -248,13 +268,37 @@ func (h *Handler) loadNodeConfigSnapshot(ctx context.Context, version int64) (*n
 		usersByProtocol[p.Type] = append(usersByProtocol[p.Type], spec)
 	}
 
+	// A protocol's users with every flow cleared, built only when some inbound
+	// of that protocol can't carry one (see flowApplies).
+	for _, in := range inboundRows {
+		if (in.Protocol != "vless" && in.Protocol != "trojan") || flowApplies(in.Network, in.Security, in.HeaderType.String) {
+			continue
+		}
+		key := noFlowUsersKey(in.Protocol)
+		src, ok := usersByProtocol[in.Protocol]
+		if _, done := usersByProtocol[key]; done || !ok {
+			continue
+		}
+		stripped := make([]nodeConfigUserSpec, len(src))
+		for i, u := range src {
+			u.Flow = ""
+			stripped[i] = u
+		}
+		usersByProtocol[key] = stripped
+	}
+
 	inbounds := make([]nodeConfigInboundSpec, 0, len(inboundRows))
 	for _, in := range inboundRows {
+		usersKey := in.Protocol
+		if (in.Protocol == "vless" || in.Protocol == "trojan") && !flowApplies(in.Network, in.Security, in.HeaderType.String) {
+			usersKey = noFlowUsersKey(in.Protocol)
+		}
 		spec := nodeConfigInboundSpec{
 			Tag: in.Tag, Protocol: in.Protocol, ListenPort: uint16(in.Port.Int32),
 			ListenPorts: multiListenPorts(in.Ports),
-			Users:       usersByProtocol[in.Protocol],
+			Users:       usersByProtocol[usersKey],
 			Transport:   nodeInboundTransport(in.Protocol, in.Network, in.Path.String, in.Host.String),
+			usersKey:    usersKey,
 		}
 		switch in.Security {
 		case "reality":
@@ -329,7 +373,11 @@ func (s *nodeConfigSnapshot) render(p nodeProfile) (nodeConfigResponse, []byte, 
 	wire := make([]nodeConfigInboundWire, 0, len(inbounds))
 	for i := range inbounds {
 		in := &inbounds[i]
-		users, ok := s.usersJSON[in.Protocol]
+		key := in.usersKey
+		if key == "" {
+			key = in.Protocol
+		}
+		users, ok := s.usersJSON[key]
 		if !ok {
 			users = emptyUsers
 		}
