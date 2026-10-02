@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -68,7 +69,12 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	poolCfg.MaxConns = dbPoolMaxConns(cfg.Role)
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return err
 	}
@@ -263,6 +269,33 @@ func runAsBackendSingleton(ctx context.Context, databaseURL string, queries *gen
 		conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", cache.AdvisoryLockBackendSingleton)
 		conn.Close(context.Background())
 		return
+	}
+}
+
+// dbPoolMaxConns picks the pgxpool ceiling per role. Left unset, pgxpool
+// defaults to runtime.NumCPU() - fine for the backend role's handful of
+// sequential background jobs, but on the api role that number becomes the
+// pool itself, and the pool becomes the hard throughput ceiling: live
+// benchmarking the production panel (a 10-core box, otherwise ~40% idle
+// across panel+Postgres+Caddy under load) showed requests queueing for a
+// pool slot at a flat ~1100 req/s regardless of client concurrency, with
+// Postgres sitting on only ~9 active connections out of its max_connections
+// budget the whole time. Scaling with core count keeps this sized to the
+// machine instead of a fixed guess; the backend role never fans out
+// concurrent DB work the way an HTTP request pool does, so it stays small
+// regardless of how many cores the box has.
+func dbPoolMaxConns(role config.Role) int32 {
+	if role == config.RoleBackend {
+		return 10
+	}
+	n := int32(runtime.NumCPU() * 5)
+	switch {
+	case n < 20:
+		return 20
+	case n > 50:
+		return 50
+	default:
+		return n
 	}
 }
 

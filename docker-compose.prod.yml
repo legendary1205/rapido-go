@@ -57,7 +57,14 @@ services:
       - -c
       - log_min_duration_statement=500
       - -c
-      - max_connections=100
+      # Headroom for the api role's own pgxpool ceiling (see cmd/panel/
+      # main.go's dbPoolSize - up to 50 on a many-core box) plus the backend
+      # role's pool, the one-shot migrate job, and a few manual psql
+      # sessions, with plenty to spare. The RAM cost of idle connections is
+      # small (no per-connection work_mem is reserved until a query actually
+      # runs one), so this is cheap insurance against future growth, not
+      # just today's number.
+      - max_connections=200
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

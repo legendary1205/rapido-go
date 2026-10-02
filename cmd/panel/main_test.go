@@ -8,8 +8,28 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/legendary1205/rapido-go/internal/config"
 	"github.com/legendary1205/rapido-go/internal/db/generated"
 )
+
+// TestDBPoolMaxConnsKeepsTheBackendRoleSmallAndScalesTheAPIRole is a
+// regression guard for the fix that followed benchmarking the production
+// panel: pgxpool's un-overridden default (effectively runtime.NumCPU())
+// became the api role's hard throughput ceiling at ~1100 req/s on an
+// otherwise 40%-idle box, long before Postgres's own connection budget or
+// CPU were anywhere near saturated. The backend role never fans concurrent
+// DB work out the way an HTTP request pool does, so it must stay flat
+// regardless of core count; the api role must scale with it, clamped so a
+// huge box doesn't eat Postgres's whole max_connections budget on its own.
+func TestDBPoolMaxConnsKeepsTheBackendRoleSmallAndScalesTheAPIRole(t *testing.T) {
+	if got := dbPoolMaxConns(config.RoleBackend); got != 10 {
+		t.Errorf("dbPoolMaxConns(RoleBackend) = %d, want a flat 10 regardless of core count", got)
+	}
+	got := dbPoolMaxConns(config.RoleAPI)
+	if got < 20 || got > 50 {
+		t.Errorf("dbPoolMaxConns(RoleAPI) = %d, want it clamped to [20, 50]", got)
+	}
+}
 
 // testPool mirrors internal/httpapi/store_test.go's own helper - skips
 // instead of failing when TEST_DATABASE_URL isn't set, so `go test ./...`
