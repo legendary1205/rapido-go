@@ -10,7 +10,7 @@ export const RapidoFooter: FC = () => (
     </a>
     {", "}Made with ❤️ by{" "}
     <a href={ORGANIZATION_URL} className="text-rapido-accent hover:underline">
-      legendary1205
+      rapidodev
     </a>
   </div>
 );

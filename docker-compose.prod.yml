@@ -1,6 +1,6 @@
 # Full Rapido-Go panel stack, pre-built images only. Not meant to be run by
 # hand - see rapido-go.sh (bash <(curl -fsSL
-# https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh)
+# https://raw.githubusercontent.com/rapidodev/rapido-go/master/rapido-go.sh)
 # install), which downloads this file (and the script itself) into
 # /opt/rapido-go, writes .env and Caddyfile, and drives this with
 # `docker compose -f docker-compose.prod.yml --env-file .env up -d`.
@@ -100,7 +100,7 @@ services:
   # finish successfully before they start, so a fresh `up -d` always comes
   # up against an up-to-date schema with no separate manual step.
   migrate:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    image: ${RAPIDO_IMAGE:-ghcr.io/rapidodev/rapido-go-panel}:${RAPIDO_TAG:-latest}
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,7 +109,7 @@ services:
     restart: "no"
 
   panel:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    image: ${RAPIDO_IMAGE:-ghcr.io/rapidodev/rapido-go-panel}:${RAPIDO_TAG:-latest}
     restart: unless-stopped
     depends_on:
       migrate:
@@ -177,7 +177,7 @@ services:
       - ./templates:/app/templates:ro
 
   backend:
-    image: ${RAPIDO_IMAGE:-ghcr.io/legendary1205/rapido-go-panel}:${RAPIDO_TAG:-latest}
+    image: ${RAPIDO_IMAGE:-ghcr.io/rapidodev/rapido-go-panel}:${RAPIDO_TAG:-latest}
     restart: unless-stopped
     depends_on:
       migrate:

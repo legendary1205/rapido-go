@@ -9,7 +9,7 @@
 #  Rapido-Go - installer and management CLI for the panel.
 #
 #  Install (fresh server, as root):
-#    bash <(curl -fsSL https://raw.githubusercontent.com/legendary1205/rapido-go/master/rapido-go.sh) install --domain panel.example.com
+#    bash <(curl -fsSL https://raw.githubusercontent.com/rapidodev/rapido-go/master/rapido-go.sh) install --domain panel.example.com
 #
 #  Afterwards the command is available system-wide as `rapido-go`.
 #
@@ -102,7 +102,7 @@ save_token() {
     chmod 600 "$APP_DIR/.env"
 }
 
-REPO_OWNER="${RAPIDO_REPO_OWNER:-legendary1205}"
+REPO_OWNER="${RAPIDO_REPO_OWNER:-rapidodev}"
 REPO_NAME="${RAPIDO_REPO_NAME:-rapido-go}"
 REPO_BRANCH="${RAPIDO_REPO_BRANCH:-master}"
 
